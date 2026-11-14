@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2017, Frappe Technologies and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+from frappe.tests import IntegrationTestCase
 
-import unittest
 
-class TestGender(unittest.TestCase):
+class TestGender(IntegrationTestCase):
 	pass

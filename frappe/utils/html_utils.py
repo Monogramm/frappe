@@ -1,78 +1,293 @@
-from __future__ import unicode_literals
-import frappe
 import json
 import re
-import bleach
-import bleach_whitelist.bleach_whitelist as bleach_whitelist
-from six import string_types
-from bs4 import BeautifulSoup
+
+import nh3
+from bleach_allowlist import bleach_allowlist
+
+import frappe
+from frappe.utils.data import escape_html
+
+# Matches the first opening tag. Deliberately equivalent to
+# `bool(BeautifulSoup(html, "html.parser").find())`, which treats comments, `<3`
+# and unmatched end tags as text rather than tags — see `test_html_utils.py`.
+HTML_TAG_PATTERN = re.compile(r"<[a-zA-Z][^>]*>")
+
+EMOJI_PATTERN = re.compile(
+	"(\ud83d[\ude00-\ude4f])|"
+	"(\ud83c[\udf00-\uffff])|"
+	"(\ud83d[\u0000-\uddff])|"
+	"(\ud83d[\ude80-\udeff])|"
+	"(\ud83c[\udde0-\uddff])"
+	"+",
+	flags=re.UNICODE,
+)
+
+# tags for which content needs to be removed from output
+REMOVE_CONTENT_TAGS = {"script", "style"}
+
 
 def clean_html(html):
-	if not isinstance(html, string_types):
+	if not isinstance(html, str):
 		return html
 
-	return bleach.clean(clean_script_and_style(html),
-		tags=['div', 'p', 'br', 'ul', 'ol', 'li', 'strong', 'b', 'em', 'i', 'u',
-			'table', 'thead', 'tbody', 'td', 'tr'],
-		attributes=[],
-		styles=['color', 'border', 'border-color'],
-		strip=True, strip_comments=True)
+	return nh3.clean(
+		html,
+		tags={
+			"div",
+			"p",
+			"br",
+			"ul",
+			"ol",
+			"li",
+			"strong",
+			"b",
+			"em",
+			"i",
+			"u",
+			"table",
+			"thead",
+			"tbody",
+			"td",
+			"tr",
+			"a",
+		},
+		clean_content_tags=REMOVE_CONTENT_TAGS,
+		strip_comments=True,
+	)
+
 
 def clean_email_html(html):
-	if not isinstance(html, string_types):
+	if not isinstance(html, str):
 		return html
 
-	return bleach.clean(clean_script_and_style(html),
-		tags=['div', 'p', 'br', 'ul', 'ol', 'li', 'strong', 'b', 'em', 'i', 'u', 'a',
-			'table', 'thead', 'tbody', 'td', 'tr', 'th', 'pre', 'code',
-			'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button', 'img'],
-		attributes=['border', 'colspan', 'rowspan',
-			'src', 'href', 'style', 'id'],
-		styles=['color', 'border-color', 'width', 'height', 'max-width',
-			'background-color', 'border-collapse', 'border-radius',
-			'border', 'border-top', 'border-bottom', 'border-left', 'border-right',
-			'margin', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right',
-			'padding', 'padding-top', 'padding-bottom', 'padding-left', 'padding-right',
-			'font-size', 'font-weight', 'font-family', 'text-decoration',
-			'line-height', 'text-align', 'vertical-align', 'display'
-		],
-		protocols=['cid', 'http', 'https', 'mailto', 'data'],
-		strip=True, strip_comments=True)
+	allowed_css_properties = {
+		"color",
+		"border-color",
+		"width",
+		"height",
+		"max-width",
+		"background-color",
+		"border-collapse",
+		"border-radius",
+		"border",
+		"border-top",
+		"border-bottom",
+		"border-left",
+		"border-right",
+		"margin",
+		"margin-top",
+		"margin-bottom",
+		"margin-left",
+		"margin-right",
+		"padding",
+		"padding-top",
+		"padding-bottom",
+		"padding-left",
+		"padding-right",
+		"font-size",
+		"font-weight",
+		"font-family",
+		"text-decoration",
+		"line-height",
+		"text-align",
+		"vertical-align",
+		"display",
+	}
+
+	return nh3.clean(
+		html,
+		tags={
+			"div",
+			"p",
+			"br",
+			"ul",
+			"ol",
+			"li",
+			"strong",
+			"b",
+			"em",
+			"i",
+			"u",
+			"a",
+			"table",
+			"thead",
+			"tbody",
+			"td",
+			"tr",
+			"th",
+			"pre",
+			"code",
+			"h1",
+			"h2",
+			"h3",
+			"h4",
+			"h5",
+			"h6",
+			"button",
+			"img",
+		},
+		attributes={"*": {"border", "colspan", "rowspan", "src", "href", "style", "id"}},
+		clean_content_tags=REMOVE_CONTENT_TAGS,
+		filter_style_properties=allowed_css_properties,
+		strip_comments=True,
+		url_schemes=nh3.ALLOWED_URL_SCHEMES.union({"cid", "data"}),
+	)
+
+
+def has_html_tags(html: str) -> bool:
+	"""Return True if `html` contains at least one HTML tag."""
+	return bool(HTML_TAG_PATTERN.search(html))
+
 
 def clean_script_and_style(html):
-	# remove script and style
-	soup = BeautifulSoup(html, 'html5lib')
-	for s in soup(['script', 'style']):
+	"""
+	Remove script and style tags.
+	DEPRECATED: prefer nh3.clean's clean_content_tags parameter.
+	"""
+
+	from bs4 import BeautifulSoup
+
+	soup = BeautifulSoup(html, "html5lib")
+	for s in soup(["script", "style"]):
 		s.decompose()
 	return frappe.as_unicode(soup)
 
-def sanitize_html(html, linkify=False):
+
+def sanitize_html(html, linkify=False, always_sanitize=False, disallowed_tags=None):
 	"""
 	Sanitize HTML tags, attributes and style to prevent XSS attacks
-	Based on bleach clean, bleach whitelist and html5lib's Sanitizer defaults
+	Based on nh3 clean, bleach whitelist and html5lib's Sanitizer defaults
 
-	Does not sanitize JSON, as it could lead to future problems
+	Content without any HTML tags is returned unchanged; everything else is sanitized.
 	"""
-	if not isinstance(html, string_types):
+	if not isinstance(html, str):
 		return html
 
-	elif is_json(html):
-		return html
+	if not always_sanitize:
+		if not has_html_tags(html):
+			return html
 
-	if not bool(BeautifulSoup(html, 'html.parser').find()):
-		return html
+	if not disallowed_tags:
+		return _HTML_SANITIZER.clean(html)
 
-	tags = (acceptable_elements + svg_elements + mathml_elements
-		+ ["html", "head", "meta", "link", "body", "style", "o:p"])
-	attributes = {"*": acceptable_attributes, 'svg': svg_attributes}
-	styles = bleach_whitelist.all_styles
-	strip_comments = False
+	# Allow caller to explicitly disallow some tags
+	if disallowed_tags == "*":
+		tags = set()
+	else:
+		tags = _SANITIZE_HTML_TAGS.difference(disallowed_tags)
 
-	# returns html with escaped tags, escaped orphan >, <, etc.
-	escaped_html = bleach.clean(html, tags=tags, attributes=attributes, styles=styles,
-		strip_comments=strip_comments, protocols=['cid', 'http', 'https', 'mailto'])
+	return _build_html_sanitizer(tags).clean(html)
 
-	return escaped_html
+
+def _build_html_sanitizer(tags: set[str]) -> nh3.Cleaner:
+	return nh3.Cleaner(
+		tags=tags,
+		attributes={"*": acceptable_attributes, "svg": svg_attributes},
+		generic_attribute_prefixes={"data-"},
+		strip_comments=False,
+		# bleach's allowlist has column-gap but not gap/row-gap — add them so
+		# flex/grid layouts (already allowed via display/flex) keep their spacing
+		filter_style_properties=set(bleach_allowlist.all_styles) | {"gap", "row-gap"},
+		url_schemes=nh3.ALLOWED_URL_SCHEMES.union({"cid"}),
+	)
+
+
+# A request argument is a few levels deep at most: a document holding a child table
+# of rows of fields is four. Past this the walk gives up and the text is sanitized
+# as one blob, the way it was before it learned to look inside. A guest can post
+# arbitrarily nested JSON, and walking it without a bound is a 500.
+MAX_PAYLOAD_DEPTH = 20
+
+
+class PayloadTooDeep(Exception):
+	pass
+
+
+def sanitize_html_payload(text):
+	"""Sanitize HTML in a string that may be carrying a JSON payload.
+
+	`sanitize_html` treats its input as a document that is itself HTML. A request
+	argument is not that: anything richer than a scalar reaches `form_dict` as
+	JSON, so the string is a container whose values may carry HTML.
+
+	Sanitizing the serialized container rewrites the container. The parser reads
+	an embedded tag such as `<div class=\\"x y\\">` (the backslashes are JSON
+	escaping) as `class` holding the unquoted value `\\"x`, drops `y\\"` as a junk
+	attribute, and writes the value back as `class="\\&quot;x"`. That bare quote
+	ends the JSON string early and the payload no longer parses.
+
+	So look inside instead. Decode, sanitize each string in the structure, and
+	re-encode. A payload that needed no cleaning is returned exactly as it
+	arrived, and anything that is not JSON is sanitized as before.
+
+	The walk stops at `MAX_PAYLOAD_DEPTH` and falls back to sanitizing the text
+	as one blob. The content is sanitized either way, and the walk cannot run the
+	interpreter out of stack on a payload built to be deep.
+	"""
+	if not isinstance(text, str):
+		return text
+
+	return _sanitize_payload(text, MAX_PAYLOAD_DEPTH)
+
+
+def _sanitize_payload(text, depth):
+	try:
+		payload = json.loads(text)
+	except (ValueError, RecursionError):
+		return sanitize_html(text)
+
+	try:
+		sanitized = _sanitize_json_strings(payload, depth)
+	except PayloadTooDeep:
+		return sanitize_html(text)
+
+	if sanitized == payload:
+		return text
+
+	return json.dumps(sanitized)
+
+
+def _sanitize_json_strings(value, depth):
+	"""Sanitize every string inside a decoded JSON value, leaving its shape alone.
+
+	Strings go back through `_sanitize_payload`, so a payload nested inside another
+	payload is handled the same way.
+
+	Keys are left as they are. They are looked up as argument and field names,
+	never rendered, and rewriting one could collide with another key and drop a
+	value.
+	"""
+	if depth <= 0:
+		raise PayloadTooDeep
+
+	if isinstance(value, str):
+		return _sanitize_payload(value, depth - 1)
+
+	if isinstance(value, dict):
+		return {key: _sanitize_json_strings(item, depth - 1) for key, item in value.items()}
+
+	if isinstance(value, list):
+		return [_sanitize_json_strings(item, depth - 1) for item in value]
+
+	return value
+
+
+def sanitize_svg(svg: str) -> str:
+	"""Sanitize standalone SVG markup for safe inline rendering (e.g. custom icons).
+
+	Stricter than sanitize_html: only SVG elements and attributes survive, so
+	scripts, event handlers, foreignObject and plain HTML are all stripped.
+	"""
+	if not isinstance(svg, str):
+		return svg
+
+	return nh3.clean(
+		svg,
+		tags=svg_elements,
+		attributes={"*": svg_attributes},
+		strip_comments=True,
+	)
+
 
 def is_json(text):
 	try:
@@ -82,136 +297,562 @@ def is_json(text):
 	else:
 		return True
 
+
 def get_icon_html(icon, small=False):
 	from frappe.utils import is_image
 
-	emoji_pattern = re.compile(
-		u"(\ud83d[\ude00-\ude4f])|"
-		u"(\ud83c[\udf00-\uffff])|"
-		u"(\ud83d[\u0000-\uddff])|"
-		u"(\ud83d[\ude80-\udeff])|"
-		u"(\ud83c[\udde0-\uddff])"
-		"+", flags=re.UNICODE)
-
 	icon = icon or ""
-	if icon and emoji_pattern.match(icon):
-		return '<span class="text-muted">' + icon + '</span>'
+
+	if icon and EMOJI_PATTERN.match(icon):
+		return f'<span class="text-muted">{icon}</span>'
 
 	if is_image(icon):
-		return \
-			'<img style="width: 16px; height: 16px;" src="{icon}">'.format(icon=icon) \
-				if small else \
-			'<img src="{icon}">'.format(icon=icon)
+		return (
+			f"<img style='width: 16px; height: 16px;' src={escape_html(icon)!r}>"
+			if small
+			else f"<img src={escape_html(icon)!r}>"
+		)
 	else:
-		return "<i class='{icon}'></i>".format(icon=icon)
+		return f"<i class={escape_html(icon)!r}></i>"
+
 
 def unescape_html(value):
 	from html import unescape
+
 	return unescape(value)
 
+
 # adapted from https://raw.githubusercontent.com/html5lib/html5lib-python/4aa79f113e7486c7ec5d15a6e1777bfe546d3259/html5lib/sanitizer.py
-acceptable_elements = [
-	'a', 'abbr', 'acronym', 'address', 'area',
-	'article', 'aside', 'audio', 'b', 'big', 'blockquote', 'br', 'button',
-	'canvas', 'caption', 'center', 'cite', 'code', 'col', 'colgroup',
-	'command', 'datagrid', 'datalist', 'dd', 'del', 'details', 'dfn',
-	'dialog', 'dir', 'div', 'dl', 'dt', 'em', 'event-source', 'fieldset',
-	'figcaption', 'figure', 'footer', 'font', 'form', 'header', 'h1',
-	'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'input', 'ins',
-	'keygen', 'kbd', 'label', 'legend', 'li', 'm', 'map', 'menu', 'meter',
-	'multicol', 'nav', 'nextid', 'ol', 'output', 'optgroup', 'option',
-	'p', 'pre', 'progress', 'q', 's', 'samp', 'section', 'select',
-	'small', 'sound', 'source', 'spacer', 'span', 'strike', 'strong',
-	'sub', 'sup', 'table', 'tbody', 'td', 'textarea', 'time', 'tfoot',
-	'th', 'thead', 'tr', 'tt', 'u', 'ul', 'var', 'video'
-]
+acceptable_elements = {
+	"a",
+	"abbr",
+	"acronym",
+	"address",
+	"area",
+	"article",
+	"aside",
+	"audio",
+	"b",
+	"big",
+	"blockquote",
+	"br",
+	"button",
+	"canvas",
+	"caption",
+	"center",
+	"cite",
+	"code",
+	"col",
+	"colgroup",
+	"command",
+	"datagrid",
+	"datalist",
+	"dd",
+	"del",
+	"details",
+	"dfn",
+	"dialog",
+	"dir",
+	"div",
+	"dl",
+	"dt",
+	"em",
+	"event-source",
+	"fieldset",
+	"figcaption",
+	"figure",
+	"footer",
+	"font",
+	"form",
+	"header",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6",
+	"hr",
+	"i",
+	"img",
+	"input",
+	"ins",
+	"keygen",
+	"kbd",
+	"label",
+	"legend",
+	"li",
+	"m",
+	"map",
+	"mark",
+	"menu",
+	"meter",
+	"multicol",
+	"nav",
+	"nextid",
+	"ol",
+	"output",
+	"optgroup",
+	"option",
+	"p",
+	"pre",
+	"progress",
+	"q",
+	"s",
+	"samp",
+	"section",
+	"select",
+	"small",
+	"sound",
+	"source",
+	"spacer",
+	"span",
+	"strike",
+	"strong",
+	"sub",
+	"summary",
+	"sup",
+	"table",
+	"tbody",
+	"td",
+	"textarea",
+	"time",
+	"tfoot",
+	"th",
+	"thead",
+	"tr",
+	"tt",
+	"u",
+	"ul",
+	"var",
+	"video",
+}
 
-mathml_elements = [
-	'maction', 'math', 'merror', 'mfrac', 'mi',
-	'mmultiscripts', 'mn', 'mo', 'mover', 'mpadded', 'mphantom',
-	'mprescripts', 'mroot', 'mrow', 'mspace', 'msqrt', 'mstyle', 'msub',
-	'msubsup', 'msup', 'mtable', 'mtd', 'mtext', 'mtr', 'munder',
-	'munderover', 'none'
-]
+mathml_elements = {
+	"maction",
+	"math",
+	"merror",
+	"mfrac",
+	"mi",
+	"mmultiscripts",
+	"mn",
+	"mo",
+	"mover",
+	"mpadded",
+	"mphantom",
+	"mprescripts",
+	"mroot",
+	"mrow",
+	"mspace",
+	"msqrt",
+	"mstyle",
+	"msub",
+	"msubsup",
+	"msup",
+	"mtable",
+	"mtd",
+	"mtext",
+	"mtr",
+	"munder",
+	"munderover",
+	"none",
+}
 
-svg_elements = [
-	'a', 'animate', 'animateColor', 'animateMotion',
-	'animateTransform', 'clipPath', 'circle', 'defs', 'desc', 'ellipse',
-	'font-face', 'font-face-name', 'font-face-src', 'g', 'glyph', 'hkern',
-	'linearGradient', 'line', 'marker', 'metadata', 'missing-glyph',
-	'mpath', 'path', 'polygon', 'polyline', 'radialGradient', 'rect',
-	'set', 'stop', 'svg', 'switch', 'text', 'title', 'tspan', 'use'
-]
+svg_elements = {
+	"a",
+	"animate",
+	"animateColor",
+	"animateMotion",
+	"animateTransform",
+	"clipPath",
+	"circle",
+	"defs",
+	"desc",
+	"ellipse",
+	"font-face",
+	"font-face-name",
+	"font-face-src",
+	"g",
+	"glyph",
+	"hkern",
+	"linearGradient",
+	"line",
+	"marker",
+	"metadata",
+	"missing-glyph",
+	"mpath",
+	"path",
+	"polygon",
+	"polyline",
+	"radialGradient",
+	"rect",
+	"set",
+	"stop",
+	"svg",
+	"switch",
+	"text",
+	"title",
+	"tspan",
+	"use",
+}
 
-acceptable_attributes = [
-	'abbr', 'accept', 'accept-charset', 'accesskey',
-	'action', 'align', 'alt', 'autocomplete', 'autofocus', 'axis',
-	'background', 'balance', 'bgcolor', 'bgproperties', 'border',
-	'bordercolor', 'bordercolordark', 'bordercolorlight', 'bottompadding',
-	'cellpadding', 'cellspacing', 'ch', 'challenge', 'char', 'charoff',
-	'choff', 'charset', 'checked', 'cite', 'class', 'clear', 'color',
-	'cols', 'colspan', 'compact', 'contenteditable', 'controls', 'coords',
-	'data', 'datafld', 'datapagesize', 'datasrc', 'datetime', 'default',
-	'delay', 'dir', 'disabled', 'draggable', 'dynsrc', 'enctype', 'end',
-	'face', 'for', 'form', 'frame', 'galleryimg', 'gutter', 'headers',
-	'height', 'hidefocus', 'hidden', 'high', 'href', 'hreflang', 'hspace',
-	'icon', 'id', 'inputmode', 'ismap', 'keytype', 'label', 'leftspacing',
-	'lang', 'list', 'longdesc', 'loop', 'loopcount', 'loopend',
-	'loopstart', 'low', 'lowsrc', 'max', 'maxlength', 'media', 'method',
-	'min', 'multiple', 'name', 'nohref', 'noshade', 'nowrap', 'open',
-	'optimum', 'pattern', 'ping', 'point-size', 'poster', 'pqg', 'preload',
-	'prompt', 'radiogroup', 'readonly', 'rel', 'repeat-max', 'repeat-min',
-	'replace', 'required', 'rev', 'rightspacing', 'rows', 'rowspan',
-	'rules', 'scope', 'selected', 'shape', 'size', 'span', 'src', 'start',
-	'step', 'style', 'summary', 'suppress', 'tabindex', 'target',
-	'template', 'title', 'toppadding', 'type', 'unselectable', 'usemap',
-	'urn', 'valign', 'value', 'variable', 'volume', 'vspace', 'vrml',
-	'width', 'wrap', 'xml:lang', 'data-row', 'data-list', 'data-language',
-	'data-value', 'role', 'frameborder', 'allowfullscreen', 'spellcheck',
-	'data-mode', 'data-gramm', 'data-placeholder', 'data-comment',
-	'data-id', 'data-denotation-char', 'itemprop', 'itemscope',
-	'itemtype', 'itemid', 'itemref', 'datetime'
-]
+acceptable_attributes = {
+	"abbr",
+	"accept",
+	"accept-charset",
+	"accesskey",
+	"action",
+	"align",
+	"alt",
+	"autocomplete",
+	"autofocus",
+	"axis",
+	"background",
+	"balance",
+	"bgcolor",
+	"bgproperties",
+	"border",
+	"bordercolor",
+	"bordercolordark",
+	"bordercolorlight",
+	"bottompadding",
+	"cellpadding",
+	"cellspacing",
+	"ch",
+	"challenge",
+	"char",
+	"charoff",
+	"choff",
+	"charset",
+	"checked",
+	"cite",
+	"class",
+	"clear",
+	"color",
+	"cols",
+	"colspan",
+	"compact",
+	"content",
+	"contenteditable",
+	"controls",
+	"coords",
+	"data",
+	"datafld",
+	"datapagesize",
+	"datasrc",
+	"datetime",
+	"default",
+	"delay",
+	"dir",
+	"disabled",
+	"draggable",
+	"dynsrc",
+	"enctype",
+	"end",
+	"face",
+	"for",
+	"form",
+	"frame",
+	"galleryimg",
+	"gutter",
+	"headers",
+	"height",
+	"hidefocus",
+	"hidden",
+	"high",
+	"href",
+	"hreflang",
+	"hspace",
+	"icon",
+	"id",
+	"inputmode",
+	"ismap",
+	"keytype",
+	"label",
+	"leftspacing",
+	"lang",
+	"list",
+	"longdesc",
+	"loop",
+	"loopcount",
+	"loopend",
+	"loopstart",
+	"low",
+	"lowsrc",
+	"max",
+	"maxlength",
+	"media",
+	"method",
+	"min",
+	"multiple",
+	"name",
+	"nohref",
+	"noshade",
+	"nowrap",
+	"open",
+	"optimum",
+	"pattern",
+	"ping",
+	"point-size",
+	"poster",
+	"pqg",
+	"preload",
+	"prompt",
+	"radiogroup",
+	"readonly",
+	"repeat-max",
+	"repeat-min",
+	"replace",
+	"required",
+	"rev",
+	"rightspacing",
+	"rows",
+	"rowspan",
+	"rules",
+	"scope",
+	"selected",
+	"shape",
+	"size",
+	"span",
+	"src",
+	"start",
+	"step",
+	"style",
+	"summary",
+	"suppress",
+	"tabindex",
+	"target",
+	"template",
+	"title",
+	"toppadding",
+	"type",
+	"unselectable",
+	"usemap",
+	"urn",
+	"valign",
+	"value",
+	"variable",
+	"volume",
+	"vspace",
+	"vrml",
+	"width",
+	"wrap",
+	"xml:lang",
+	"data-row",
+	"data-list",
+	"data-language",
+	"data-value",
+	"role",
+	"frameborder",
+	"allowfullscreen",
+	"spellcheck",
+	"data-mode",
+	"data-gramm",
+	"data-placeholder",
+	"data-comment",
+	"data-id",
+	"data-denotation-char",
+	"itemprop",
+	"itemscope",
+	"itemtype",
+	"itemid",
+	"itemref",
+	"data-is-group",
+}
 
-mathml_attributes = [
-	'actiontype', 'align', 'columnalign', 'columnalign',
-	'columnalign', 'columnlines', 'columnspacing', 'columnspan', 'depth',
-	'display', 'displaystyle', 'equalcolumns', 'equalrows', 'fence',
-	'fontstyle', 'fontweight', 'frame', 'height', 'linethickness', 'lspace',
-	'mathbackground', 'mathcolor', 'mathvariant', 'mathvariant', 'maxsize',
-	'minsize', 'other', 'rowalign', 'rowalign', 'rowalign', 'rowlines',
-	'rowspacing', 'rowspan', 'rspace', 'scriptlevel', 'selection',
-	'separator', 'stretchy', 'width', 'width', 'xlink:href', 'xlink:show',
-	'xlink:type', 'xmlns', 'xmlns:xlink'
-]
+mathml_attributes = {
+	"actiontype",
+	"align",
+	"columnalign",
+	"columnlines",
+	"columnspacing",
+	"columnspan",
+	"depth",
+	"display",
+	"displaystyle",
+	"equalcolumns",
+	"equalrows",
+	"fence",
+	"fontstyle",
+	"fontweight",
+	"frame",
+	"height",
+	"linethickness",
+	"lspace",
+	"mathbackground",
+	"mathcolor",
+	"mathvariant",
+	"maxsize",
+	"minsize",
+	"other",
+	"rowalign",
+	"rowlines",
+	"rowspacing",
+	"rowspan",
+	"rspace",
+	"scriptlevel",
+	"selection",
+	"separator",
+	"stretchy",
+	"width",
+	"xlink:href",
+	"xlink:show",
+	"xlink:type",
+	"xmlns",
+	"xmlns:xlink",
+}
 
-svg_attributes = [
-	'accent-height', 'accumulate', 'additive', 'alphabetic',
-	'arabic-form', 'ascent', 'attributeName', 'attributeType',
-	'baseProfile', 'bbox', 'begin', 'by', 'calcMode', 'cap-height',
-	'class', 'clip-path', 'color', 'color-rendering', 'content', 'cx',
-	'cy', 'd', 'dx', 'dy', 'descent', 'display', 'dur', 'end', 'fill',
-	'fill-opacity', 'fill-rule', 'font-family', 'font-size',
-	'font-stretch', 'font-style', 'font-variant', 'font-weight', 'from',
-	'fx', 'fy', 'g1', 'g2', 'glyph-name', 'gradientUnits', 'hanging',
-	'height', 'horiz-adv-x', 'horiz-origin-x', 'id', 'ideographic', 'k',
-	'keyPoints', 'keySplines', 'keyTimes', 'lang', 'marker-end',
-	'marker-mid', 'marker-start', 'markerHeight', 'markerUnits',
-	'markerWidth', 'mathematical', 'max', 'min', 'name', 'offset',
-	'opacity', 'orient', 'origin', 'overline-position',
-	'overline-thickness', 'panose-1', 'path', 'pathLength', 'points',
-	'preserveAspectRatio', 'r', 'refX', 'refY', 'repeatCount',
-	'repeatDur', 'requiredExtensions', 'requiredFeatures', 'restart',
-	'rotate', 'rx', 'ry', 'slope', 'stemh', 'stemv', 'stop-color',
-	'stop-opacity', 'strikethrough-position', 'strikethrough-thickness',
-	'stroke', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-linecap',
-	'stroke-linejoin', 'stroke-miterlimit', 'stroke-opacity',
-	'stroke-width', 'systemLanguage', 'target', 'text-anchor', 'to',
-	'transform', 'type', 'u1', 'u2', 'underline-position',
-	'underline-thickness', 'unicode', 'unicode-range', 'units-per-em',
-	'values', 'version', 'viewBox', 'visibility', 'width', 'widths', 'x',
-	'x-height', 'x1', 'x2', 'xlink:actuate', 'xlink:arcrole',
-	'xlink:href', 'xlink:role', 'xlink:show', 'xlink:title', 'xlink:type',
-	'xml:base', 'xml:lang', 'xml:space', 'xmlns', 'xmlns:xlink', 'y',
-	'y1', 'y2', 'zoomAndPan'
-]
+svg_attributes = {
+	"accent-height",
+	"accumulate",
+	"additive",
+	"alphabetic",
+	"arabic-form",
+	"ascent",
+	"attributeName",
+	"attributeType",
+	"baseProfile",
+	"bbox",
+	"begin",
+	"by",
+	"calcMode",
+	"cap-height",
+	"class",
+	"clip-path",
+	"color",
+	"color-rendering",
+	"content",
+	"colwidth",
+	"cx",
+	"cy",
+	"d",
+	"dx",
+	"dy",
+	"descent",
+	"display",
+	"dur",
+	"end",
+	"fill",
+	"fill-opacity",
+	"fill-rule",
+	"font-family",
+	"font-size",
+	"font-stretch",
+	"font-style",
+	"font-variant",
+	"font-weight",
+	"from",
+	"fx",
+	"fy",
+	"g1",
+	"g2",
+	"glyph-name",
+	"gradientUnits",
+	"hanging",
+	"height",
+	"horiz-adv-x",
+	"horiz-origin-x",
+	"id",
+	"ideographic",
+	"k",
+	"keyPoints",
+	"keySplines",
+	"keyTimes",
+	"lang",
+	"marker-end",
+	"marker-mid",
+	"marker-start",
+	"markerHeight",
+	"markerUnits",
+	"markerWidth",
+	"mathematical",
+	"max",
+	"min",
+	"name",
+	"offset",
+	"opacity",
+	"orient",
+	"origin",
+	"overline-position",
+	"overline-thickness",
+	"panose-1",
+	"path",
+	"pathLength",
+	"points",
+	"preserveAspectRatio",
+	"r",
+	"refX",
+	"refY",
+	"repeatCount",
+	"repeatDur",
+	"requiredExtensions",
+	"requiredFeatures",
+	"restart",
+	"rotate",
+	"rx",
+	"ry",
+	"slope",
+	"stemh",
+	"stemv",
+	"stop-color",
+	"stop-opacity",
+	"strikethrough-position",
+	"strikethrough-thickness",
+	"stroke",
+	"stroke-dasharray",
+	"stroke-dashoffset",
+	"stroke-linecap",
+	"stroke-linejoin",
+	"stroke-miterlimit",
+	"stroke-opacity",
+	"stroke-width",
+	"systemLanguage",
+	"target",
+	"text-anchor",
+	"to",
+	"transform",
+	"type",
+	"u1",
+	"u2",
+	"underline-position",
+	"underline-thickness",
+	"unicode",
+	"unicode-range",
+	"units-per-em",
+	"values",
+	"version",
+	"viewBox",
+	"visibility",
+	"width",
+	"widths",
+	"x",
+	"x-height",
+	"x1",
+	"x2",
+	"xlink:actuate",
+	"xlink:arcrole",
+	"xlink:href",
+	"xlink:role",
+	"xlink:show",
+	"xlink:title",
+	"xlink:type",
+	"xml:base",
+	"xml:lang",
+	"xml:space",
+	"xmlns",
+	"xmlns:xlink",
+	"y",
+	"y1",
+	"y2",
+	"zoomAndPan",
+}
+
+# Tags whose content is stripped must never also be present in any allow-list of
+# renderable tags, otherwise sanitization would keep dangerous content.
+assert REMOVE_CONTENT_TAGS.isdisjoint(acceptable_elements | mathml_elements | svg_elements), (
+	"content-removal tags must never appear in any allowed tag set"
+)
+
+_SANITIZE_HTML_TAGS = (
+	acceptable_elements | svg_elements | mathml_elements | {"html", "head", "meta", "link", "body", "o:p"}
+)
+_HTML_SANITIZER = _build_html_sanitizer(_SANITIZE_HTML_TAGS)

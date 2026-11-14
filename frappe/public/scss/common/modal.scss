@@ -2,67 +2,142 @@ h5.modal-title {
 	margin: 0px !important;
 }
 
-body.modal-open {
-	overflow: auto;
-	height: auto;
-	min-height: 100%;
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+// Hack to fix incorrect padding applied by Bootstrap
+body.modal-open[style^="padding-right"] {
+	padding-right: 12px !important;
+
+	header.navbar {
+		padding-right: 12px !important;
+		margin-right: -12px !important;
+	}
+}
+
+@mixin dialog-section-edges {
+	.form-layout:first-child > .form-page {
+		.visible-section:first-child {
+			padding-top: 0;
+
+			.section-body {
+				margin-top: 0;
+			}
+		}
+	}
+
+	.form-layout:last-child > .form-page {
+		.visible-section:last-child {
+			padding-bottom: 0;
+		}
+	}
+}
+
+@mixin dialog-sections {
+	.form-section {
+		padding: var(--padding-sm) 0;
+
+		&:not(:first-child) {
+			border-top: 1px solid var(--border-color);
+		}
+
+		&.hide-border {
+			border-top: none !important;
+			padding-top: 0px !important;
+		}
+
+		.form-column {
+			&:first-child {
+				padding-left: 0;
+			}
+
+			&:last-child {
+				padding-right: 0;
+			}
+		}
+
+		.section-head {
+			padding: 0;
+			font-size: var(--text-md);
+		}
+	}
 }
 
 .modal {
+	// Same scrollbar as body
+	scrollbar-width: auto;
+
+	&::-webkit-scrollbar {
+		width: 12px;
+		height: 12px;
+	}
+
+	// Hide scrollbar on touch devices
+	@media (max-width: 991px) {
+		scrollbar-width: none;
+
+		&::-webkit-scrollbar {
+			width: 0;
+			height: 0;
+		}
+	}
+
 	.modal-content {
 		border-color: var(--border-color);
 	}
+
 	.modal-header {
-		padding: var(--padding-md) var(--padding-lg);
-		padding-bottom: 0;
-		border-bottom: 0;
+		display: flex;
+		align-items: center;
+		position: sticky;
+		top: 0;
+		z-index: 3;
+		background: inherit;
+		padding: var(--padding-sm) var(--padding-md);
+		border-bottom: 1px solid var(--border-color);
 
 		.modal-title {
 			font-weight: 500;
 			line-height: 2em;
 			font-size: $font-size-lg;
+			max-width: calc(100% - 80px);
+		}
+
+		.btn-modal-close {
+			padding: 4px 0;
 		}
 
 		.modal-actions {
-			position: absolute;
-			top: 10px;
-			right: 5px;
+			margin-right: -6px;
 
 			.btn-modal-minimize {
-				padding-right: 0;
-
 				.icon {
 					width: 14px;
 					height: 14px;
-					use {
-						stroke: var(--gray-500);
-					}
 				}
 			}
 		}
 	}
 
 	.modal-body {
-		padding: var(--padding-md) var(--padding-lg);
-		.form-layout:first-child > .form-page {
-			.visible-section:first-child {
-				padding-top: 0;
-				.section-body {
-					margin-top: 0;
-				}
-			}
-		}
+		padding: var(--padding-md) var(--padding-md);
+		@include dialog-section-edges;
+	}
 
-		.form-layout:last-child > .form-page {
-			.visible-section:last-child {
-				padding-bottom: 0;
-			}
-		}
+	.awesomplete ul,
+	.awesomplete [role="listbox"] {
+		z-index: 2;
 	}
 
 	.modal-footer {
-		padding: var(--padding-md) var(--padding-lg);
-		border-top: 0;
+		position: sticky;
+		bottom: 0;
+		z-index: 1;
+		background: inherit;
+		padding: var(--padding-md);
 		justify-content: space-between;
 
 		button {
@@ -80,40 +155,61 @@ body.modal-open {
 		}
 	}
 
-	.form-section {
-		padding: var(--padding-sm) 0;
+	@include dialog-sections;
 
-		&:not(:first-child) {
-			border-top: 1px solid var(--border-color);
-		}
+	.hasDatepicker {
+		z-index: 1140;
+	}
+}
 
-		&.hide-border {
-			border-top: none !important;
-			padding-top: 0px !important;
-		}
+.es-bottom-sheet__body .modal-body {
+	padding: 0;
+	@include dialog-section-edges;
+	@include dialog-sections;
+}
 
-		.form-column {
-			&:first-child {
-				padding-left: 0;
-			}
-			&:last-child {
-				padding-right: 0;
-			}
-		}
+.es-bottom-sheet__footer {
+	> .custom-actions:empty {
+		display: none;
+	}
 
-		.section-head {
-			padding: 0;
-			font-size: var(--text-md);
+	> .custom-actions,
+	> .standard-actions {
+		display: flex;
+		gap: var(--margin-sm);
 
-			&:not(.collapsed) {
-				padding-bottom: var(--padding-sm);
-			}
+		> .es-button {
+			flex: 1;
 		}
 	}
 }
 
+.modal-backdrop.show {
+	opacity: 0.8;
+}
+
+.fade.slow {
+	transition: opacity 0.4s linear;
+}
+
+.modal.fade .modal-dialog {
+	transition: transform 0.2s ease;
+	transform: translateY(-15%);
+}
+
+.modal.fade.slow .modal-dialog {
+	transition: transform 0.4s ease;
+	transform: translateY(-25%);
+}
+
+.modal.show .modal-dialog {
+	transform: none;
+}
+
 .modal-minimize {
 	position: initial;
+	height: 0;
+	width: 0;
 
 	.modal-dialog {
 		position: fixed;
@@ -121,6 +217,7 @@ body.modal-open {
 		bottom: 0;
 		margin: 0;
 		min-width: 400px;
+
 		.modal-header {
 			padding-top: var(--padding-sm);
 			padding-bottom: var(--padding-xs);
@@ -128,10 +225,10 @@ body.modal-open {
 
 		.modal-content {
 			min-height: 0;
-			border-radius: var(--border-radius-md);
+			border-radius: var(--radius-md);
 			border-bottom-right-radius: 0;
 			border-bottom-left-radius: 0;
-			box-shadow: -10px 10px rgba(0, 0, 0, 0.100661);
+			box-shadow: var(--shadow-lg);
 		}
 
 		@include media-breakpoint-down(sm) {
@@ -141,7 +238,8 @@ body.modal-open {
 		}
 	}
 
-	.modal-body, .modal-footer {
+	.modal-body,
+	.modal-footer {
 		display: none;
 	}
 }
@@ -155,6 +253,7 @@ body.modal-open {
 
 .msgprint {
 	word-wrap: break-word;
+	padding: var(--padding-sm) 0;
 
 	pre {
 		text-align: left;
@@ -170,42 +269,111 @@ body.modal-open {
 	form {
 		display: flex;
 		align-items: center;
+
 		.frappe-control:first-child {
+			&[data-fieldname="sender"] {
+				margin-right: 10px;
+			}
+
 			flex: 1;
-			margin-bottom: 0px;
-		}
-		.frappe-control:last-child {
-			margin-left: 10px;
-			margin-bottom: -24px;
-			button {
-				// same as form-control input
-				height: calc(1.5em + .75rem + 2px);
+
+			.control-input-wrapper {
+				width: 60%;
 			}
 		}
+
+		.frappe-control:last-child {
+			margin-left: 10px;
+		}
 	}
+}
+
+// modal is xs (for grids)
+.modal .hidden-xs {
+	display: none !important;
 }
 
 .dialog-assignment-row {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
 	padding: 5px 15px;
-	border-radius: var(--border-radius-md);
+	border-radius: var(--radius-md);
 	color: var(--text-color);
+
 	&:not(:last-child) {
 		margin-bottom: 5px;
 	}
+
 	@extend .row;
-	.remove-btn {
-		display: none;
-	}
-	&:hover {
-		background: var(--fg-hover-color);
-		.remove-btn {
-			display: block;
+
+	.btn-group {
+		opacity: 0;
+		transition: opacity 0.3s ease-in-out;
+
+		button {
+			display: inline-flex;
+			align-items: center;
 		}
 	}
-	.avatar {
-		margin-right: var(--margin-md);
+
+	.assignee {
+		flex: 1;
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
+	&:hover {
+		.btn-group {
+			opacity: 1;
+			transition: opacity 0.1s ease-in-out;
+		}
+	}
+}
+
+// Stack minimized modals
+@for $i from 1 through 5 {
+	// 5n + 1, 5n + 2, ...
+	body > .modal:nth-child(5n + #{$i} of .show.modal-minimize) {
+		--minimized-modal-index: #{$i};
+	}
+}
+
+.modal-minimize ~ .modal-minimize {
+	.modal-dialog {
+		bottom: calc(44px * (var(--minimized-modal-index) - 1));
+	}
+
+	.modal-header {
+		border-bottom: 0px;
+	}
+
+	.modal-content {
+		// Rounded chip style
+		border-radius: var(--radius-md);
+		overflow: hidden;
+	}
+}
+
+// mobile
+@media (max-width: map-get($grid-breakpoints, "sm")) {
+	.modal {
+		.modal-dialog {
+			.form-section .form-column:last-child {
+				padding-left: 0;
+			}
+		}
+	}
+}
+
+.modal-dialog-centered {
+	display: flex;
+	align-items: center;
+	min-height: calc(100% - 1rem);
+}
+
+@media (min-width: 576px) {
+	.modal-dialog-centered {
+		min-height: calc(100% - 3.5rem);
 	}
 }

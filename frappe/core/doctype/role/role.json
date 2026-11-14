@@ -5,6 +5,7 @@
  "creation": "2013-01-08 15:50:01",
  "doctype": "DocType",
  "document_type": "Document",
+ "documentation": "https://docs.frappe.io/erpnext/role-and-role-profile",
  "engine": "InnoDB",
  "field_order": [
   "role_name",
@@ -12,20 +13,21 @@
   "restrict_to_domain",
   "column_break_4",
   "disabled",
+  "is_custom",
   "desk_access",
   "two_factor_auth",
-  "navigation_settings_section",
-  "search_bar",
-  "notifications",
-  "chat",
-  "list_settings_section",
-  "list_sidebar",
-  "bulk_actions",
-  "view_switcher",
-  "form_settings_section",
-  "form_sidebar",
-  "timeline",
-  "dashboard"
+  "role_profiles_section",
+  "role_profiles_html",
+  "users_tab",
+  "users_html",
+  "document_tab",
+  "document_permissions_html",
+  "report_tab",
+  "report_roles_html",
+  "pages_tab",
+  "page_roles_html",
+  "workspace_tab",
+  "workspace_roles_html"
  ],
  "fields": [
   {
@@ -38,11 +40,34 @@
    "unique": 1
   },
   {
+   "description": "Route: Example \"/desk\"",
+   "fieldname": "home_page",
+   "fieldtype": "Data",
+   "label": "Home Page"
+  },
+  {
+   "fieldname": "restrict_to_domain",
+   "fieldtype": "Link",
+   "label": "Restrict To Domain",
+   "options": "Domain"
+  },
+  {
+   "fieldname": "column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
    "default": "0",
    "description": "If disabled, this role will be removed from all users.",
    "fieldname": "disabled",
    "fieldtype": "Check",
    "label": "Disabled"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_custom",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Custom"
   },
   {
    "default": "1",
@@ -58,99 +83,75 @@
    "label": "Two Factor Authentication"
   },
   {
-   "fieldname": "restrict_to_domain",
-   "fieldtype": "Link",
-   "label": "Restrict To Domain",
-   "options": "Domain"
-  },
-  {
-   "description": "Route: Example \"/desk\"",
-   "fieldname": "home_page",
-   "fieldtype": "Data",
-   "label": "Home Page"
-  },
-  {
-   "fieldname": "column_break_4",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "navigation_settings_section",
+   "fieldname": "role_profiles_section",
    "fieldtype": "Section Break",
-   "label": "Navigation Settings"
+   "label": "Role Profiles"
   },
   {
-   "default": "1",
-   "fieldname": "search_bar",
-   "fieldtype": "Check",
-   "label": "Search Bar"
+   "fieldname": "role_profiles_html",
+   "fieldtype": "HTML",
+   "label": "Role Profiles"
   },
   {
-   "default": "1",
-   "fieldname": "chat",
-   "fieldtype": "Check",
-   "label": "Chat"
+   "fieldname": "users_tab",
+   "fieldtype": "Tab Break",
+   "label": "Users"
   },
   {
-   "fieldname": "list_settings_section",
-   "fieldtype": "Section Break",
-   "label": "List Settings"
+   "fieldname": "users_html",
+   "fieldtype": "HTML",
+   "label": "Users"
   },
   {
-   "default": "1",
-   "fieldname": "list_sidebar",
-   "fieldtype": "Check",
-   "label": "Sidebar"
+   "fieldname": "document_tab",
+   "fieldtype": "Tab Break",
+   "label": "Documents"
   },
   {
-   "default": "1",
-   "fieldname": "bulk_actions",
-   "fieldtype": "Check",
-   "label": "Bulk Actions"
+   "fieldname": "document_permissions_html",
+   "fieldtype": "HTML",
+   "label": "Document Permissions"
   },
   {
-   "fieldname": "form_settings_section",
-   "fieldtype": "Section Break",
-   "label": "Form Settings"
+   "fieldname": "report_tab",
+   "fieldtype": "Tab Break",
+   "label": "Reports"
   },
   {
-   "default": "1",
-   "fieldname": "form_sidebar",
-   "fieldtype": "Check",
-   "label": "Sidebar"
+   "fieldname": "report_roles_html",
+   "fieldtype": "HTML",
+   "label": "Reports"
   },
   {
-   "default": "1",
-   "fieldname": "timeline",
-   "fieldtype": "Check",
-   "label": "Timeline"
+   "fieldname": "pages_tab",
+   "fieldtype": "Tab Break",
+   "label": "Pages"
   },
   {
-   "default": "1",
-   "fieldname": "dashboard",
-   "fieldtype": "Check",
-   "label": "Dashboard"
+   "fieldname": "page_roles_html",
+   "fieldtype": "HTML",
+   "label": "Pages"
   },
   {
-   "default": "1",
-   "fieldname": "view_switcher",
-   "fieldtype": "Check",
-   "label": "View Switcher"
+   "fieldname": "workspace_tab",
+   "fieldtype": "Tab Break",
+   "label": "Workspaces"
   },
   {
-   "default": "1",
-   "fieldname": "notifications",
-   "fieldtype": "Check",
-   "label": "Notifications"
+   "fieldname": "workspace_roles_html",
+   "fieldtype": "HTML",
+   "label": "Workspaces"
   }
  ],
- "icon": "fa fa-bookmark",
+ "icon": "shield-user",
  "idx": 1,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2020-12-03 14:08:38.181035",
+ "modified": "2026-08-21 23:24:24.285309",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Role",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -163,10 +164,17 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "role": "Desk User",
+   "select": 1
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
- "sort_order": "ASC",
- "track_changes": 1
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "translated_doctype": 1
 }

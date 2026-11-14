@@ -1,0 +1,49 @@
+name: Regenerate POT file (translatable strings)
+on:
+  schedule:
+    # 9:30 UTC => 3 PM IST Sunday
+    - cron: "30 9 * * 0"
+  workflow_dispatch:
+
+jobs:
+  regenerate-pot-file:
+    name: Regenerate POT file
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ["develop", "version-16-hotfix", "version-15-hotfix"]
+    permissions:
+      contents: write
+
+    steps:
+        - name: Checkout
+          uses: actions/checkout@v7
+          with:
+            ref: ${{ matrix.branch }}
+
+        - name: Setup Python
+          uses: actions/setup-python@v7
+          with:
+            python-version: "3.14"
+
+        - name: Setup Node
+          uses: actions/setup-node@v7
+          with:
+            node-version: 24
+
+        - name: Get Frappe Release Bot token
+          id: app-token
+          uses: actions/create-github-app-token@v3
+          with:
+            client-id: ${{ vars.FRAPPE_BOT_CLIENT_ID }}
+            private-key: ${{ secrets.FRAPPE_BOT_PRIVATE_KEY }}
+            permission-contents: write
+            permission-pull-requests: write
+
+        - name: Run script to update POT file
+          run: |
+            bash ${GITHUB_WORKSPACE}/.github/helper/update_pot_file.sh
+          env:
+            GH_TOKEN: ${{ steps.app-token.outputs.token }}
+            BASE_BRANCH: ${{ matrix.branch }}

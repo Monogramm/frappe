@@ -3,8 +3,10 @@
  "allow_import": 1,
  "allow_rename": 1,
  "creation": "2013-01-10 16:34:32",
+ "description": "A postal address of a customer, supplier, company or contact.",
  "doctype": "DocType",
  "document_type": "Setup",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/address",
  "engine": "InnoDB",
  "field_order": [
   "address_details",
@@ -34,9 +36,12 @@
    "options": "fa fa-map-marker"
   },
   {
+   "allow_in_quick_entry": 1,
    "fieldname": "address_title",
    "fieldtype": "Data",
-   "label": "Address Title"
+   "in_import_template": 1,
+   "label": "Address Title",
+   "mandatory_depends_on": "eval:!doc.links?.length"
   },
   {
    "fieldname": "address_type",
@@ -51,12 +56,15 @@
    "fieldname": "address_line1",
    "fieldtype": "Data",
    "label": "Address Line 1",
+   "length": 240,
    "reqd": 1
   },
   {
    "fieldname": "address_line2",
    "fieldtype": "Data",
-   "label": "Address Line 2"
+   "in_import_template": 1,
+   "label": "Address Line 2",
+   "length": 240
   },
   {
    "fieldname": "city",
@@ -73,8 +81,10 @@
    "label": "County"
   },
   {
+   "allow_in_quick_entry": 1,
    "fieldname": "state",
    "fieldtype": "Data",
+   "in_import_template": 1,
    "label": "State/Province"
   },
   {
@@ -88,8 +98,10 @@
    "search_index": 1
   },
   {
+   "allow_in_quick_entry": 1,
    "fieldname": "pincode",
    "fieldtype": "Data",
+   "in_import_template": 1,
    "label": "Postal Code",
    "search_index": 1
   },
@@ -101,13 +113,16 @@
   {
    "fieldname": "email_id",
    "fieldtype": "Data",
+   "in_import_template": 1,
    "label": "Email Address",
    "options": "Email"
   },
   {
    "fieldname": "phone",
    "fieldtype": "Data",
-   "label": "Phone"
+   "in_import_template": 1,
+   "label": "Phone",
+   "options": "Phone"
   },
   {
    "fieldname": "fax",
@@ -118,12 +133,14 @@
    "default": "0",
    "fieldname": "is_primary_address",
    "fieldtype": "Check",
+   "in_import_template": 1,
    "label": "Preferred Billing Address"
   },
   {
    "default": "0",
    "fieldname": "is_shipping_address",
    "fieldtype": "Check",
+   "in_import_template": 1,
    "label": "Preferred Shipping Address"
   },
   {
@@ -141,18 +158,18 @@
   {
    "fieldname": "links",
    "fieldtype": "Table",
+   "in_import_template": 1,
    "label": "Links",
    "options": "Dynamic Link"
   }
  ],
- "icon": "fa fa-map-marker",
+ "icon": "map-pin-house",
  "idx": 5,
  "links": [],
- "modified": "2020-10-21 16:14:37.284830",
+ "modified": "2026-07-31 16:01:27.068028",
  "modified_by": "Administrator",
  "module": "Contacts",
  "name": "Address",
- "name_case": "Title Case",
  "owner": "Administrator",
  "permissions": [
   {
@@ -205,12 +222,23 @@
    "read": 1,
    "report": 1,
    "role": "System Manager",
-   "set_user_permissions": 1,
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "export": 1,
+   "if_owner": 1,
+   "print": 1,
+   "read": 1,
+   "role": "All",
    "write": 1
   }
  ],
+ "quick_entry": 1,
+ "row_format": "Dynamic",
  "search_fields": "country, state",
- "sort_field": "modified",
- "sort_order": "DESC"
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

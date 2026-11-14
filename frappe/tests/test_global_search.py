@@ -1,120 +1,211 @@
-# Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# Copyright (c) 2022, Frappe Technologies Pvt. Ltd. and Contributors
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
 import unittest
+
 import frappe
-
-from frappe.utils import global_search
-from frappe.test_runner import make_test_objects
+from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+from frappe.desk.doctype.global_search_settings.global_search_settings import (
+	get_doctypes_for_global_search,
+)
 from frappe.desk.page.setup_wizard.install_fixtures import update_global_search_doctypes
+from frappe.tests import IntegrationTestCase
+from frappe.tests.utils import make_test_objects
+from frappe.utils import global_search, now_datetime
 
-import frappe.utils
 
-class TestGlobalSearch(unittest.TestCase):
+class TestGlobalSearch(IntegrationTestCase):
 	def setUp(self):
 		update_global_search_doctypes()
 		global_search.setup_global_search_table()
-		self.assertTrue('__global_search' in frappe.db.get_tables())
+		self.assertTrue("__global_search" in frappe.db.get_tables())
 		doctype = "Event"
 		global_search.reset()
-		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
 		make_property_setter(doctype, "subject", "in_global_search", 1, "Int")
 		make_property_setter(doctype, "event_type", "in_global_search", 1, "Int")
 		make_property_setter(doctype, "roles", "in_global_search", 1, "Int")
 		make_property_setter(doctype, "repeat_on", "in_global_search", 0, "Int")
+		self.global_search_priorities = get_doctypes_for_global_search()
 
 	def tearDown(self):
-		frappe.db.sql("DELETE FROM `tabProperty Setter` WHERE `doc_type`='Event'")
-		frappe.clear_cache(doctype='Event')
-		frappe.db.sql('DELETE FROM `tabEvent`')
-		frappe.db.sql('DELETE FROM `__global_search`')
-		make_test_objects('Event')
+		self.set_global_search_priorities(self.global_search_priorities)
+		frappe.db.delete("ToDo", {"description": "Quarterly roadmap review"})
+		frappe.db.delete("Property Setter", {"doc_type": "Event"})
+		frappe.clear_cache(doctype="Event")
+		frappe.db.delete("Event")
+		frappe.db.delete("__global_search")
+		make_test_objects("Event")
 		frappe.db.commit()
 
 	def insert_test_events(self):
-		frappe.db.sql('DELETE FROM `tabEvent`')
-		phrases = ['"The Sixth Extinction II: Amor Fati" is the second episode of the seventh season of the American science fiction.',
-		'After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. ',
-		'Carter explored themes of extraterrestrial involvement in ancient mass extinctions in this episode, the third in a trilogy.']
+		frappe.db.delete("Event")
+		phrases = [
+			'"The Sixth Extinction II: Amor Fati" is the second episode of the seventh season of the American science fiction.',
+			"After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. ",
+			"Carter explored themes of extraterrestrial involvement in ancient mass extinctions in this episode, the third in a trilogy.",
+		]
 
 		for text in phrases:
-			frappe.get_doc(dict(
-				doctype='Event',
-				subject=text,
-				repeat_on='Monthly',
-				starts_on=frappe.utils.now_datetime())).insert()
+			frappe.get_doc(
+				doctype="Event", subject=text, repeat_on="Monthly", starts_on=now_datetime()
+			).insert()
 
 		global_search.sync_global_search()
 		frappe.db.commit()
 
-
 	def test_search(self):
 		self.insert_test_events()
-		results = global_search.search('awakens')
-		self.assertTrue('After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. ' in results[0].content)
+		results = global_search.search("awakens")
+		self.assertTrue(
+			"After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. "
+			in results[0].content
+		)
 
-		results = global_search.search('extraterrestrial')
-		self.assertTrue('Carter explored themes of extraterrestrial involvement in ancient mass extinctions in this episode, the third in a trilogy.' in results[0].content)
-		results = global_search.search('awakens & duty & alien')
-		self.assertTrue('After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. ' in results[0].content)
+		results = global_search.search("extraterrestrial")
+		self.assertTrue(
+			"Carter explored themes of extraterrestrial involvement in ancient mass extinctions in this episode, the third in a trilogy."
+			in results[0].content
+		)
+		results = global_search.search("awakens & duty & alien")
+		self.assertTrue(
+			"After Mulder awakens from his coma, he realizes his duty to prevent alien colonization. "
+			in results[0].content
+		)
+
+	def test_search_drops_unreadable_hit_without_message(self):
+		frappe.get_doc(
+			doctype="Event", subject="Board meeting agenda", event_type="Private", starts_on=now_datetime()
+		).insert()
+		global_search.sync_global_search()
+		frappe.clear_messages()
+
+		with self.set_user("test@example.com"):
+			results = global_search.search("agenda")
+
+		self.assertEqual(results, [])
+		self.assertEqual(frappe.get_message_log(), [])
+
+	def test_search_results_follow_configured_doctype_priority(self):
+		frappe.get_doc(doctype="ToDo", description="Quarterly roadmap review").insert()
+		frappe.get_doc(doctype="Event", subject="Quarterly roadmap review", starts_on=now_datetime()).insert()
+		global_search.sync_global_search()
+
+		self.set_global_search_priorities(["ToDo", "Event"])
+		self.assertEqual([r.doctype for r in global_search.search("roadmap")], ["ToDo", "Event"])
+
+		self.set_global_search_priorities(["Event", "ToDo"])
+		self.assertEqual([r.doctype for r in global_search.search("roadmap")], ["Event", "ToDo"])
+
+	def set_global_search_priorities(self, doctypes):
+		settings = frappe.get_doc("Global Search Settings")
+		settings.allowed_in_global_search = []
+		for doctype in doctypes:
+			settings.append("allowed_in_global_search", {"document_type": doctype})
+		settings.save()
 
 	def test_update_doc(self):
 		self.insert_test_events()
-		test_subject = 'testing global search'
-		event = frappe.get_doc('Event', frappe.get_all('Event')[0].name)
+		test_subject = "testing global search"
+		event = frappe.get_doc("Event", frappe.get_all("Event")[0].name)
 		event.subject = test_subject
 		event.save()
 		frappe.db.commit()
 		global_search.sync_global_search()
-		results = global_search.search('testing global search')
+		results = global_search.search("testing global search")
 
-		self.assertTrue('testing global search' in results[0].content)
+		self.assertTrue("testing global search" in results[0].content)
+
+	def test_sync_values_upserts_batch(self):
+		global_search.sync_values(
+			[
+				("Event", "first", "old content", 0, "Old title", "/old"),
+				("Event", "second", "second content", 1, "Second title", "/second"),
+			]
+		)
+		global_search.sync_values([("Event", "first", "new content", 1, "New title", "/new")])
+
+		rows = frappe.db.sql(
+			"""select `name`, `content`, `published`, `title`, `route`
+			from `__global_search` where `doctype` = %s order by `name`""",
+			("Event",),
+			as_dict=True,
+		)
+		self.assertEqual(
+			rows,
+			[
+				{
+					"name": "first",
+					"content": "new content",
+					"published": 1,
+					"title": "New title",
+					"route": "/new",
+				},
+				{
+					"name": "second",
+					"content": "second content",
+					"published": 1,
+					"title": "Second title",
+					"route": "/second",
+				},
+			],
+		)
+
+	def test_sync_values_uses_bounded_query_count(self):
+		values = [
+			("Event", f"batch-{index}", f"content {index}", 0, f"Title {index}", f"/route/{index}")
+			for index in range(401)
+		]
+
+		expected_query_count = 5 if frappe.db.db_type == "sqlite" else 1
+		with self.assertQueryCount(expected_query_count, query_type=("delete", "insert")):
+			global_search.sync_values(values)
 
 	def test_update_fields(self):
 		self.insert_test_events()
-		results = global_search.search('Monthly')
+		results = global_search.search("Monthly")
 		self.assertEqual(len(results), 0)
 		doctype = "Event"
-		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
 		make_property_setter(doctype, "repeat_on", "in_global_search", 1, "Int")
 		global_search.rebuild_for_doctype(doctype)
-		results = global_search.search('Monthly')
+		results = global_search.search("Monthly")
 		self.assertEqual(len(results), 3)
 
 	def test_delete_doc(self):
 		self.insert_test_events()
-
-		event_name = frappe.get_all('Event')[0].name
-		event = frappe.get_doc('Event', event_name)
+		event_name = frappe.get_all("Event")[0].name
+		event = frappe.get_doc("Event", event_name)
 		test_subject = event.subject
 		results = global_search.search(test_subject)
-		self.assertEqual(len(results), 1)
+		self.assertTrue(
+			any(r["name"] == event_name for r in results), msg="Failed to search document by exact name"
+		)
 
-		frappe.delete_doc('Event', event_name)
+		frappe.delete_doc("Event", event_name)
 		global_search.sync_global_search()
+		frappe.db.commit()
 
 		results = global_search.search(test_subject)
-		self.assertEqual(len(results), 0)
+		self.assertTrue(
+			all(r["name"] != event_name for r in results),
+			msg="Deleted documents appearing in global search.",
+		)
 
 	def test_insert_child_table(self):
-		frappe.db.sql('delete from tabEvent')
-		phrases = ['Hydrus is a small constellation in the deep southern sky. ',
-		'It was first depicted on a celestial atlas by Johann Bayer in his 1603 Uranometria. ',
-		'The French explorer and astronomer Nicolas Louis de Lacaille charted the brighter stars and gave their Bayer designations in 1756. ',
-		'Its name means "male water snake", as opposed to Hydra, a much larger constellation that represents a female water snake. ',
-		'It remains below the horizon for most Northern Hemisphere observers.',
-		'The brightest star is the 2.8-magnitude Beta Hydri, also the closest reasonably bright star to the south celestial pole. ',
-		'Pulsating between magnitude 3.26 and 3.33, Gamma Hydri is a variable red giant some 60 times the diameter of our Sun. ',
-		'Lying near it is VW Hydri, one of the brightest dwarf novae in the heavens. ',
-		'Four star systems have been found to have exoplanets to date, most notably HD 10180, which could bear up to nine planetary companions.']
+		frappe.db.delete("Event")
+		phrases = [
+			"Hydrus is a small constellation in the deep southern sky. ",
+			"It was first depicted on a celestial atlas by Johann Bayer in his 1603 Uranometria. ",
+			"The French explorer and astronomer Nicolas Louis de Lacaille charted the brighter stars and gave their Bayer designations in 1756. ",
+			'Its name means "male water snake", as opposed to Hydra, a much larger constellation that represents a female water snake. ',
+			"It remains below the horizon for most Northern Hemisphere observers.",
+			"The brightest star is the 2.8-magnitude Beta Hydri, also the closest reasonably bright star to the south celestial pole. ",
+			"Pulsating between magnitude 3.26 and 3.33, Gamma Hydri is a variable red giant some 60 times the diameter of our Sun. ",
+			"Lying near it is VW Hydri, one of the brightest dwarf novae in the heavens. ",
+			"Four star systems have been found to have exoplanets to date, most notably HD 10180, which could bear up to nine planetary companions.",
+		]
 
 		for text in phrases:
-			doc = frappe.get_doc({
-				'doctype':'Event',
-				'subject': text,
-				'starts_on': frappe.utils.now_datetime()
-			})
+			doc = frappe.get_doc({"doctype": "Event", "subject": text, "starts_on": now_datetime()})
 			doc.insert()
 
 		global_search.sync_global_search()
@@ -124,7 +215,7 @@ class TestGlobalSearch(unittest.TestCase):
 		cases = [
 			{
 				"case_type": "generic",
-				"data": '''
+				"data": """
 					<style type="text/css"> p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 14.0px 'Open Sans';
 					-webkit-text-stroke: #000000} span.s1 {font-kerning: none} </style>
 					<script>
@@ -139,48 +230,51 @@ class TestGlobalSearch(unittest.TestCase):
 					Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero,
 					written in 45 BC. This book is a treatise on the theory of ethics, very popular during the Renaissance. The first line of Lorem Ipsum,
 					"Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.</span></p>
-					''',
-				"result": ('Description : Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical '
-					'Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, '
-					'looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word '
+					""",
+				"result": (
+					"Description : Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical "
+					"Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, "
+					"looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word "
 					'in classical literature, discovered the undoubtable source. Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum '
 					'et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC. This book is a treatise on the theory of ethics, very popular '
-					'during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.')
-
+					'during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.'
+				),
 			},
 			{
 				"case_type": "with_style",
-				"data": '''
+				"data": """
 					<style type="text/css"> p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 14.0px 'Open Sans';
 					-webkit-text-stroke: #000000} span.s1 {font-kerning: none} </style>Lorem Ipsum Dolor Sit Amet
-					''',
-				"result": "Description : Lorem Ipsum Dolor Sit Amet"
+					""",
+				"result": "Description : Lorem Ipsum Dolor Sit Amet",
 			},
 			{
 				"case_type": "with_script",
-				"data": '''
+				"data": """
 					<script>
 					var options = {
 						foo: "bar"
 					}
 					</script>
 					Lorem Ipsum Dolor Sit Amet
-					''',
-				"result": "Description : Lorem Ipsum Dolor Sit Amet"
-			}
+					""",
+				"result": "Description : Lorem Ipsum Dolor Sit Amet",
+			},
 		]
 
 		for case in cases:
-			doc = frappe.get_doc({
-				'doctype':'Event',
-				'subject': 'Lorem Ipsum',
-				'starts_on': frappe.utils.now_datetime(),
-				'description': case["data"]
-			})
+			doc = frappe.get_doc(
+				{
+					"doctype": "Event",
+					"subject": "Lorem Ipsum",
+					"starts_on": now_datetime(),
+					"description": case["data"],
+				}
+			)
 
-			field_as_text = ''
+			field_as_text = ""
 			for field in doc.meta.fields:
-				if field.fieldname == 'description':
+				if field.fieldname == "description":
 					field_as_text = global_search.get_formatted_value(doc.description, field)
 
 			self.assertEqual(case["result"], field_as_text)
@@ -189,8 +283,77 @@ class TestGlobalSearch(unittest.TestCase):
 		global_search.update_global_search_for_all_web_pages()
 		global_search.sync_global_search()
 		frappe.db.commit()
-		results = global_search.web_search('unsubscribe')
-		self.assertTrue('Unsubscribe' in results[0].content)
-		results = global_search.web_search(text='unsubscribe',
-					scope="manufacturing\" UNION ALL SELECT 1,2,3,4,doctype from __global_search")
+		results = global_search.web_search("login")
+		self.assertTrue("login" in results[0].content)
+		results = global_search.web_search(
+			text="company", scope='manufacturing" UNION ALL SELECT 1,2,3,4,doctype from __global_search'
+		)
 		self.assertTrue(results == [])
+
+	def test_web_search_bounds(self):
+		from unittest.mock import patch
+
+		with patch.object(frappe.db, "multisql", return_value=[]) as m:
+			global_search.web_search("&".join(["a"] * 50), limit=10**6)
+			self.assertEqual(m.call_count, 1)
+			self.assertLessEqual(m.call_args.kwargs["values"]["limit"], 100)
+
+			m.reset_mock()
+			global_search.web_search("&".join(f"a{i}" for i in range(50)))
+			self.assertLessEqual(m.call_count, 5)
+
+			m.reset_mock()
+			global_search.web_search("a" * 10**5, start=-5)
+			values = m.call_args.kwargs["values"]
+			self.assertEqual(values["start"], 0)
+			self.assertLessEqual(len(m.call_args.args[0]["mariadb"]), 2000)
+
+		rows = [frappe._dict(title=f"t{i}") for i in range(500)]
+		with patch.object(frappe.db, "multisql", return_value=rows):
+			self.assertLessEqual(len(global_search.web_search("a&b&c")), 100)
+
+	@unittest.skipUnless(frappe.conf.db_type == "sqlite", "SQLite FTS5-specific behavior")
+	def test_web_search_uses_sqlite_fts5_safely(self):
+		global_search.sync_values(
+			[
+				(
+					"Static Web Page",
+					"public-docs",
+					'release "candidate" documentation',
+					1,
+					"Release candidate",
+					"/docs/release",
+				),
+				(
+					"Static Web Page",
+					"private-docs",
+					'release "candidate" internal notes',
+					0,
+					"Private release candidate",
+					"/internal/release",
+				),
+			]
+		)
+
+		for search_text in ("release cand", 'release "candidate"'):
+			with self.subTest(search_text=search_text):
+				results = global_search.web_search(search_text, scope="/docs")
+				self.assertEqual([result.name for result in results], ["public-docs"])
+
+	def test_settings_validate_rejects_core_doctype_row(self):
+		core_dt = "File"
+		self.assertEqual(frappe.get_meta(core_dt).module, "Core")
+
+		settings = frappe.get_single("Global Search Settings")
+		original_rows = [row.document_type for row in settings.allowed_in_global_search]
+
+		try:
+			settings.append("allowed_in_global_search", {"document_type": core_dt})
+			with self.assertRaises(frappe.ValidationError):
+				settings.save(ignore_permissions=True)
+		finally:
+			settings.reload()
+			settings.allowed_in_global_search = []
+			for dt in original_rows:
+				settings.append("allowed_in_global_search", {"document_type": dt})
+			settings.save(ignore_permissions=True)

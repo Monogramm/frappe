@@ -1,38 +1,84 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies and contributors
-# For license information, please see license.txt
-
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
 
 import json
 
 import frappe
-from frappe.utils.safe_exec import safe_exec
 from frappe.model.document import Document
+from frappe.utils.response import json_handler
+from frappe.utils.safe_exec import read_sql, safe_exec
+
 
 class SystemConsole(Document):
+	_DOCTYPE_NAME = "System Console"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		commit: DF.Check
+		console: DF.Code | None
+		output: DF.Code | None
+		show_processlist: DF.Check
+		type: DF.Literal["Python", "SQL"]
+	# end: auto-generated types
+
 	def run(self):
-		frappe.only_for('System Manager')
+		frappe.only_for(["System Manager", "Administrator"])
 		try:
-			frappe.debug_log = []
-			safe_exec(self.console)
-			self.output = '\n'.join(frappe.debug_log)
-		except: # noqa: E722
+			frappe.local.debug_log = []
+			if self.type == "Python":
+				safe_exec(self.console, script_filename="System Console")
+				self.output = "\n".join(frappe.debug_log)
+			elif self.type == "SQL":
+				frappe.db.begin(read_only=True)
+				self.output = json.dumps(read_sql(self.console, as_dict=1), default=json_handler)
+		except Exception:
+			self.commit = False
 			self.output = frappe.get_traceback()
 
 		if self.commit:
 			frappe.db.commit()
 		else:
 			frappe.db.rollback()
-
-		frappe.get_doc(dict(
-			doctype='Console Log',
-			script=self.console,
-			output=self.output)).insert()
+		frappe.get_doc(
+			doctype="Console Log", script=self.console, type=self.type, committed=self.commit
+		).insert()
 		frappe.db.commit()
 
-@frappe.whitelist()
-def execute_code(doc):
-	console = frappe.get_doc(json.loads(doc))
+
+@frappe.whitelist(methods=["POST"])
+def execute_code(doc: str | dict):
+	console = frappe.get_doc(frappe.parse_json(doc))
 	console.run()
 	return console.as_dict()
+
+
+@frappe.whitelist()
+def show_processlist():
+	frappe.only_for("System Manager")
+	return _show_processlist()
+
+
+def _show_processlist():
+	if frappe.db.db_type == "sqlite":
+		return []
+
+	return frappe.db.multisql(
+		{
+			"postgres": """
+			SELECT pid AS "Id",
+				query_start AS "Time",
+				state AS "State",
+				query AS "Info",
+				wait_event AS "Progress"
+			FROM pg_stat_activity
+			WHERE datname = current_database()""",
+			"mariadb": "show full processlist",
+		},
+		as_dict=True,
+	)

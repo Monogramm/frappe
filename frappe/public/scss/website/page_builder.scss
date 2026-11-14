@@ -1,4 +1,7 @@
 .hero-content {
+	margin-top: 3rem;
+	margin-bottom: 3rem;
+
 	.btn-primary {
 		margin-top: 1rem;
 		margin-right: 0.5rem;
@@ -13,27 +16,47 @@
 	}
 }
 
-.hero-title, .hero-subtitle {
-	max-width: 42rem;
+.lead {
+	color: var(--text-muted);
+	font-weight: normal;
+	font-size: 1.25rem;
+
+	margin-top: -0.5rem;
+	margin-bottom: 1.5rem;
+
+	@include media-breakpoint-up(sm) {
+		margin-top: -1rem;
+		margin-bottom: 2.5rem;
+	}
 }
 
 .hero-subtitle {
 	@extend .lead;
-	font-weight: 400;
 	color: $gray-600;
-	font-size: 1rem;
+	font-size: $font-size-lg;
 
 	@include media-breakpoint-up(sm) {
-		font-size: 1.25rem;
+		font-size: $font-size-xl;
 	}
 }
 
+.hero-title,
+.hero-subtitle {
+	max-width: 42rem;
+	margin-top: 0rem;
+	margin-bottom: 0.5rem;
+}
+
 .hero.align-center {
-	h1, .hero-title, .hero-subtitle, .hero-buttons {
+	h1,
+	.hero-title,
+	.hero-subtitle,
+	.hero-buttons {
 		text-align: center;
 	}
 
-	.hero-title, .hero-subtitle {
+	.hero-title,
+	.hero-subtitle {
 		margin-left: auto;
 		margin-right: auto;
 	}
@@ -41,18 +64,20 @@
 
 .section-description {
 	max-width: 56rem;
+	color: var(--text-muted);
 	margin-top: 0.5rem;
-	font-size: $font-size-base;
+	font-size: $font-size-lg;
 
-	@include media-breakpoint-up(lg) {
-		font-size: $font-size-lg;
+	@include media-breakpoint-up(media-breakpoint-up) {
+		font-size: $font-size-xl;
 	}
 }
 
 .section-with-image.align-center {
 	text-align: center;
 
-	.section-description, .section-image {
+	.section-description,
+	.section-image {
 		margin-left: auto;
 		margin-right: auto;
 	}
@@ -151,14 +176,10 @@
 	}
 
 	.card-title {
-		line-height: 1;
+		line-height: 1.3;
 	}
 
 	&.card-sm {
-		.card-body {
-			padding: 1.5rem;
-		}
-
 		.card-title {
 			font-size: $font-size-base;
 			font-weight: 600;
@@ -169,10 +190,6 @@
 		}
 	}
 	&.card-md {
-		.card-body {
-			padding: 1.75rem;
-		}
-
 		.card-title {
 			font-size: $font-size-lg;
 			font-weight: 600;
@@ -186,10 +203,6 @@
 		}
 	}
 	&.card-lg {
-		.card-body {
-			padding: 2rem;
-		}
-
 		.card-title {
 			font-size: $font-size-xl;
 			font-weight: bold;
@@ -238,14 +251,10 @@
 	}
 }
 
-.section-markdown > .from-markdown {
-	max-width: 42rem;
-}
-
 .section-cta {
 	padding: 3rem 2rem;
 	text-align: center;
-	background-color: $primary-light;
+	background-color: $gray-200;
 	border-radius: 0.75rem;
 
 	@include media-breakpoint-up(sm) {
@@ -260,12 +269,7 @@
 	.title {
 		margin: 0 auto;
 		max-width: 36rem;
-		font-size: $font-size-2xl;
-		font-weight: 800;
 		line-height: 1.25;
-		@include media-breakpoint-up(md) {
-			font-size: $font-size-4xl;
-		}
 	}
 	.subtitle {
 		max-width: 36rem;
@@ -282,11 +286,15 @@
 		margin-top: 0.5rem;
 		font-size: $font-size-xs;
 	}
+	.action {
+		margin-top: 0;
+		margin-bottom: 0;
+	}
 }
 
 .section-small-cta {
 	padding: 1.8rem;
-	background-color: lighten($primary, 42%);
+	background-color: var(--gray-200);
 	border-radius: 0.75rem;
 	display: flex;
 	flex-direction: column;
@@ -306,25 +314,26 @@
 		}
 	}
 
-	.title {
-		max-width: 36rem;
-		font-size: $font-size-xl;
-		font-weight: 800;
-		line-height: 1.25;
-		@include media-breakpoint-up(md) {
-			font-size: $font-size-2xl;
-		}
+	.section-title {
+		line-height: 1;
+		margin-bottom: 0.25rem;
 	}
+
 	.subtitle {
 		max-width: 36rem;
 		font-size: $font-size-base;
 		color: $gray-900;
-		margin-bottom: 1.2rem;
+		margin-bottom: 0.5rem;
 
 		@include media-breakpoint-up(md) {
 			font-size: $font-size-lg;
 			margin-bottom: 0px;
 		}
+	}
+
+	.action {
+		margin-top: 0;
+		margin-bottom: 0;
 	}
 }
 
@@ -383,11 +392,25 @@
 	margin-top: 2rem;
 
 	&:before {
-		content: '—'
+		content: "—";
 	}
 
 	@include media-breakpoint-up(lg) {
 		font-size: $font-size-lg;
+	}
+}
+
+.testimonial-author {
+	margin-top: 1rem;
+	display: flex;
+	align-items: center;
+
+	.avatar {
+		margin-right: 0.5rem;
+	}
+
+	p {
+		margin-bottom: 0;
 	}
 }
 
@@ -450,7 +473,6 @@
 	}
 }
 
-
 /* Section with Collapsible Content */
 
 .collapsible-items {
@@ -469,6 +491,11 @@
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
+}
+
+.collapsible-item-title {
+	@include get_textstyle("2xl", "bold");
+	color: var(--text-color);
 }
 
 .collapsible-item a {
@@ -493,18 +520,24 @@
 }
 
 .collapsible-content {
-	margin-top: 1rem;
-	margin-bottom: 0;
 	color: $gray-700;
 }
 
+.collapsible-content p {
+	margin-top: 1rem;
+	margin-bottom: 0;
+}
+
 .section-with-collapsible-content.align-center {
-	.section-title, .section-description {
+	.section-title,
+	.section-description {
 		text-align: center;
 	}
-	.section-description, .collapsible-items {
+	.section-description,
+	.collapsible-items {
 		margin-left: auto;
 		margin-right: auto;
+		margin-top: 3rem;
 	}
 }
 
@@ -523,21 +556,21 @@
 
 		@include media-breakpoint-up(md) {
 			grid-template-columns: repeat(2, 1fr);
-			gap: 6rem;
+			gap: 3rem 5rem;
 		}
 
 		.feature-title {
-			font-size: $font-size-xl;
-			font-weight: bold;
+			font-size: $font-size-lg;
+			font-weight: 600;
 
 			@include media-breakpoint-up(md) {
-				font-size: $font-size-2xl;
+				font-size: $font-size-xl;
 			}
 		}
 
 		.feature-content {
 			font-size: $font-size-base;
-			margin-top: 1.75rem;
+			margin-top: 1.25rem;
 
 			@include media-breakpoint-up(xl) {
 				font-size: $font-size-lg;
@@ -639,9 +672,15 @@
 	}
 }
 
-.section-title + .section-features, .section-description + .section-features {
+.section-title {
+	margin-top: 0;
+	margin-bottom: 0.5rem;
+}
+
+.section-title + .section-features,
+.section-description + .section-features {
 	&[data-columns="2"] {
-		margin-top: 3.75rem;
+		margin-top: 3rem;
 	}
 
 	&[data-columns="3"] {
@@ -657,9 +696,19 @@
 	display: flex;
 	flex-direction: column;
 	justify-content: space-between;
+	position: relative;
 }
 
-.feature-title, .feature-content {
+.feature-title {
+	margin-top: 0;
+}
+
+.feature-content {
+	line-height: 1.7;
+}
+
+.feature-title,
+.feature-content {
 	margin-bottom: 0;
 }
 
@@ -668,9 +717,24 @@
 	margin-top: auto;
 }
 
-
 /* Section with Embed */
 
 .section-with-embed .embed-container {
 	margin-top: 2rem;
+}
+
+.section-video-wrapper {
+	margin-bottom: 1rem;
+}
+
+.section-video {
+	aspect-ratio: 16 / 9;
+	width: 100%;
+	cursor: pointer;
+}
+
+.video-thumbnail {
+	aspect-ratio: 16 / 9;
+	width: 100%;
+	object-fit: cover;
 }

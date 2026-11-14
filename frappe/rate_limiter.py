@@ -1,14 +1,15 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
+import time
+from collections.abc import Callable
+from functools import wraps
 
-from datetime import datetime
+from werkzeug.wrappers import Response
+
 import frappe
 from frappe import _
 from frappe.utils import cint
-from werkzeug.wrappers import Response
 
 
 def apply():
@@ -29,16 +30,35 @@ def respond():
 
 
 class RateLimiter:
+	__slots__ = (
+		"counter",
+		"duration",
+		"end",
+		"key",
+		"limit",
+		"rejected",
+		"remaining",
+		"reset",
+		"spent",
+		"start",
+		"window",
+		"window_number",
+	)
+
 	def __init__(self, limit, window):
 		self.limit = int(limit * 1000000)
 		self.window = window
 
-		self.start = datetime.utcnow()
-		timestamp = int(frappe.utils.now_datetime().timestamp())
+		self.start = time.time()
 
-		self.window_number, self.spent = divmod(timestamp, self.window)
-		self.key = frappe.cache().make_key(f"rate-limit-counter-{self.window_number}")
-		self.counter = cint(frappe.cache().get(self.key))
+		self.window_number, self.spent = divmod(int(self.start), self.window)
+		self.key = frappe.cache.make_key(f"rate-limit-counter-{self.window_number}")
+		self.counter = cint(frappe.cache.get(self.key))
+		if not self.counter:
+			# This is the first request in this window
+			frappe.cache.incrby(self.key, 0)
+			frappe.cache.expire(self.key, self.window)
+
 		self.remaining = max(self.limit - self.counter, 0)
 		self.reset = self.window - self.spent
 
@@ -55,27 +75,116 @@ class RateLimiter:
 		raise frappe.TooManyRequestsError
 
 	def update(self):
-		self.end = datetime.utcnow()
-		self.duration = int((self.end - self.start).total_seconds() * 1000000)
-
-		pipeline = frappe.cache().pipeline()
-		pipeline.incrby(self.key, self.duration)
-		pipeline.expire(self.key, self.window)
-		pipeline.execute()
+		self.record_request_end()
+		frappe.cache.incrby(self.key, self.duration)
 
 	def headers(self):
+		self.record_request_end()
 		headers = {
 			"X-RateLimit-Reset": self.reset,
 			"X-RateLimit-Limit": self.limit,
-			"X-RateLimit-Remaining": self.remaining,
+			"X-RateLimit-Remaining": round(self.remaining, -6),
 		}
 		if self.rejected:
 			headers["Retry-After"] = self.reset
-		else:
-			headers["X-RateLimit-Used"] = self.duration
 
 		return headers
+
+	def record_request_end(self):
+		if self.end is not None:
+			return
+		self.end = time.time()
+		self.duration = int((self.end - self.start) * 1000000)
 
 	def respond(self):
 		if self.rejected:
 			return Response(_("Too Many Requests"), status=429)
+
+
+def rate_limit(
+	key: str | None = None,
+	limit: int | Callable = 5,
+	seconds: int = 24 * 60 * 60,
+	methods: str | list = "ALL",
+	ip_based: bool = True,
+	endpoint: str | None = None,
+	user_based: bool = False,
+):
+	"""Decorator to rate limit an endpoint.
+
+	This will limit Number of requests per endpoint to `limit` within `seconds`.
+	Uses redis cache to track request counts.
+
+	:param key: Key is used to identify the requests uniqueness (Optional)
+	:param limit: Maximum number of requests to allow with in window time
+	:type limit: Callable or Integer
+	:param seconds: window time to allow requests
+	:param methods: Limit the validation for these methods.
+	        `ALL` is a wildcard that applies rate limit on all methods.
+	:type methods: string or list or tuple
+	:param ip_based: flag to allow ip based rate-limiting
+	:param user_based: flag to allow authenticated user based rate-limiting
+	:type ip_based: Boolean
+	:param endpoint: name of the counter, required when the decorated callable has no stable
+	        dotted path of its own, e.g. a `functools.partial`.
+
+	Return: a decorator function that limit the number of requests per endpoint
+	"""
+
+	def ratelimit_decorator(fn):
+		# `cmd` is only set by the v1 API, deriving the counter from the function keeps a single
+		# counter per endpoint no matter which API version was used to reach it.
+		counter = endpoint or f"{fn.__module__}.{fn.__qualname__}"
+
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			# Do not apply rate limits if method is not opted to check
+			if not frappe.request or (
+				methods != "ALL" and frappe.request.method and frappe.request.method.upper() not in methods
+			):
+				return fn(*args, **kwargs)
+
+			_limit = limit() if callable(limit) else limit
+
+			ip = frappe.local.request_ip if ip_based is True else None
+			user_key = frappe.form_dict.get(key, "") if key else None
+
+			if user_based:
+				user = frappe.session.user
+				if user and user != "Guest":
+					identity = user
+				elif ip:
+					identity = ip
+				else:
+					identity = getattr(frappe.local, "request_ip", None) or "Guest"
+
+				if key and user_key:
+					identity = f"{identity}:{user_key}"
+
+			else:
+				identity = None
+				if key and ip_based:
+					identity = ":".join([ip, user_key])
+				identity = identity or ip or user_key
+
+			if not identity:
+				frappe.throw(_("Either key, IP flag, or User flag is required."))
+
+			cache_key = frappe.cache.make_key(f"rl:{counter}:{identity}")
+
+			if not callable(seconds):
+				cache_key += f":{seconds}".encode()
+
+			frappe.cache.set(cache_key, 0, ex=seconds, nx=True)  # nosemgrep: frappe-cache-breaks-multitenancy
+			value = frappe.cache.incrby(cache_key, 1)
+			if value > _limit:
+				frappe.throw(
+					_("You hit the rate limit because of too many requests. Please try after sometime."),
+					frappe.RateLimitExceededError,
+				)
+
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return ratelimit_decorator

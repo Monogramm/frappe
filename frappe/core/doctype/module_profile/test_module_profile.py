@@ -1,32 +1,223 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
 import frappe
-import unittest
+from frappe.core.doctype.user.test_user import test_user
+from frappe.core.doctype.user.user import get_module_profile
+from frappe.tests import IntegrationTestCase
 
-class TestModuleProfile(unittest.TestCase):
+
+class TestModuleProfile(IntegrationTestCase):
+	def setUp(self):
+		frappe.delete_doc_if_exists("Module Profile", "_Test Module Profile", force=1)
+		frappe.delete_doc_if_exists("Module Profile", "_Test Module Profile 2", force=1)
+		frappe.delete_doc_if_exists("User", "test-module-user1@example.com", force=1)
+		frappe.delete_doc_if_exists("User", "test-module-user2@example.com", force=1)
+
 	def test_make_new_module_profile(self):
-		if not frappe.db.get_value('Module Profile', '_Test Module Profile'):
-			frappe.get_doc({
-				'doctype': 'Module Profile',
-				'module_profile_name': '_Test Module Profile',
-				'block_modules': [
-					{'module': 'Accounts'}
-				]
-			}).insert()
+		frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}],
+			}
+		).insert()
 
-		# add to user and check
-		if not frappe.db.get_value('User', 'test-for-module_profile@example.com'):
-			new_user = frappe.get_doc({
-				'doctype': 'User',
-				'email':'test-for-module_profile@example.com',
-				'first_name':'Test User'
-			}).insert()
-		else:
-			new_user = frappe.get_doc('User', 'test-for-module_profile@example.com')
+		new_user = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "Test User"}
+		).insert()
 
-		new_user.module_profile = '_Test Module Profile'
+		new_user.module_profile = "_Test Module Profile"
 		new_user.save()
 
-		self.assertEqual(new_user.block_modules[0].module, 'Accounts')
+		self.assertEqual(new_user.block_modules[0].module, "Core")
+
+	def test_get_module_profile_requires_read_permission(self):
+		frappe.get_doc(
+			doctype="Module Profile",
+			module_profile_name="_Test Module Profile",
+			block_modules=[{"module": "Core"}],
+		).insert()
+
+		with test_user(roles=["Desk User"]) as user, self.set_user(user.name):
+			self.assertRaises(frappe.PermissionError, get_module_profile, "_Test Module Profile")
+
+		blocked = get_module_profile("_Test Module Profile")
+		self.assertEqual([row.module for row in blocked], ["Core"])
+
+	def test_multiple_block_modules(self):
+		"""Assign multiple blocked modules from profile to user"""
+		module_profile = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}, {"module": "Desk"}, {"module": "Website"}],
+			}
+		).insert()
+
+		user = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "Test User"}
+		).insert()
+
+		user.module_profile = module_profile.name
+		user.save()
+
+		self.assertSetEqual({bm.module for bm in user.block_modules}, {"Core", "Desk", "Website"})
+
+	def test_update_module_profile_propagates_to_users(self):
+		"""Updating block_modules in profile should update linked users"""
+		module_profile = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}],
+			}
+		).insert()
+
+		user = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "Test User"}
+		).insert()
+
+		user.module_profile = module_profile.name
+		user.save()
+
+		self.assertEqual({bm.module for bm in user.block_modules}, {"Core"})
+
+		module_profile.append("block_modules", {"module": "Integrations"})
+		module_profile.save()
+
+		user.reload()
+		self.assertSetEqual({bm.module for bm in user.block_modules}, {"Core", "Integrations"})
+
+	def test_clear_block_modules(self):
+		"""Clearing block_modules in profile should also clear them for users"""
+		module_profile = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}],
+			}
+		).insert()
+
+		user = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "Test User"}
+		).insert()
+
+		user.module_profile = module_profile.name
+		user.save()
+		self.assertTrue(user.block_modules)
+
+		module_profile.block_modules = []
+		module_profile.save()
+
+		user.reload()
+		self.assertEqual(user.block_modules, [])
+
+	def test_multiple_users_same_profile(self):
+		"""Updates should propagate to all users linked to the same profile"""
+		module_profile = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}],
+			}
+		).insert()
+
+		user1 = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "User One"}
+		).insert()
+		user2 = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user2@example.com", "first_name": "User Two"}
+		).insert()
+
+		for u in (user1, user2):
+			u.module_profile = module_profile.name
+			u.save()
+
+		module_profile.append("block_modules", {"module": "Integrations"})
+		module_profile.save()
+
+		user1.reload()
+		user2.reload()
+		self.assertEqual([bm.module for bm in user1.block_modules], ["Core", "Integrations"])
+		self.assertEqual([bm.module for bm in user2.block_modules], ["Core", "Integrations"])
+
+	def test_switch_user_module_profile(self):
+		"""Switching user to a different profile updates their block_modules"""
+		profile1 = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile",
+				"block_modules": [{"module": "Core"}],
+			}
+		).insert()
+		profile2 = frappe.get_doc(
+			{
+				"doctype": "Module Profile",
+				"module_profile_name": "_Test Module Profile 2",
+				"block_modules": [{"module": "Website"}],
+			}
+		).insert()
+
+		user = frappe.get_doc(
+			{"doctype": "User", "email": "test-module-user1@example.com", "first_name": "Test User"}
+		).insert()
+
+		user.module_profile = profile1.name
+		user.save()
+		self.assertEqual([bm.module for bm in user.block_modules], ["Core"])
+
+		user.module_profile = profile2.name
+		user.save()
+		self.assertEqual([bm.module for bm in user.block_modules], ["Website"])
+
+	def test_onload_lists_custom_modules(self):
+		"""A custom module with no app can still be blocked from the profile form"""
+		from frappe.desk.form.load import getdoc
+
+		module = frappe.get_doc(
+			{"doctype": "Module Def", "module_name": "_Test Site Module", "custom": 1}
+		).insert(ignore_if_duplicate=True)
+		self.assertFalse(module.app_name)
+		profile = frappe.get_doc(
+			{"doctype": "Module Profile", "module_profile_name": "_Test Module Profile"}
+		).insert()
+		frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": "test-module-user1@example.com",
+				"first_name": "Test User",
+				"roles": [{"role": "System Manager"}],
+			}
+		).insert()
+
+		with self.set_user("test-module-user1@example.com"):
+			frappe.response.docs = []
+			getdoc("Module Profile", profile.name)
+			all_modules = frappe.response.docs[0].get("__onload").get("all_modules")
+
+		self.assertIn("_Test Site Module", all_modules)
+		self.assertIn("Core", all_modules)
+
+	def test_onload_hides_modules_from_read_only_user(self):
+		"""A user who can only read the profile gets no module list and no permission message"""
+		from frappe.desk.form.load import getdoc
+
+		profile = frappe.get_doc(
+			{"doctype": "Module Profile", "module_profile_name": "_Test Module Profile"}
+		).insert()
+		frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": "test-module-user1@example.com",
+				"first_name": "Test User",
+				"roles": [{"role": "_Test Role 2"}],
+			}
+		).insert()
+		frappe.share.add("Module Profile", profile.name, "test-module-user1@example.com", read=1)
+
+		with self.set_user("test-module-user1@example.com"):
+			frappe.clear_messages()
+			frappe.response.docs = []
+			getdoc("Module Profile", profile.name)
+			self.assertNotIn("all_modules", frappe.response.docs[0].get("__onload"))
+			self.assertFalse(frappe.message_log)

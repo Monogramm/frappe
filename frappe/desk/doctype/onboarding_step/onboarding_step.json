@@ -18,8 +18,10 @@
   "action_label",
   "column_break_7",
   "reference_document",
+  "module_onboarding",
   "show_full_form",
   "show_form_tour",
+  "form_tour",
   "is_single",
   "reference_report",
   "report_reference_doctype",
@@ -31,7 +33,9 @@
   "validate_action",
   "field",
   "value_to_validate",
-  "video_url"
+  "video_url",
+  "section_break_ajog",
+  "route_options"
  ],
  "fields": [
   {
@@ -60,7 +64,7 @@
    "fieldname": "action",
    "fieldtype": "Select",
    "label": "Action",
-   "options": "Create Entry\nUpdate Settings\nShow Form Tour\nView Report\nGo to Page\nWatch Video",
+   "options": "Create Entry\nUpdate Settings\nShow Form Tour\nView Report\nGo to Page\nView Docs\nComplete Onboarding",
    "reqd": 1
   },
   {
@@ -144,7 +148,7 @@
    "label": "Is Single"
   },
   {
-   "depends_on": "eval:doc.action == \"Go to Page\"",
+   "depends_on": "eval:doc.action == \"Go to Page\" || doc.action === \"View Docs\"",
    "description": "Example: #Tree/Account",
    "fieldname": "path",
    "fieldtype": "Data",
@@ -206,13 +210,38 @@
    "fieldname": "show_form_tour",
    "fieldtype": "Check",
    "label": "Show Form Tour"
+  },
+  {
+   "depends_on": "show_form_tour",
+   "fieldname": "form_tour",
+   "fieldtype": "Link",
+   "label": "Form Tour",
+   "options": "Form Tour"
+  },
+  {
+   "fieldname": "section_break_ajog",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "route_options",
+   "fieldtype": "Code",
+   "label": "Route Options"
+  },
+  {
+   "depends_on": "eval:doc.action == \"Complete Onboarding\";",
+   "fieldname": "module_onboarding",
+   "fieldtype": "Link",
+   "label": "Module Onboarding",
+   "mandatory_depends_on": "eval:doc.action == \"Complete Onboarding\";",
+   "options": "Module Onboarding"
   }
  ],
  "links": [],
- "modified": "2020-10-30 14:54:06.646513",
+ "modified": "2026-10-04 03:13:26.549019",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Onboarding Step",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -233,13 +262,15 @@
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "All",
+   "role": "Desk User",
    "share": 1
   }
  ],
  "quick_entry": 1,
  "read_only": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

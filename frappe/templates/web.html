@@ -1,7 +1,8 @@
 {% extends base_template_path %}
-{% block hero %}{% endblock %}
 
 {% block content %}
+
+{% block hero %}{% endblock %}
 
 {% macro main_content() %}
 <div class="page-content-wrapper">
@@ -13,8 +14,8 @@
 	</div>
 
 	{% block page_container %}
-	<main class="{% if not full_width %}container my-4{% endif %}">
-		<div class="d-flex justify-content-between align-items-center">
+	<main class="{% if not full_width %}container{% endif %}">
+		<div class="page-header-wrapper">
 			<div class="page-header">
 				{% block header %}{% endblock %}
 			</div>

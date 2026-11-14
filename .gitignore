@@ -2,14 +2,21 @@
 *.py~
 *.comp.js
 *.DS_Store
-locale
 .wnf-lang-status
 *.swp
 *.egg-info
 dist/
+frappe/public/dist
+# studio editor build, exported studio app builds and the build's temp renderers
+frappe/public/studio
+frappe/public/app_builds
+# the flow page's old Vite build, left on benches that built it
+frappe/public/flow
+.temp-app-renderers
 # build/
 frappe/docs/current
 .vscode
+.vs
 node_modules
 .kdev4/
 *.kdev4
@@ -34,7 +41,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -167,6 +173,7 @@ typings/
 
 # Optional npm cache directory
 .npm
+.yarn
 
 # Optional eslint cache
 .eslintcache
@@ -186,9 +193,17 @@ typings/
 # next.js build output
 .next
 
-# cypress
-cypress/screenshots
-cypress/videos
+# playwright
+test-results/
+playwright-report/
 
 # JetBrains IDEs
 .idea/
+# Helix Editor
+.helix/
+# Aider AI Chat
+.aider*
+# Playwright AI
+.playwright-mcp
+# local checkout of frappe-datatable; not a submodule of this repo
+ui/datatable/

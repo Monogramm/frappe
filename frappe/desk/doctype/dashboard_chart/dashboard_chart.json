@@ -17,6 +17,7 @@
   "y_axis",
   "source",
   "document_type",
+  "parent_document_type",
   "based_on",
   "value_based_on",
   "group_by_type",
@@ -32,6 +33,8 @@
   "time_interval",
   "timeseries",
   "type",
+  "show_values_over_chart",
+  "currency",
   "filters_section",
   "filters_json",
   "dynamic_filters_section",
@@ -40,8 +43,10 @@
   "custom_options",
   "column_break_2",
   "color",
+  "empty_state_message",
   "section_break_10",
-  "last_synced_on"
+  "last_synced_on",
+  "roles"
  ],
  "fields": [
   {
@@ -71,20 +76,23 @@
    "fieldname": "document_type",
    "fieldtype": "Link",
    "label": "Document Type",
+   "mandatory_depends_on": "eval: doc.chart_type !== 'Custom' && doc.chart_type !== 'Report'",
    "options": "DocType",
    "set_only_once": 1
   },
   {
-   "depends_on": "eval: doc.timeseries && ['Count', 'Sum', 'Average'].includes(doc.chart_type)",
+   "depends_on": "eval: ['Count', 'Sum', 'Average'].includes(doc.chart_type)",
    "fieldname": "based_on",
    "fieldtype": "Select",
-   "label": "Time Series Based On"
+   "label": "Time Series Based On",
+   "mandatory_depends_on": "eval: ['Count', 'Sum', 'Average'].includes(doc.chart_type)"
   },
   {
    "depends_on": "eval: ['Sum', 'Average'].includes(doc.chart_type)\n",
    "fieldname": "value_based_on",
    "fieldtype": "Select",
-   "label": "Value Based On"
+   "label": "Value Based On",
+   "mandatory_depends_on": "eval: ['Sum', 'Average'].includes(doc.chart_type)"
   },
   {
    "fieldname": "column_break_6",
@@ -159,7 +167,8 @@
    "depends_on": "eval:doc.chart_type === 'Group By'",
    "fieldname": "group_by_based_on",
    "fieldtype": "Select",
-   "label": "Group By Based On"
+   "label": "Group By Based On",
+   "mandatory_depends_on": "eval:doc.chart_type === 'Group By'"
   },
   {
    "default": "Count",
@@ -173,7 +182,8 @@
    "depends_on": "eval: ['Sum', 'Average'].includes(doc.group_by_type)",
    "fieldname": "aggregate_function_based_on",
    "fieldtype": "Select",
-   "label": "Aggregate Function Based On"
+   "label": "Aggregate Function Based On",
+   "mandatory_depends_on": "eval: doc.chart_type === 'Group By' && ['Sum', 'Average'].includes(doc.group_by_type)"
   },
   {
    "depends_on": "eval:doc.chart_type === 'Group By'",
@@ -241,6 +251,7 @@
    "fieldname": "is_standard",
    "fieldtype": "Check",
    "label": "Is Standard",
+   "no_copy": 1,
    "read_only_depends_on": "eval: !frappe.boot.developer_mode"
   },
   {
@@ -268,13 +279,48 @@
    "fieldname": "use_report_chart",
    "fieldtype": "Check",
    "label": "Use Report Chart"
+  },
+  {
+   "depends_on": "eval: doc.chart_type !== 'Custom' && doc.chart_type !== 'Report'",
+   "description": "The document type selected is a child table, so the parent document type is required.",
+   "fieldname": "parent_document_type",
+   "fieldtype": "Link",
+   "label": "Parent Document Type",
+   "options": "DocType"
+  },
+  {
+   "description": "If set, only user with these roles can access this chart. If not set, DocType or Report permissions will be used.",
+   "fieldname": "roles",
+   "fieldtype": "Table",
+   "label": "Roles",
+   "options": "Has Role"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.type == \"Bar\" || doc.type == \"Line\"",
+   "fieldname": "show_values_over_chart",
+   "fieldtype": "Check",
+   "label": "Show Values over Chart"
+  },
+  {
+   "fieldname": "empty_state_message",
+   "fieldtype": "Small Text",
+   "label": "Empty State Message"
   }
  ],
+ "icon": "chart-area",
  "links": [],
- "modified": "2020-07-23 11:10:33.509497",
+ "modified": "2026-10-04 05:14:12.732827",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Dashboard Chart",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -302,17 +348,18 @@
    "write": 1
   },
   {
-   "create": 1,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "All",
+   "role": "Desk User",
    "share": 1
   }
  ],
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

@@ -1,0 +1,7 @@
+// Espresso effects (elevations / shadows / focus rings).
+//
+// Canonical values (--elevation-*, --shadow-*, --focus-*, --focus-outline-*) live
+// in plain CSS at css/espresso/effects.css. Old names with no Espresso equivalent
+// (--shadow-xs, --custom-shadow-sm, --drop-shadow) and renames (--shadow-base,
+// --focus-yellow, --custom-status) are kept as deprecated tokens in legacy.css.
+@import "frappe/public/css/espresso/effects.css";

@@ -4,7 +4,7 @@
  "allow_rename": 1,
  "autoname": "field:currency_name",
  "creation": "2013-01-28 10:06:02",
- "description": "**Currency** Master",
+ "description": "Currency list stores the currency value, its symbol and fraction unit",
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
@@ -15,6 +15,7 @@
   "fraction_units",
   "smallest_currency_fraction_value",
   "symbol",
+  "symbol_on_right",
   "number_format"
  ],
  "fields": [
@@ -69,16 +70,23 @@
    "in_list_view": 1,
    "label": "Number Format",
    "options": "\n#,###.##\n#.###,##\n# ###.##\n# ###,##\n#'###.##\n#, ###.##\n#,##,###.##\n#,###.###\n#.###\n#,###"
+  },
+  {
+   "default": "0",
+   "fieldname": "symbol_on_right",
+   "fieldtype": "Check",
+   "label": "Show Currency Symbol on Right Side"
   }
  ],
- "icon": "fa fa-bitcoin",
+ "icon": "currency",
  "idx": 1,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2020-10-29 06:33:12.879978",
+ "modified": "2026-08-21 23:24:23.461092",
  "modified_by": "Administrator",
  "module": "Geo",
  "name": "Currency",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -96,6 +104,10 @@
   },
   {
    "read": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "read": 1,
    "role": "Accounts User"
   },
   {
@@ -105,9 +117,15 @@
   {
    "read": 1,
    "role": "Purchase User"
+  },
+  {
+   "role": "Desk User",
+   "select": 1
   }
  ],
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

@@ -1,12 +1,14 @@
 // Simple JavaScript Templating
 // Adapted from John Resig - http://ejohn.org/ - MIT Licensed
 
-frappe.template = {compiled: {}, debug:{}};
-frappe.template.compile = function(str, name) {
+frappe.template = { compiled: {}, debug: {} };
+
+/* eslint-disable */
+frappe.template.compile = function (str, name) {
 	var key = name || str;
 
-	if(!frappe.template.compiled[key]) {
-		if(str.indexOf("'")!==-1) {
+	if (!frappe.template.compiled[key]) {
+		if (str.indexOf("'") !== -1) {
 			str.replace(/'/g, "\\'");
 			//console.warn("Warning: Single quotes (') may not work in templates");
 		}
@@ -15,7 +17,7 @@ frappe.template.compile = function(str, name) {
 		str = str.replace(/{{/g, "{%=").replace(/}}/g, "%}");
 
 		// {% if not test %} --> {% if (!test) { %}
-		str = str.replace(/{%\s?if\s?\s?not\s?([^\(][^%{]+)\s?%}/g, "{% if (! $1) { %}")
+		str = str.replace(/{%\s?if\s?\s?not\s?([^\(][^%{]+)\s?%}/g, "{% if (! $1) { %}");
 
 		// {% if test %} --> {% if (test) { %}
 		str = str.replace(/{%\s?if\s?([^\(][^%{]+)\s?%}/g, "{% if ($1) { %}");
@@ -25,8 +27,31 @@ frappe.template.compile = function(str, name) {
 		function replacer(match, p1, p2, offset, string) {
 			var i = frappe.utils.get_random(3);
 			var len = frappe.utils.get_random(3);
-			return "{% for (var "+i+"=0, "+len+"="+p2+".length; "+i+"<"+len+"; "+i+"++) { var "
-				+p1+" = "+p2+"["+i+"]; "+p1+"._index = "+i+"; %}";
+			return (
+				"{% for (var " +
+				i +
+				"=0, " +
+				len +
+				"=" +
+				p2 +
+				".length; " +
+				i +
+				"<" +
+				len +
+				"; " +
+				i +
+				"++) { var " +
+				p1 +
+				" = " +
+				p2 +
+				"[" +
+				i +
+				"]; " +
+				p1 +
+				"._index = " +
+				i +
+				"; %}"
+			);
 		}
 		str = str.replace(/{%\s?for\s([a-z._]+)\sin\s([a-z._]+)\s?%}/g, replacer);
 
@@ -39,55 +64,61 @@ frappe.template.compile = function(str, name) {
 		// {% endif %} --> {% } %}
 		str = str.replace(/{%\s?endfor\s?%}/g, "{% }; %}");
 
-		var fn_str = "var _p=[],print=function(){_p.push.apply(_p,arguments)};" +
+		var fn_str =
+			"var _p=[],print=function(){_p.push.apply(_p,arguments)};" +
+			// Introduce the data as local variables using with(){}
+			"with(obj){\n_p.push('" +
+			// Convert the template into pure JavaScript
+			str
+				.replace(/[\r\t\n]/g, " ")
+				.split("{%")
+				.join("\t")
+				.replace(/((^|%})[^\t]*)'/g, "$1\r")
+				.replace(/\t=(.*?)%}/g, "',$1,'")
+				.split("\t")
+				.join("');\n")
+				.split("%}")
+				.join("\n_p.push('")
+				.split("\r")
+				.join("\\'") +
+			"');}return _p.join('');";
 
-	        // Introduce the data as local variables using with(){}
-	        "with(obj){\n_p.push('" +
-
-	        // Convert the template into pure JavaScript
-	        str
-	          .replace(/[\r\t\n]/g, " ")
-	          .split("{%").join("\t")
-	          .replace(/((^|%})[^\t]*)'/g, "$1\r")
-	          .replace(/\t=(.*?)%}/g, "',$1,'")
-	          .split("\t").join("');\n")
-	          .split("%}").join("\n_p.push('")
-	          .split("\r").join("\\'")
-	      + "');}return _p.join('');";
-
-		  frappe.template.debug[name] = fn_str;
+		frappe.template.debug[name] = fn_str;
 		try {
 			frappe.template.compiled[key] = new Function("obj", fn_str);
 		} catch (e) {
 			console.log("Error in Template:");
 			console.log(fn_str);
-			if(e.lineNumber) {
-				console.log("Error in Line "+e.lineNumber+", Col "+e.columnNumber+":");
+			if (e.lineNumber) {
+				console.log("Error in Line " + e.lineNumber + ", Col " + e.columnNumber + ":");
 				console.log(fn_str.split("\n")[e.lineNumber - 1]);
 			}
 		}
-    }
+	}
 
 	return frappe.template.compiled[key];
 };
-frappe.render = function(str, data, name) {
+/* eslint-enable */
+
+frappe.render = function (str, data, name) {
 	return frappe.template.compile(str, name)(data);
 };
-frappe.render_template = function(name, data) {
-	if(name.indexOf(' ')!==-1) {
-		var template = name;
+frappe.render_template = function (name, data) {
+	let template;
+	if (name.indexOf(" ") !== -1) {
+		template = name;
 	} else {
-		var template = frappe.templates[name];
+		template = frappe.templates[name];
 	}
-	if(data===undefined) {
+	if (data === undefined) {
 		data = {};
 	}
 	if (!template) {
 		frappe.throw(`Template <b>${name}</b> not found.`);
 	}
 	return frappe.render(template, data, name);
-}
-frappe.render_grid = function(opts) {
+};
+(frappe.render_grid = function (opts) {
 	// build context
 	if (opts.grid) {
 		opts.columns = opts.grid.getColumns();
@@ -104,7 +135,7 @@ frappe.render_grid = function(opts) {
 
 	// show landscape view if columns more than 10
 	if (opts.landscape == null) {
-		if(opts.columns && opts.columns.length > 10) {
+		if (opts.columns && opts.columns.length > 10) {
 			opts.landscape = true;
 		} else {
 			opts.landscape = false;
@@ -112,39 +143,90 @@ frappe.render_grid = function(opts) {
 	}
 
 	// render content
-	if(!opts.content) {
+	if (!opts.content) {
 		opts.content = frappe.render_template(opts.template || "print_grid", opts);
 	}
 
 	// render HTML wrapper page
 	opts.base_url = frappe.urllib.get_base_url();
 	opts.print_css = frappe.boot.print_css;
+
+	(opts.lang = opts.lang || frappe.boot.lang),
+		(opts.layout_direction = opts.layout_direction || frappe.utils.is_rtl() ? "rtl" : "ltr");
+
 	var html = frappe.render_template("print_template", opts);
 
 	var w = window.open();
 
-	if(!w) {
-		frappe.msgprint(__("Please enable pop-ups in your browser"))
+	if (!w) {
+		frappe.msgprint(__("Please enable pop-ups in your browser"));
 	}
 
 	w.document.write(html);
-	w.document.close();
-},
-frappe.render_tree = function(opts) {
-	opts.base_url = frappe.urllib.get_base_url();
-	opts.landscape = false;
-	opts.print_css = frappe.boot.print_css;
-	var tree = frappe.render_template("print_tree", opts);
-	var w = window.open();
 
-	if(!w) {
-		frappe.msgprint(__("Please enable pop-ups in your browser"))
+	// show footer on print
+	const footer = w.document.getElementById("footer-html");
+	if (footer) {
+		footer.classList.remove("visible-pdf");
+		footer.style.marginTop = "auto";
+
+		const print_format = w.document.querySelector(".print-format");
+		if (print_format) {
+			print_format.style.display = "flex";
+			print_format.style.flexDirection = "column";
+			print_format.style.minHeight = "100vh";
+		}
 	}
 
-	w.document.write(tree);
 	w.document.close();
+}),
+	(frappe.render_tree = function (opts) {
+		opts.base_url = frappe.urllib.get_base_url();
+		opts.landscape = false;
+		opts.print_css = frappe.boot.print_css;
+		opts.print_format_css_path = frappe.assets.bundled_asset("print_format.bundle.css");
+		var tree = frappe.render_template("print_tree", opts);
+		var w = window.open();
+
+		if (!w) {
+			frappe.msgprint(__("Please enable pop-ups in your browser"));
+		}
+
+		w.document.write(tree);
+		w.document.close();
+	});
+
+function parse_server_messages(response) {
+	try {
+		const body = JSON.parse(new TextDecoder().decode(response));
+		return body._server_messages ? JSON.parse(body._server_messages) : null;
+	} catch {
+		return null;
+	}
 }
-frappe.render_pdf = function(html, opts = {}) {
+
+function pdf_size_message() {
+	return __(
+		"The report may be too large to render in a single request. Narrow the filters and try again, or use Print and save as PDF from your browser."
+	);
+}
+
+function show_pdf_error(message, response) {
+	const server_messages = parse_server_messages(response);
+
+	if (server_messages) {
+		frappe.msgprint(server_messages);
+		return;
+	}
+
+	frappe.msgprint({
+		title: __("Could not generate PDF"),
+		message: message,
+		indicator: "red",
+	});
+}
+
+frappe.render_pdf = function (html, opts = {}) {
 	//Create a form to place the HTML content
 	var formData = new FormData();
 
@@ -153,22 +235,74 @@ frappe.render_pdf = function(html, opts = {}) {
 	if (opts.orientation) {
 		formData.append("orientation", opts.orientation);
 	}
-	var blob = new Blob([], { type: "text/xml"});
+	if (opts.print_format) {
+		formData.append("print_format", opts.print_format);
+	}
+	var blob = new Blob([], { type: "text/xml" });
 	formData.append("blob", blob);
 
+	download_pdf("frappe.utils.print_format.report_to_pdf", formData, opts.report_name);
+};
+
+frappe.download_report_pdf = function (args, filename) {
+	const formData = new FormData();
+	for (const [key, value] of Object.entries(args)) {
+		if (value == null) continue;
+		formData.append(key, typeof value === "object" ? JSON.stringify(value) : value);
+	}
+
+	download_pdf("frappe.utils.print_format.download_report_pdf", formData, filename);
+};
+
+function download_pdf(method, formData, filename) {
 	var xhr = new XMLHttpRequest();
-	xhr.open("POST", '/api/method/frappe.utils.print_format.report_to_pdf');
+	xhr.open("POST", `/api/method/${method}`);
 	xhr.setRequestHeader("X-Frappe-CSRF-Token", frappe.csrf_token);
 	xhr.responseType = "arraybuffer";
+	xhr.timeout = 10 * 60 * 1000;
 
-	xhr.onload = function(success) {
-		if (this.status === 200) {
-			var blob = new Blob([success.currentTarget.response], {type: "application/pdf"});
-			var objectUrl = URL.createObjectURL(blob);
+	frappe.dom?.freeze(__("Generating PDF..."));
 
-			//Open report in a new window
-			window.open(objectUrl);
+	xhr.onload = function (success) {
+		frappe.dom?.unfreeze();
+
+		if (this.status !== 200) {
+			const timed_out = [408, 413, 502, 503, 504].includes(this.status);
+
+			show_pdf_error(
+				timed_out ? pdf_size_message() : __("Check the Error Log for details."),
+				success.currentTarget.response
+			);
+			return;
 		}
+
+		var blob = new Blob([success.currentTarget.response], { type: "application/pdf" });
+		var objectUrl = URL.createObjectURL(blob);
+
+		// Create a hidden a tag to force set report name
+		// https://stackoverflow.com/questions/19327749/javascript-blob-filename-without-link
+		let hidden_a_tag = document.createElement("a");
+		document.body.appendChild(hidden_a_tag);
+		hidden_a_tag.style = "display: none";
+		hidden_a_tag.href = objectUrl;
+		hidden_a_tag.download = filename || "report.pdf";
+
+		// Open report in a new window
+		hidden_a_tag.click();
+		window.URL.revokeObjectURL(objectUrl);
 	};
+
+	xhr.ontimeout = function () {
+		frappe.dom?.unfreeze();
+		show_pdf_error(pdf_size_message());
+	};
+
+	xhr.onerror = function () {
+		frappe.dom?.unfreeze();
+		show_pdf_error(
+			__("The request could not be completed. Check your connection and try again.")
+		);
+	};
+
 	xhr.send(formData);
 }

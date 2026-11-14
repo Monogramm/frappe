@@ -1,34 +1,146 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2018, Frappe Technologies and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+import json
+import time
+import unittest
+from contextlib import contextmanager
 
 import frappe
-import unittest
-import json
+from frappe.core.doctype.prepared_report.prepared_report import delete_prepared_reports
+from frappe.desk.query_report import generate_report_result, get_prepared_report_result, get_report_doc
+from frappe.tests import IntegrationTestCase, timeout
+from frappe.tests.utils.test_capabilities import TestService, requires_test_service
 
 
-class TestPreparedReport(unittest.TestCase):
-	def setUp(self):
-		self.report = frappe.get_doc({
-			"doctype": "Report",
-			"name": "Permitted Documents For User"
-		})
-		self.filters = {
-			"user": "Administrator",
-			"doctype": "Role"
-		}
-		self.prepared_report_doc = frappe.get_doc({
-			"doctype": "Prepared Report",
-			"report_name": self.report.name,
-			"filters": json.dumps(self.filters),
-			"ref_report_doctype": self.report.name
-		}).insert()
+@requires_test_service(TestService.BACKGROUND_WORKER)
+class TestPreparedReport(IntegrationTestCase):
+	@classmethod
+	def tearDownClass(cls):
+		for r in frappe.get_all("Prepared Report", pluck="name"):
+			frappe.delete_doc("Prepared Report", r, force=True, delete_permanently=True)
 
-	def tearDown(self):
-		frappe.set_user("Administrator")
-		self.prepared_report_doc.delete()
+		frappe.db.commit()
 
-	def test_for_creation(self):
-		self.assertTrue('QUEUED' == self.prepared_report_doc.status.upper())
-		self.assertTrue(self.prepared_report_doc.report_start_time)
+	@timeout(seconds=20)
+	def wait_for_status(self, report, status):
+		frappe.db.commit()  # Flush changes first
+		while True:
+			frappe.db.rollback()  # read new data
+			report.reload()
+			if report.status == status:
+				break
+			time.sleep(0.5)
+
+	def create_prepared_report(self, report=None, commit=True):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Prepared Report",
+				"report_name": report or "Database Storage Usage By Tables",
+			}
+		).insert()
+
+		if commit:
+			frappe.db.commit()
+
+		return doc
+
+	def test_queueing(self):
+		doc = self.create_prepared_report()
+		self.assertEqual("Queued", doc.status)
+		self.assertTrue(doc.queued_at)
+
+		self.wait_for_status(doc, "Completed")
+
+		doc = frappe.get_last_doc("Prepared Report")
+		self.assertTrue(doc.job_id)
+		self.assertTrue(doc.report_end_time)
+
+	def test_prepared_data(self):
+		doc = self.create_prepared_report()
+		self.wait_for_status(doc, "Completed")
+
+		prepared_data = json.loads(doc.get_prepared_data().decode("utf-8"))
+		generated_data = generate_report_result(get_report_doc("Database Storage Usage By Tables"))
+		self.assertEqual(len(prepared_data["columns"]), len(generated_data["columns"]))
+		self.assertEqual(len(prepared_data["result"]), len(generated_data["result"]))
+		self.assertEqual(len(prepared_data), len(generated_data))
+
+	def test_failed_report_is_surfaced(self):
+		with test_report(report_type="Query Report", query="select * from `tabNoSuchTable`") as report:
+			doc = self.create_prepared_report(report.name)
+			self.wait_for_status(doc, "Error")
+			self.assertTrue(doc.error_message)
+
+			result = get_prepared_report_result(get_report_doc(report.name), {}, dn=doc.name)
+			self.assertEqual("Error", result["doc"].status)
+			# the reader gets the message, the traceback stays on the document
+			self.assertIn("tabNoSuchTable", result["error"])
+			self.assertNotIn("Traceback", result["error"])
+			self.assertIsNone(result["doc"].error_message)
+
+	def test_deleting_unreadable_report_raises(self):
+		doc = self.create_prepared_report(commit=False)
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.set_user("test1@example.com")
+		self.assertRaises(frappe.PermissionError, delete_prepared_reports, [{"name": doc.name}])
+
+	@unittest.skipIf(
+		frappe.conf.db_type == "sqlite",
+		"This test needs a database sleep function, which SQLite does not provide.",
+	)
+	def test_start_status_and_kill_jobs(self):
+		if frappe.db.db_type == "postgres":
+			query = "select pg_sleep(5)"
+		elif frappe.db.db_type == "mariadb":
+			query = "select sleep(5)"
+		with test_report(report_type="Query Report", query=query) as report:
+			doc = self.create_prepared_report(report.name)
+			self.wait_for_status(doc, "Started")
+			job_id = doc.job_id
+
+			doc.delete()
+			time.sleep(1)
+			job = frappe.get_doc("RQ Job", job_id)
+			self.assertEqual(job.status, "stopped")
+
+	@unittest.skipIf(
+		frappe.conf.db_type == "sqlite",
+		"This test needs a database sleep function, which SQLite does not provide.",
+	)
+	def test_cancel_from_background_task_sidepanel(self):
+		from frappe.core.doctype.background_task.background_task import stop_task
+
+		if frappe.db.db_type == "postgres":
+			query = "select pg_sleep(5)"
+		elif frappe.db.db_type == "mariadb":
+			query = "select sleep(5)"
+		with test_report(report_type="Query Report", query=query) as report:
+			doc = self.create_prepared_report(report.name)
+			self.wait_for_status(doc, "Started")
+			bg_task = frappe.get_all(
+				"Background Task", {"ref_doctype": "Prepared Report", "ref_docname": doc.name}, pluck="name"
+			)
+			self.assertEqual(len(bg_task), 1)
+
+			stop_task(bg_task[0])
+
+			self.wait_for_status(doc, "Cancelled")
+			time.sleep(1)
+			job = frappe.get_doc("RQ Job", doc.job_id)
+			self.assertEqual(job.status, "stopped")
+
+
+@contextmanager
+def test_report(**args):
+	try:
+		report = frappe.new_doc("Report")
+		report.update(args)
+		if not report.report_name:
+			report.report_name = frappe.generate_hash()
+		if not report.ref_doctype:
+			report.ref_doctype = "ToDo"
+		report.insert()
+		frappe.db.commit()
+		yield report
+	finally:
+		report.delete()

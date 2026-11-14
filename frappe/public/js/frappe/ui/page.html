@@ -1,69 +1,61 @@
 <div class="page-head flex">
 	<div class="container">
-		<div class="row flex align-center page-head-content justify-between">
-			<div class="col-md-4 col-sm-6 col-xs-8 page-title">
-				<!-- <div class="title-image hide hidden-md hidden-lg"></div> -->
-				<!-- title -->
-				<span class="sidebar-toggle-btn">
-					<svg class="icon icon-md sidebar-toggle-placeholder">
-						<use xlink:href="#icon-menu"></use>
-					</svg>
-					<span class="sidebar-toggle-icon">
-						<svg class="icon icon-md">
-							<use xlink:href="#icon-sidebar-collapse">
-							</use>
-						</svg>
-					</span>
-				</span>
-				<div class="flex fill-width title-area">
-					<div>
-						<div class="flex">
-							<h3 class="ellipsis title-text"></h3>
-							<span class="indicator-pill whitespace-nowrap"></span>
-						</div>
-						<div class="ellipsis sub-heading hide text-muted"></div>
-					</div>
+		<div class="row flex-nowrap align-center page-head-content justify-between">
+			<div class="page-title">
+				<button class="es-button page-back-button" data-variant="ghost" data-size="md" data-icon-button="true" aria-label="{{ __("Back") }}">
+					{{ frappe.utils.icon("chevron-left", "md") }}
+				</button>
+				<div class="flex title-area ellipsis">
+					<nav class="es-breadcrumbs navbar-breadcrumbs {{frappe.is_mobile() ? "mobile-no-divider" : ""}}" aria-label="{{ __("Breadcrumb") }}"><ol></ol></nav>
 					<button class="btn btn-default more-button hide">
 						<svg class="icon icon-sm">
-							<use xlink:href="#icon-dot-horizontal">
+							<use href="#icon-ellipsis">
 							</use>
 						</svg>
 					</button>
+					<span class="es-badge page-indicator-pill hide" data-testid="page-status"></span>
 				</div>
 			</div>
-			<div class="flex col page-actions justify-content-end">
-				<!-- buttons -->
-				<div class="custom-actions hide hidden-xs hidden-md"></div>
-				<div class="standard-actions flex">
-					<span class="page-icon-group hide hidden-xs hidden-sm"></span>
-					<div class="menu-btn-group hide">
-						<button type="button" class="btn btn-default icon-btn" data-toggle="dropdown" aria-expanded="false">
-							<span>
-								<span class="menu-btn-group-label">
-									<svg class="icon icon-sm">
-										<use xlink:href="#icon-dot-horizontal">
-										</use>
-									</svg>
-								</span>
-							</span>
-						</button>
-						<ul class="dropdown-menu dropdown-menu-right" role="menu"></ul>
+			<div class="align-center flex standard-items-section">
+				<div class="flex col page-actions justify-content-end {% if frappe.is_mobile() %} pl-0 {% endif %}">
+					<!-- buttons -->
+					<div class="filters flex"></div>
+					<div class="custom-actions hide hidden-xs hidden-md"></div>
+					<div class="custom-mobile-actions"></div>
+					<div class="standard-actions flex">
+						<span class="page-icon-group hide hidden-xs hidden-sm"></span>
+						<div class="menu-btn-group hide">
+							{%= frappe.ui.button.html({
+								icon: "ellipsis",
+								title: __("Menu"),
+								css_class: "icon-btn menu-more-button",
+							}) %}
+							<!-- hidden item store, not UI: add_dropdown_item writes <li><a> here
+							(the returned jQuery is public API); frappe.ui.Dropdown snapshots it
+							into menu rows on every open — see page.js build_dropdown_options -->
+							<ul class="dropdown-menu dropdown-menu-right" role="presentation"></ul>
+						</div>
+						{%= frappe.ui.button.html({ css_class: "secondary-action hide" }) %}
+						<div class="actions-btn-group hide">
+							{%= frappe.ui.button.html({
+								label: __("Actions"),
+								icon_right: "chevrons-up-down",
+								variant: "solid",
+							}) %}
+							<ul class="dropdown-menu dropdown-menu-right" role="presentation">
+							</ul>
+						</div>
+						<div class="es-segmented-button primary-action-group" role="group">
+							{%= frappe.ui.button.html({ variant: "solid", css_class: "primary-action hide" }) %}
+							{%= frappe.ui.button.html({
+								icon: "chevron-down",
+								variant: "solid",
+								title: __("More Options"),
+								css_class: "primary-action-menu",
+								attrs: { hidden: true },
+							}) %}
+						</div>
 					</div>
-					<button class="btn btn-secondary btn-default btn-sm hide"></button>
-					<div class="actions-btn-group hide">
-						<button type="button" class="btn btn-primary btn-sm" data-toggle="dropdown" aria-expanded="false">
-							<span class="hidden-xs">
-								<span class="actions-btn-group-label">{%= __("Actions") %}</span>
-								<svg class="icon icon-xs">
-									<use xlink:href="#icon-select">
-									</use>
-								</svg>
-							</span>
-						</button>
-						<ul class="dropdown-menu dropdown-menu-right" role="menu">
-						</ul>
-					</div>
-					<button class="btn btn-primary btn-sm hide primary-action"></button>
 				</div>
 			</div>
 		</div>

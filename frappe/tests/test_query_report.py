@@ -1,50 +1,1282 @@
 # Copyright (c) 2019, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-
-import unittest
+import datetime
+import json
 
 import frappe
-from frappe.desk.query_report import build_xlsx_data
-import frappe.utils
+from frappe.desk.link_title import get_report_link_titles
+from frappe.desk.query_report import (
+	add_custom_column_data,
+	build_xlsx_data,
+	export_query,
+	format_fields,
+	get_script,
+	run,
+)
+from frappe.tests import IntegrationTestCase
+from frappe.utils.xlsxutils import XLSXMetadata, XLSXStyleBuilder, make_xlsx
 
 
-class TestQueryReport(unittest.TestCase):
+class TestQueryReport(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls) -> None:
+		cls.enterClassContext(cls.enable_safe_exec())
+		return super().setUpClass()
+
+	def tearDown(self):
+		frappe.db.rollback()
+
+	def test_user_facing_error(self):
+		from frappe.desk.query_report import get_user_facing_error
+
+		thrown = "Traceback (most recent call last):\n  File 'x.py', line 1\n{}"
+
+		# frappe.throw messages are written for the reader, flattened to plain text
+		self.assertEqual(
+			"Row 6: 1 / 0 divides by zero. Check the divisor first.",
+			get_user_facing_error(
+				thrown.format(
+					"frappe.exceptions.ValidationError: Row 6: <strong>1 / 0</strong>"
+					" divides by zero.<br>Check the divisor first."
+				)
+			),
+		)
+		# a message with no markup is kept as it is
+		self.assertEqual(
+			"Please select a Company.",
+			get_user_facing_error(
+				thrown.format("frappe.exceptions.MandatoryError: Please select a Company.")
+			),
+		)
+		# an app defines its own exceptions, and those messages are written for the reader too
+		self.assertEqual(
+			"Accounts payable is frozen.",
+			get_user_facing_error(
+				thrown.format("erpnext.exceptions.PartyFrozen: Accounts payable is frozen.")
+			),
+		)
+		# the exception class is dropped whatever raised it
+		self.assertEqual(
+			"unsupported operand type(s) for /: 'int' and 'str'",
+			get_user_facing_error(
+				thrown.format("TypeError: unsupported operand type(s) for /: 'int' and 'str'")
+			),
+		)
+		# postgres adds the query and a caret below the message
+		self.assertEqual(
+			'relation "tabNoSuchTable" does not exist',
+			get_user_facing_error(
+				thrown.format(
+					'psycopg2.errors.UndefinedTable: relation "tabNoSuchTable" does not exist\n'
+					'LINE 1: select * from "tabNoSuchTable"\n'
+					"                      ^"
+				)
+			),
+		)
+		# nothing to say when the exception carried no message
+		self.assertEqual("", get_user_facing_error(thrown.format("frappe.exceptions.ValidationError")))
+		self.assertEqual("", get_user_facing_error(None))
+		# errors stored as plain text, like a stalled report timing out, are kept whole
+		self.assertEqual("Report timed out.", get_user_facing_error("Report timed out."))
+		# no markup survives, so nothing reaches the page as HTML
+		self.assertEqual(
+			"alert(1)",
+			get_user_facing_error(thrown.format("frappe.exceptions.ValidationError: <b>alert(1)</b>")),
+		)
+		# escaped entities are read as text, so they have to be decoded back
+		self.assertEqual(
+			"unsupported operand type(s) for +: 'float' & 'str'",
+			get_user_facing_error(
+				thrown.format(
+					"frappe.exceptions.ValidationError: unsupported operand type(s)"
+					" for +: &apos;float&apos; &amp; &apos;str&apos;"
+				)
+			),
+		)
+
+	def test_save_report_accepts_native_columns_and_filters(self):
+		from frappe.desk.query_report import save_report
+
+		frappe.set_user("Administrator")
+		ref = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "Native Save Reference " + frappe.generate_hash(length=6),
+				"report_type": "Report Builder",
+				"is_standard": "No",
+			}
+		).insert(ignore_permissions=True)
+
+		custom_name = "Native Save Custom " + frappe.generate_hash(length=6)
+		frappe.get_doc(
+			{
+				"doctype": "Report",
+				"report_name": custom_name,
+				"json": '{"columns":[],"filters":[]}',
+				"ref_doctype": "ToDo",
+				"is_standard": "No",
+				"report_type": "Custom Report",
+				"reference_report": ref.name,
+			}
+		).insert(ignore_permissions=True)
+
+		# columns as a native list and filters as a native dict (frappe.parse_json passthrough)
+		docname = save_report(
+			ref.name, custom_name, columns=[{"fieldname": "name"}], filters={"status": "Open"}
+		)
+		saved = json.loads(frappe.get_doc("Report", docname).json)
+		self.assertEqual(saved["columns"], [{"fieldname": "name"}])
+		self.assertEqual(saved["filters"], {"status": "Open"})
+
+	def test_export_query_coerces_non_list_visible_idx(self):
+		frappe.set_user("Administrator")
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"report_name": "Native Export Query " + frappe.generate_hash(length=6),
+				"ref_doctype": "ToDo",
+				"report_type": "Report Builder",
+				"is_standard": "No",
+				"roles": [{"role": "System Manager"}],
+			}
+		).insert(ignore_permissions=True)
+
+		# visible_idx as a non-list, non-str value is coerced to [] (the new elif branch).
+		# The coercion runs before the report executes, so the call must complete without the
+		# TypeError that a non-list visible_idx would otherwise cause downstream.
+		frappe.local.form_dict = frappe._dict(
+			report_name=report.name,
+			file_format_type="CSV",
+			visible_idx=5,
+		)
+		frappe.local.response = frappe._dict()
+		export_query()
+		self.assertIn("type", frappe.local.response)
+
+	def test_export_query_preserves_visible_idx_order(self):
+		"""Regression: `export_query` must apply `visible_idx` as an ordered
+		list so the UI column-header sort survives into the exported file.
+
+		Old code did ``set(visible_idx)`` and iterated ``data.result`` in its
+		default order, discarding the client's sort direction. New code
+		iterates ``visible_idx`` so output rows match display order.
+
+		Uses `mock.patch` on `run` so the test is decoupled from actual
+		report execution.
+		"""
+		import csv
+		import io
+		from unittest.mock import patch
+
+		frappe.set_user("Administrator")
+
+		# Fixed synthetic data — 5 rows in "default order" [A, B, C, D, E].
+		# The response the mocked `run` returns for any input.
+		fake_data = {
+			"result": [
+				["row_A", "id_a"],
+				["row_B", "id_b"],
+				["row_C", "id_c"],
+				["row_D", "id_d"],
+				["row_E", "id_e"],
+			],
+			"columns": [
+				{"label": "Description", "fieldname": "description", "fieldtype": "Data"},
+				{"label": "ID", "fieldname": "name", "fieldtype": "Data"},
+			],
+			"add_total_row": 0,
+			"applied_filters": {},
+			"filters": {},
+		}
+
+		# Minimal report to satisfy get_report_doc(); export_query looks up
+		# report_name to check permissions. The report's own body is unused
+		# because `run` is mocked.
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"report_name": f"Sort Order Export {frappe.generate_hash(length=6)}",
+				"ref_doctype": "ToDo",
+				"report_type": "Report Builder",
+				"is_standard": "No",
+				"roles": [{"role": "System Manager"}],
+			}
+		).insert(ignore_permissions=True)
+
+		# Non-identity, non-reverse permutation to catch order bugs. If the
+		# server iterated data.result (old code), the output would be A/B/C/D/E.
+		# If it iterates visible_idx (fixed code), output is D/A/E/B/C.
+		reorder = [3, 0, 4, 1, 2]
+		expected_descriptions = [fake_data["result"][i][0] for i in reorder]
+
+		frappe.local.form_dict = frappe._dict(
+			report_name=report.name,
+			file_format_type="CSV",
+			visible_idx=reorder,
+			applied_filters={},
+			filters={},
+		)
+		frappe.local.response = frappe._dict()
+
+		with patch("frappe.desk.query_report.run", return_value=fake_data):
+			export_query()
+
+		self.assertIn(
+			"filecontent",
+			frappe.local.response,
+			f"export_query didn't produce a file, got: {dict(frappe.local.response)!r}",
+		)
+		csv_bytes = frappe.local.response["filecontent"]
+		if isinstance(csv_bytes, bytes):
+			csv_bytes = csv_bytes.decode("utf-8")
+
+		# Data rows carry our "row_" marker; header row does not.
+		all_rows = list(csv.reader(io.StringIO(csv_bytes)))
+		data_rows = [r for r in all_rows if r and r[0].startswith("row_")]
+		self.assertEqual(
+			len(data_rows),
+			5,
+			f"expected 5 data rows in CSV, got {len(data_rows)}: {data_rows!r}",
+		)
+
+		actual_descriptions = [r[0] for r in data_rows]
+		self.assertEqual(
+			actual_descriptions,
+			expected_descriptions,
+			"CSV row order should follow visible_idx sequence, not default order",
+		)
+
+	def test_owner_opens_prepared_report_by_name_without_prepared_report_role(self):
+		from frappe.core.doctype.prepared_report.prepared_report import create_json_gz_file
+		from frappe.core.doctype.user_permission.test_user_permission import create_user
+
+		frappe.set_user("Administrator")
+		owner = create_user("test_prepared_report_owner@example.com", "Website Manager")
+		reader = create_user("test_prepared_report_reader@example.com", "Website Manager")
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "Open ToDos " + frappe.generate_hash(length=6),
+				"report_type": "Query Report",
+				"query": "select name from tabToDo",
+				"prepared_report": 1,
+				"is_standard": "No",
+			}
+		).insert(ignore_permissions=True)
+		custom_report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "My Open ToDos " + frappe.generate_hash(length=6),
+				"report_type": "Custom Report",
+				"reference_report": report.name,
+				"prepared_report": 1,
+				"is_standard": "No",
+			}
+		).insert(ignore_permissions=True)
+		other_report = frappe.copy_doc(report)
+		other_report.report_name = "Closed ToDos " + frappe.generate_hash(length=6)
+		other_report.insert(ignore_permissions=True)
+
+		# the ready notification links a custom report's prepared report to its reference report
+		with self.set_user(owner.name):
+			prepared_report = frappe.get_doc(
+				{"doctype": "Prepared Report", "report_name": custom_report.name}
+			).insert(ignore_permissions=True)
+			create_json_gz_file(
+				{"columns": [], "result": []}, prepared_report.doctype, prepared_report.name, report.name
+			)
+			filters = json.dumps({"prepared_report_name": prepared_report.name})
+			self.assertEqual(run(report.name, filters)["doc"].name, prepared_report.name)
+			with self.assertRaises(frappe.PermissionError):
+				run(other_report.name, filters)
+
+		with self.set_user(reader.name), self.assertRaises(frappe.PermissionError):
+			run(report.name, filters)
+
+		custom_report.delete()
+		with self.set_user(owner.name), self.assertRaises(frappe.PermissionError):
+			run(report.name, filters)
+
+	def test_get_script_quotes_report_name(self):
+		from frappe.core.doctype.user_permission.test_user_permission import create_user
+
+		frappe.set_user("Administrator")
+		user = create_user("test_report_script_reader@example.com", "Website Manager")
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "Today's ToDos " + frappe.generate_hash(length=6),
+				"report_type": "Query Report",
+				"query": "select name from tabToDo",
+				"is_standard": "No",
+				"roles": [{"role": "Website Manager"}],
+			}
+		).insert(ignore_permissions=True)
+
+		with self.set_user(user.name):
+			script = get_script(report.name)["script"]
+
+		self.assertEqual(script, f'frappe.query_reports["{report.name}"]={{}}')
+
+	def test_get_script_reports_a_python_formatter(self):
+		from unittest.mock import patch
+
+		from frappe.core.doctype.user_permission.test_user_permission import create_user
+
+		frappe.set_user("Administrator")
+		user = create_user("test_report_formatter_reader@example.com")
+
+		with (
+			patch("frappe.desk.report.todo.todo.formatter", lambda *args: None, create=True),
+			self.set_user(user.name),
+		):
+			self.assertTrue(get_script("ToDo")["has_python_formatter"])
+
 	def test_xlsx_data_with_multiple_datatypes(self):
 		"""Test exporting report using rows with multiple datatypes (list, dict)"""
 
-		# Describe the columns
-		columns = {
-			0: {"label": "Column A", "fieldname": "column_a"},
-			1: {"label": "Column B", "fieldname": "column_b"},
-			2: {"label": "Column C", "fieldname": "column_c"}
-		}
-
 		# Create mock data
-		data = frappe._dict()
-		data.columns = [
-			{"label": "Column A", "fieldname": "column_a"},
-			{"label": "Column B", "fieldname": "column_b", "width": 150},
-			{"label": "Column C", "fieldname": "column_c", "width": 100}
-		]
-		data.result = [
-			[1.0, 3.0, 5.5],
-			{"column_a": 22.1, "column_b": 21.8, "column_c": 30.2},
-			{"column_b": 5.1, "column_c": 9.5, "column_a": 11.1},
-			[3.0, 1.5, 7.5],
-		]
+		data = create_mock_data()
 
 		# Define the visible rows
 		visible_idx = [0, 2, 3]
 
 		# Build the result
-		xlsx_data, column_widths = build_xlsx_data(columns, data, visible_idx, include_indentation=0)
+		xlsx_data, column_widths, _ = build_xlsx_data(data, visible_idx, include_indentation=0)
 
 		self.assertEqual(type(xlsx_data), list)
 		self.assertEqual(len(xlsx_data), 4)  # columns + data
-		# column widths are divided by 10 to match the scale that is supported by openpyxl
-		self.assertListEqual(column_widths, [0, 15, 10])
+		# column widths are divided by 10 to match the scale that is supported by xlsxwriter
+		self.assertListEqual(column_widths, [0, 10, 15])
 
 		for row in xlsx_data:
-			self.assertEqual(type(row), list)
+			self.assertIsInstance(row, list)
+
+		# ensure all types are preserved
+		for row in xlsx_data[1:]:
+			for cell in row:
+				self.assertIsInstance(cell, (int, float))
+
+	def test_xlsx_data_with_filters(self):
+		"""Test building xlsx data along with filters"""
+
+		# Create mock data
+		data = create_mock_data()
+
+		# Define the visible rows
+		visible_idx = [0, 2, 3]
+
+		# Build the result
+		xlsx_data, _column_widths, _ = build_xlsx_data(
+			data,
+			visible_idx,
+			include_indentation=False,
+			include_filters=True,
+		)
+
+		# Check if unset filters are skipped | Rows -> 2 filters + 1 empty + 1 column + 3 data
+		self.assertEqual(len(xlsx_data), 7)
+
+		# Check filter formatting
+		self.assertListEqual(xlsx_data[:2], [["Label 1", "Filter Value"], ["Label 3", "0, 1, 2, 3, 4"]])
+
+	def test_xlsx_export_with_composite_cell_value(self):
+		"""Test excel export using rows with composite cell value"""
+
+		data = frappe._dict()
+
+		data.columns = [
+			{"label": "Column A", "fieldname": "column_a", "fieldtype": "Float"},
+			{"label": "Column B", "fieldname": "column_b", "width": 150, "fieldtype": "Data"},
+		]
+		data.result = [
+			[1.0, "Dummy 1"],
+			{"column_a": 22.1, "column_b": ["Dummy 1", "Dummy 2"]},  # composite value in column_b
+		]
+
+		# Define the visible rows
+		visible_idx = [0, 1]
+
+		# Build the result
+		xlsx_data, column_widths, _ = build_xlsx_data(data, visible_idx, include_indentation=0)
+		# Export to excel
+		make_xlsx(xlsx_data, "Query Report", column_widths=column_widths)
+
+		for row in xlsx_data:
+			# column_b should be 'str' even with composite cell value
+			self.assertEqual(type(row[1]), str)
+
+	def test_xlsx_export_preserves_date_objects(self):
+		"""Date/Datetime columns must reach Excel as real date objects, while CSV keeps strings"""
+
+		posting_date = datetime.date(2026, 6, 1)
+		created_on = datetime.datetime(2026, 6, 1, 9, 30)
+
+		def make_data():
+			return frappe._dict(
+				report_name="",
+				columns=[
+					{"label": "Posting Date", "fieldname": "posting_date", "fieldtype": "Date"},
+					{"label": "Created On", "fieldname": "created_on", "fieldtype": "Datetime"},
+				],
+				result=[{"posting_date": posting_date, "created_on": created_on}],
+				filters={},
+				applied_filters={},
+			)
+
+		# Excel: date objects are preserved so make_xlsx can write real date cells
+		excel_data = make_data()
+		format_fields(excel_data, "Excel")
+		self.assertEqual(excel_data.result[0]["posting_date"], posting_date)
+		self.assertIsInstance(excel_data.result[0]["created_on"], datetime.datetime)
+
+		# build_xlsx_data passes the date through untouched for the Excel sheet
+		xlsx_data, _, styles = build_xlsx_data(excel_data, build_styles=True)
+		self.assertIsInstance(xlsx_data[1][0], datetime.date)
+		self.assertIsInstance(xlsx_data[1][1], datetime.datetime)
+
+		# the Date column carries a date number_format so Excel renders it as a date
+		date_style = {}
+		col0_style_ids = styles["column_styles"].get(0)
+		self.assertIsNotNone(col0_style_ids, "No column style registered for the Date column")
+		for sid in col0_style_ids:
+			date_style.update(styles["styles"][sid])
+		self.assertIn("num_format", date_style)
+
+		# CSV (default): dates are stringified for display
+		csv_data = make_data()
+		format_fields(csv_data)
+		self.assertIsInstance(csv_data.result[0]["posting_date"], str)
+		self.assertIsInstance(csv_data.result[0]["created_on"], str)
+
+	def test_export_strips_quotes_from_link_labels(self):
+		"""Quoted link values are plain text labels in desk, so exports must drop the quotes too"""
+		data = frappe._dict(
+			columns=[
+				{"fieldname": "account", "fieldtype": "Link"},
+				{"fieldname": "remarks", "fieldtype": "Data"},
+			],
+			result=[{"account": "'Total Asset (Debit)'", "remarks": "'As per ledger'"}],
+		)
+		format_fields(data, "Excel")
+		self.assertEqual(data.result[0], {"account": "Total Asset (Debit)", "remarks": "'As per ledger'"})
+
+	def test_csv(self):
+		from csv import QUOTE_ALL, QUOTE_MINIMAL, QUOTE_NONE, QUOTE_NONNUMERIC, DictReader
+		from io import StringIO
+
+		REPORT_NAME = "Test CSV Report"
+		REF_DOCTYPE = "DocType"
+		REPORT_COLUMNS = ["name", "module", "issingle"]
+
+		report = (
+			frappe.get_doc("Report", REPORT_NAME)
+			if frappe.db.exists("Report", REPORT_NAME)
+			else frappe.new_doc("Report")
+		)
+		report.report_name = REPORT_NAME
+		report.ref_doctype = "User"
+		report.report_type = "Query Report"
+		report.query = (
+			f"SELECT {', '.join(f'`{column}`' for column in REPORT_COLUMNS)} FROM `tab{REF_DOCTYPE}` LIMIT 10"
+		)
+		report.is_standard = "No"
+		report.save()
+
+		for delimiter in (",", ";", "\t", "|"):
+			for quoting in (QUOTE_ALL, QUOTE_MINIMAL, QUOTE_NONE, QUOTE_NONNUMERIC):
+				frappe.local.form_dict = frappe._dict(
+					{
+						"report_name": REPORT_NAME,
+						"file_format_type": "CSV",
+						"csv_quoting": quoting,
+						"csv_delimiter": delimiter,
+						"include_indentation": 0,
+						"visible_idx": [0, 1, 2],
+					}
+				)
+				frappe.db.commit()
+				export_query()
+
+				self.assertTrue(frappe.response["filename"].endswith(".csv"))
+				self.assertEqual(frappe.response["type"], "binary")
+				with StringIO(frappe.response["filecontent"].decode("utf-8")) as result:
+					reader = DictReader(result, delimiter=delimiter, quoting=quoting)
+					row = reader.__next__()
+					for column in REPORT_COLUMNS:
+						self.assertIn(column, row)
+
+		frappe.delete_doc("Report", REPORT_NAME, delete_permanently=True)
+		frappe.db.commit()
+
+	def test_report_for_duplicate_column_names(self):
+		"""Test report with duplicate column names"""
+
+		try:
+			fields = [
+				{"label": "First Name", "fieldname": "first_name", "fieldtype": "Data"},
+				{"label": "Last Name", "fieldname": "last_name", "fieldtype": "Data"},
+			]
+			frappe.get_doc(
+				{
+					"doctype": "DocType",
+					"name": "Doc A",
+					"module": "Core",
+					"custom": 1,
+					"autoname": "field:first_name",
+					"fields": fields,
+					"permissions": [{"role": "System Manager"}],
+				}
+			).insert(ignore_if_duplicate=True)
+
+			frappe.get_doc(
+				{
+					"doctype": "DocType",
+					"name": "Doc B",
+					"module": "Core",
+					"custom": 1,
+					"autoname": "field:last_name",
+					"fields": fields,
+					"permissions": [{"role": "System Manager"}],
+				}
+			).insert(ignore_if_duplicate=True)
+
+			for i in range(1, 3):
+				frappe.get_doc({"doctype": "Doc A", "first_name": f"John{i}", "last_name": "Doe"}).insert()
+				frappe.get_doc({"doctype": "Doc B", "last_name": f"Doe{i}", "first_name": "John"}).insert()
+
+			if not frappe.db.exists("Report", "Doc A Report"):
+				report = frappe.get_doc(
+					{
+						"doctype": "Report",
+						"ref_doctype": "Doc A",
+						"report_name": "Doc A Report",
+						"report_type": "Script Report",
+						"is_standard": "No",
+					}
+				).insert(ignore_permissions=True)
+			else:
+				report = frappe.get_doc("Report", "Doc A Report")
+
+			report.report_script = """
+result = [["Ritvik","Sardana", "Doe1"],["Shariq","Ansari", "Doe2"]]
+columns = [{
+			"label": "First Name",
+			"fieldname": "first_name",
+			"fieldtype": "Data",
+			"width": 180,
+		},
+		{
+			"label": "Last Name",
+			"fieldname": "last_name",
+			"fieldtype": "Data",
+			"width": 180,
+		},
+		{
+			"label": "Linked Field",
+			"fieldname": "linked_field",
+			"fieldtype": "Link",
+			"options": "Doc B",
+			"width": 180,
+		},
+	]
+
+data = columns, result
+				"""
+			report.save()
+
+			custom_columns = [
+				{
+					"fieldname": "first_name-Doc_B",
+					"fieldtype": "Data",
+					"label": "First Name",
+					"insert_after_index": 1,
+					"link_field": {"fieldname": "linked_field", "names": {}},
+					"doctype": "Doc B",
+					"width": 100,
+					"id": "first_name-Doc_B",
+					"name": "First Name",
+					"editable": False,
+					"compareValue": None,
+				},
+			]
+
+			response = run(
+				"Doc A Report",
+				filters={"user": "Administrator", "doctype": "Doc A"},
+				custom_columns=custom_columns,
+			)
+
+			self.assertListEqual(
+				["first_name", "last_name", "first_name-Doc_B", "linked_field"],
+				[d["fieldname"] for d in response["columns"]],
+			)
+
+			self.assertDictEqual(
+				{
+					"first_name": "Ritvik",
+					"last_name": "Sardana",
+					"linked_field": "Doe1",
+					"first_name-Doc_B": "John",
+				},
+				response["result"][0],
+			)
+
+		except Exception as e:
+			raise e
+			frappe.db.rollback()
+
+	def test_custom_column_linked_to_another_custom_column(self):
+		"""Test custom column that looks up its value through another custom column"""
+
+		user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": "test_custom_column_chain@example.com",
+				"first_name": "Rhea",
+				"last_name": "Menon",
+				"send_welcome_email": 0,
+				"roles": [{"role": "System Manager"}],
+			}
+		).insert()
+
+		self.addCleanup(frappe.set_user, frappe.session.user)
+		frappe.set_user(user.name)
+		todo = frappe.get_doc({"doctype": "ToDo", "description": "Follow up on renewal"}).insert()
+
+		custom_columns = [
+			{"fieldname": "owner", "doctype": "ToDo", "link_field": {"fieldname": "todo", "names": []}},
+			{
+				"fieldname": "full_name",
+				"doctype": "User",
+				"link_field": {"fieldname": "owner", "names": []},
+			},
+		]
+
+		result = add_custom_column_data(custom_columns, [{"todo": todo.name}])
+
+		self.assertDictEqual(
+			{"todo": todo.name, "owner": user.name, "full_name": "Rhea Menon"},
+			result[0],
+		)
+
+	def test_custom_column_with_clashing_fieldname(self):
+		"""Custom column whose fieldname clashes with a report column keeps both values"""
+		from frappe.core.doctype.user_permission.test_user_permission import create_user
+
+		user = create_user("test_custom_column_clash@example.com")
+		with self.set_user(user.name):
+			todo = frappe.get_doc({"doctype": "ToDo", "description": "Send the signed lease"}).insert()
+			custom_columns = [
+				{
+					"fieldname": "status-todo",
+					"doctype": "ToDo",
+					"link_field": {"fieldname": "todo", "names": []},
+				}
+			]
+
+			result = add_custom_column_data(custom_columns, [{"todo": todo.name, "status": "Overdue"}])
+
+		self.assertDictEqual({"todo": todo.name, "status": "Overdue", "status-todo": "Open"}, result[0])
+
+	def test_xlsx_styles_structure(self):
+		"""build_xlsx_data with build_styles=True returns a well-formed styles dict"""
+		data = create_mock_data()
+		data.pop("report_name")  # module not needed for this test
+
+		_, _, styles = build_xlsx_data(data, build_styles=True)
+
+		self.assertIsNotNone(styles)
+		for key in ("styles", "column_styles", "row_styles", "cell_styles"):
+			self.assertIn(key, styles)
+
+		# style registry must be non-empty
+		self.assertGreater(len(styles["styles"]), 0)
+
+		# header row (index 0, no filters included) must have bold style
+		self.assertIn(0, styles["row_styles"])
+
+		# resolve the header row's style IDs and confirm bold is set
+		registry = styles["styles"]
+		header_style_ids = styles["row_styles"][0]
+		header_merged = {}
+		for sid in header_style_ids:
+			header_merged.update(registry[sid])
+		self.assertTrue(header_merged.get("bold"))
+
+	def test_xlsx_styles_for_standard_query_report_without_module(self):
+		"""a standard Query Report with no python module exports with the default styles"""
+		frappe.get_doc(
+			{
+				"doctype": "Report",
+				"name": "Pending ToDos",
+				"report_name": "Pending ToDos",
+				"report_type": "Query Report",
+				"is_standard": "Yes",
+				"ref_doctype": "ToDo",
+				"module": "Desk",
+			}
+		).db_insert()
+		data = create_mock_data()
+		data.report_name = "Pending ToDos"
+
+		with self.set_user("test@example.com"):
+			_, _, styles = build_xlsx_data(data, build_styles=True)
+
+		self.assertIsNotNone(styles)
+
+	def test_xlsx_style_builder_fieldtype_column_styles(self):
+		"""XLSXStyleBuilder applies column styles for Float/Percent/Date but not Data"""
+		column_map = {
+			0: {"fieldname": "name", "fieldtype": "Data", "label": "Name"},
+			1: {"fieldname": "score", "fieldtype": "Float", "label": "Score"},
+			2: {"fieldname": "pct", "fieldtype": "Percent", "label": "Pct"},
+			3: {"fieldname": "dt", "fieldtype": "Date", "label": "Date"},
+		}
+		row_map = {1: {"name": "A", "score": 1.0, "pct": 10.0, "dt": "2025-01-01"}}
+
+		metadata = XLSXMetadata(column_map=column_map, row_map=row_map)
+		builder = XLSXStyleBuilder(metadata, default_styling=False)
+		builder.apply_default_fieldtype_formats(currency_formatting=False)
+
+		def resolve(col_idx):
+			"""Merge all style dicts registered for a column into one dict."""
+			merged = {}
+			for sid in builder.column_styles[col_idx]:
+				merged.update(builder.styles[sid])
+			return merged
+
+		# Float, Percent, Date → column-level styles
+		self.assertIn(1, builder.column_styles)
+		self.assertIn(2, builder.column_styles)
+		self.assertIn(3, builder.column_styles)
+
+		# Data column → no column style
+		self.assertNotIn(0, builder.column_styles)
+
+		# Float → has num_format, no alignment override
+		float_style = resolve(1)
+		self.assertIn("num_format", float_style)
+		self.assertNotIn("align", float_style)
+
+		# Percent → num_format contains "%"
+		percent_style = resolve(2)
+		self.assertIn("num_format", percent_style)
+		self.assertIn("%", percent_style["num_format"])
+
+		# Date → has num_format and explicitly right-aligned
+		date_style = resolve(3)
+		self.assertIn("num_format", date_style)
+		self.assertEqual(date_style.get("align"), "right")
+
+	def test_xlsx_style_builder_float_indent_is_whole_number(self):
+		"""Excel ignores a fractional alignment indent, so float tree levels must become integers"""
+		column_map = {0: {"fieldname": "account", "fieldtype": "Data", "label": "Account"}}
+		row_map = {1: {"account": "Current Assets", "indent": 1.0}, 2: {"account": "Debtors", "indent": 2.0}}
+
+		builder = XLSXStyleBuilder(
+			XLSXMetadata(column_map=column_map, row_map=row_map), default_styling=False
+		)
+		builder.apply_indentations()
+
+		for row_idx, expected in ((1, 2), (2, 4)):
+			indent = builder.styles[builder.cell_styles[(row_idx, 0)][0]]["indent"]
+			self.assertEqual(indent, expected)
+			self.assertIsInstance(indent, int)
+
+	def test_export_report_via_email(self):
+		REPORT_NAME = "Test CSV Report"
+		REF_DOCTYPE = "DocType"
+		REPORT_COLUMNS = ["name", "module", "issingle"]
+
+		report = (
+			frappe.get_doc("Report", REPORT_NAME)
+			if frappe.db.exists("Report", REPORT_NAME)
+			else frappe.new_doc("Report")
+		)
+		report.report_name = REPORT_NAME
+		report.ref_doctype = "User"
+		report.report_type = "Query Report"
+		report.query = (
+			f"SELECT {', '.join(f'`{column}`' for column in REPORT_COLUMNS)} FROM `tab{REF_DOCTYPE}` LIMIT 10"
+		)
+		report.is_standard = "No"
+		report.save()
+
+		frappe.local.form_dict = frappe._dict(
+			{
+				"report_name": REPORT_NAME,
+				"file_format_type": "CSV",
+				"include_indentation": 0,
+				"visible_idx": [0, 1, 2],
+				"export_in_background": 1,
+			}
+		)
+		frappe.db.delete("Email Queue")
+		user_email = frappe.get_cached_value("User", frappe.session.user, "email")
+		frappe.db.delete("Email Unsubscribe", {"email": user_email})
+		frappe.db.commit()
+		export_query()
+
+		email_queue = frappe.get_all("Email Queue")
+
+		self.assertTrue(email_queue, "Email was not enqueued")
+
+		frappe.delete_doc("Report", REPORT_NAME, delete_permanently=True)
+		frappe.db.commit()
+
+	def test_validated_filters_are_defaulted_and_cast(self):
+		report, user = self.make_filtered_report()
+
+		with self.set_user(user):
+			result = run(report.name, {"allocated_to": user, "count": "5", "show_all": "1"})["result"]
+
+		self.assertEqual(
+			result, [{"status": "Open", "count": 5, "show_all": 1, "from_date": frappe.utils.getdate()}]
+		)
+		self.assertEqual(report.get_validated_filters({}, user).allocated_to, user)
+
+	def test_validated_filters_keep_cleared_values(self):
+		report, user = self.make_filtered_report()
+
+		with self.set_user(user):
+			result = run(report.name, {"allocated_to": user, "status": "", "from_date": ""})["result"]
+
+		self.assertEqual(result, [{"status": None, "count": None, "show_all": None, "from_date": None}])
+
+	def test_validated_filters_reject_invalid_values(self):
+		report, user = self.make_filtered_report()
+		job_type = frappe.db.get_value("Scheduled Job Type", {})
+
+		with self.set_user(user):
+			with self.assertRaisesRegex(frappe.ValidationError, "Allocated To"):
+				run(report.name, {"allocated_to": "", "count": 1})
+			with self.assertRaisesRegex(frappe.ValidationError, "single value"):
+				run(report.name, {"allocated_to": {}})
+			with self.assertRaisesRegex(frappe.ValidationError, "Pending"):
+				run(report.name, {"allocated_to": user, "status": "Pending"})
+			with self.assertRaises(frappe.PermissionError):
+				run(report.name, {"allocated_to": user, "job_type": job_type})
+			with self.assertRaises(frappe.LinkValidationError):
+				run(report.name, {"allocated_to": user, "job_type": "missing"})
+			with self.assertRaises(frappe.LinkValidationError):
+				run(report.name, {"allocated_to": 0})
+			with self.assertRaisesRegex(frappe.ValidationError, "priority"):
+				run(report.name, {"allocated_to": user, "priority": "High"})
+			for filters in ('[["allocated_to", "=", "x"]]', "5", '"abc"'):
+				with self.assertRaisesRegex(frappe.ValidationError, "Filters must be"):
+					run(report.name, filters)
+
+	def test_validated_filters_reject_invalid_dates(self):
+		report, user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="since", label="Since", fieldtype="Datetime"))
+		report.append("filters", dict(fieldname="at", label="At", fieldtype="Time"))
+
+		filters = report.get_validated_filters(
+			{"allocated_to": user, "since": "2026-01-01 10:30:00", "at": "10:30:00"}, user
+		)
+		self.assertEqual(filters.since, datetime.datetime(2026, 1, 1, 10, 30))
+		self.assertEqual(filters.at, datetime.timedelta(hours=10, minutes=30))
+
+		for fieldname, label, value in (
+			("from_date", "From Date", 5),
+			("from_date", "From Date", 0),
+			("from_date", "From Date", "garbage"),
+			("from_date", "From Date", "0001-01-01"),
+			("since", "Since", "garbage"),
+			("at", "At", "garbage"),
+			("period", "Period", ["0001-01-01", "2026-01-31"]),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, label):
+				report.get_validated_filters({"allocated_to": user, fieldname: value}, user)
+
+	def test_validated_filters_accept_native_values(self):
+		report, user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="since", label="Since", fieldtype="Datetime"))
+		report.append("filters", dict(fieldname="at", label="At", fieldtype="Time"))
+		report.append("filters", dict(fieldname="level", label="Level", fieldtype="Select", options="1\n2"))
+
+		filters = report.get_validated_filters(
+			{
+				"allocated_to": user,
+				"level": 1,
+				"count": "5",
+				"show_all": "1",
+				"from_date": datetime.datetime(2026, 1, 1, 10, 30),
+				"since": datetime.date(2026, 1, 1),
+				"at": datetime.timedelta(hours=10),
+				"users": (user,),
+				"period": (datetime.date(2026, 1, 1), "2026-01-31"),
+			},
+			user,
+		)
+		self.assertEqual(filters.from_date, datetime.date(2026, 1, 1))
+		self.assertEqual(filters.since, datetime.datetime(2026, 1, 1))
+		self.assertEqual(filters.at, datetime.timedelta(hours=10))
+		self.assertEqual(filters.level, "1")
+		self.assertEqual(filters.users, [user])
+		self.assertEqual(filters.period, [datetime.date(2026, 1, 1), datetime.date(2026, 1, 31)])
+		self.assertEqual(report.get_validated_filters(filters, user), filters)
+
+		with self.assertRaisesRegex(frappe.ValidationError, "At"):
+			report.get_validated_filters({"allocated_to": user, "at": datetime.date(2026, 1, 1)}, user)
+
+	def test_validated_filters_check_numbers(self):
+		report, user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="amount", label="Amount", fieldtype="Float"))
+
+		filters = report.get_validated_filters(
+			{"allocated_to": user, "count": 5, "amount": "1.5", "show_all": "true"}, user
+		)
+		self.assertEqual((filters.count, filters.amount, filters.show_all), (5, 1.5, 1))
+		self.assertEqual(
+			report.get_validated_filters({"allocated_to": user, "show_all": 0}, user).show_all, 0
+		)
+
+		for fieldname, label, value in (
+			("count", "Count", "abc"),
+			("count", "Count", "5.7"),
+			("amount", "Amount", "abc"),
+			("amount", "Amount", "1,5"),
+			("show_all", "Show All", 2),
+			("show_all", "Show All", "yes"),
+			("period", "Period", ["2026-02-01", "2026-01-01"]),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, label):
+				report.get_validated_filters({"allocated_to": user, fieldname: value}, user)
+
+	def test_validated_filters_resolve_now_defaults(self):
+		report, user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="since", label="Since", fieldtype="Datetime", default="Now"))
+		report.append("filters", dict(fieldname="at", label="At", fieldtype="Time", default="Now"))
+
+		filters = report.get_validated_filters({"allocated_to": user}, user)
+		one_minute = datetime.timedelta(minutes=1)
+		self.assertAlmostEqual(filters.since, frappe.utils.now_datetime(), delta=one_minute)
+		self.assertAlmostEqual(
+			filters.at, frappe.utils.get_timedelta(frappe.utils.nowtime()), delta=one_minute
+		)
+
+	def test_validated_list_filters(self):
+		report, user = self.make_filtered_report()
+
+		filters = report.get_validated_filters(
+			{"allocated_to": user, "users": [user], "period": ["2026-01-01", "2026-01-31"]}, user
+		)
+		self.assertEqual(filters.users, [user])
+		self.assertEqual(filters.period, [datetime.date(2026, 1, 1), datetime.date(2026, 1, 31)])
+		self.assertNotIn("users", report.get_validated_filters({"allocated_to": user, "users": []}, user))
+
+		report.filters[-2].default = user
+		report.filters[-1].default = "2026-01-01,2026-01-31"
+		filters = report.get_validated_filters({"allocated_to": user}, user)
+		self.assertEqual(filters.users, [user])
+		self.assertEqual(filters.period, [datetime.date(2026, 1, 1), datetime.date(2026, 1, 31)])
+
+		report.filters[-1].default = "Today"
+		today = frappe.utils.getdate()
+		self.assertEqual(report.get_validated_filters({"allocated_to": user}, user).period, [today, today])
+
+		report.filters[-2].default = "__user"
+		self.assertEqual(report.get_validated_filters({"allocated_to": user}, user).users, [user])
+
+		with self.assertRaisesRegex(frappe.ValidationError, "list of values"):
+			report.get_validated_filters({"allocated_to": user, "users": user}, user)
+		with self.assertRaisesRegex(frappe.ValidationError, "start and an end date"):
+			report.get_validated_filters({"allocated_to": user, "period": ["2026-01-01"]}, user)
+		with self.assertRaisesRegex(frappe.ValidationError, "start and an end date"):
+			report.get_validated_filters({"allocated_to": user, "period": ["", ""]}, user)
+		with self.assertRaises(frappe.PermissionError):
+			report.get_validated_filters({"allocated_to": user, "users": [user, "Administrator"]}, user)
+		with self.assertRaises(frappe.LinkValidationError):
+			report.get_validated_filters({"allocated_to": user, "users": [user, "missing"]}, user)
+
+	def test_validated_list_filter_with_doctype_from_another_filter(self):
+		report, user = self.make_filtered_report()
+		report.append(
+			"filters",
+			dict(fieldname="documents", label="Documents", fieldtype="MultiSelectList", options="doc_type"),
+		)
+		report.append(
+			"filters", dict(fieldname="doc_type", label="Document Type", fieldtype="Select", options="User")
+		)
+		report.append(
+			"filters",
+			dict(fieldname="document", label="Document", fieldtype="Dynamic Link", options="doc_type"),
+		)
+		report.append("filters", dict(fieldname="tag", label="Tag", fieldtype="Autocomplete"))
+
+		filters = report.get_validated_filters(
+			{
+				"allocated_to": user,
+				"doc_type": "User",
+				"documents": [user],
+				"document": "missing",
+				"tag": "a",
+			},
+			user,
+		)
+		self.assertEqual(filters.documents, [user])
+		self.assertEqual((filters.document, filters.tag), ("missing", "a"))
+
+		with self.assertRaisesRegex(frappe.ValidationError, "Tag"):
+			report.get_validated_filters({"allocated_to": user, "tag": ["a"]}, user)
+
+		with self.assertRaises(frappe.PermissionError):
+			report.get_validated_filters(
+				{"allocated_to": user, "doc_type": "User", "documents": [user, "Administrator"]}, user
+			)
+		with self.assertRaisesRegex(frappe.ValidationError, "Document Type"):
+			report.get_validated_filters({"allocated_to": user, "doc_type": "", "documents": [user]}, user)
+
+	def test_validated_link_filter_user_defaults(self):
+		report, user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="user", label="User", fieldtype="Link", options="User"))
+		report.append(
+			"filters", dict(fieldname="language", label="Language", fieldtype="Link", options="Language")
+		)
+		job_type = frappe.db.get_value("Scheduled Job Type", {})
+		frappe.defaults.set_user_default("job_type", job_type, user)
+		frappe.defaults.set_user_default("language", "de", user)
+		self.addCleanup(frappe.defaults.clear_user_default, "job_type", user)
+		self.addCleanup(frappe.defaults.clear_user_default, "language", user)
+
+		filters = report.get_validated_filters({"allocated_to": user}, user)
+		self.assertNotIn("user", filters)
+		self.assertNotIn("job_type", filters)
+		self.assertEqual(filters.language, "de")
+
+		report.filters[-1].default = "en"
+		self.assertEqual(report.get_validated_filters({"allocated_to": user}, user).language, "en")
+
+		report.filters[-1].default = None
+		frappe.defaults.set_user_default("language", "missing-language", user)
+		self.assertNotIn("language", report.get_validated_filters({"allocated_to": user}, user))
+
+	def test_get_script_resolves_validated_filter_defaults(self):
+		report, user = self.make_filtered_report()
+		report.filters[-2].default = "__user"
+		report.filters[-1].default = "2026-01-01,2026-01-31"
+		report.save()
+
+		with self.set_user(user):
+			filters = get_script(report.name)["filters"]
+
+		defaults = {row["fieldname"]: row["default"] for row in filters}
+		self.assertEqual(defaults["allocated_to"], user)
+		self.assertEqual(defaults["from_date"], frappe.utils.nowdate())
+		self.assertEqual(defaults["users"], [user])
+		self.assertEqual(defaults["period"], ["2026-01-01", "2026-01-31"])
+
+	def test_prepared_report_by_name_validates_its_saved_filters(self):
+		from frappe.core.doctype.prepared_report.prepared_report import create_json_gz_file
+
+		report, user = self.make_filtered_report()
+		report.prepared_report = 1
+		report.filters[0].default = None
+		report.save()
+
+		with self.set_user(user):
+			prepared_report = frappe.get_doc(
+				{
+					"doctype": "Prepared Report",
+					"report_name": report.name,
+					"filters": json.dumps({"allocated_to": user}),
+				}
+			).insert(ignore_permissions=True)
+			create_json_gz_file(
+				{"columns": [], "result": []}, prepared_report.doctype, prepared_report.name, report.name
+			)
+			result = run(report.name, {"prepared_report_name": prepared_report.name})
+
+			prepared_report.db_set("filters", "null")
+			with self.assertRaisesRegex(frappe.ValidationError, "Allocated To"):
+				run(report.name, {"prepared_report_name": prepared_report.name})
+
+		self.assertEqual(result["doc"].name, prepared_report.name)
+
+	def test_filters_without_validation_reach_the_report_unchanged(self):
+		report, user = self.make_filtered_report()
+		report.validate_filters = 0
+		report.filters = [
+			row for row in report.filters if row.fieldtype not in ("MultiSelectList", "DateRange")
+		]
+		report.save()
+
+		with self.set_user(user):
+			result = run(report.name, {"count": "5", "priority": "High"})["result"]
+
+		self.assertEqual(result, [{"status": None, "count": "5", "show_all": None, "from_date": None}])
+
+		report.append("filters", dict(fieldname="users", label="Users", fieldtype="MultiSelectList"))
+		with self.assertRaisesRegex(frappe.ValidationError, "Validate Filters"):
+			report.save()
+
+	def test_validated_filter_rows_are_checked_on_save(self):
+		report, _user = self.make_filtered_report()
+		report.append("filters", dict(fieldname="owner", label="Owner", fieldtype="Link"))
+		with self.assertRaisesRegex(frappe.ValidationError, "Options"):
+			report.save()
+
+		report.reload()
+		report.filters[-1].wildcard_filter = 1
+		with self.assertRaisesRegex(frappe.ValidationError, "Wildcard Filter"):
+			report.save()
+
+	def make_filtered_report(self):
+		from frappe.core.doctype.user_permission.test_user_permission import create_user
+
+		frappe.set_user("Administrator")
+		user = create_user("test_report_filters@example.com", "Website Manager").name
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "Filtered ToDos " + frappe.generate_hash(length=6),
+				"report_type": "Script Report",
+				"is_standard": "No",
+				"validate_filters": 1,
+				"roles": [{"role": "Website Manager"}],
+				"filters": [
+					dict(
+						fieldname="allocated_to",
+						label="Allocated To",
+						fieldtype="Link",
+						options="User",
+						mandatory=1,
+						default="__user",
+					),
+					dict(
+						fieldname="status",
+						label="Status",
+						fieldtype="Select",
+						options="Open\nClosed",
+						default="Open",
+					),
+					dict(fieldname="count", label="Count", fieldtype="Int"),
+					dict(fieldname="show_all", label="Show All", fieldtype="Check"),
+					dict(fieldname="from_date", label="From Date", fieldtype="Date", default="Today"),
+					dict(
+						fieldname="job_type", label="Job Type", fieldtype="Link", options="Scheduled Job Type"
+					),
+					dict(fieldname="users", label="Users", fieldtype="MultiSelectList", options="User"),
+					dict(fieldname="period", label="Period", fieldtype="DateRange"),
+				],
+				"columns": [
+					dict(fieldname="status", label="Status", fieldtype="Data"),
+					dict(fieldname="count", label="Count", fieldtype="Data"),
+					dict(fieldname="show_all", label="Show All", fieldtype="Data"),
+					dict(fieldname="from_date", label="From Date", fieldtype="Data"),
+				],
+				"report_script": "result = [{key: filters.get(key) for key in ('status', 'count', 'show_all', 'from_date')}]",
+			}
+		).insert(ignore_permissions=True)
+		return report, user
+
+	def test_run_sends_link_titles(self):
+		report = self.make_link_column_report()
+		self.enable_link_titles("User")
+
+		self.run_report(report)
+
+		full_name = frappe.db.get_value("User", "Administrator", "full_name")
+		self.assertEqual(frappe.local.response["_link_titles"]["User::Administrator"], full_name)
+
+	def test_run_skips_link_titles_when_doctype_does_not_show_them(self):
+		report = self.make_link_column_report()
+
+		self.run_report(report)
+
+		self.assertNotIn("User::Administrator", frappe.local.response.get("_link_titles", {}))
+
+	def test_legacy_string_columns_resolve_link_titles(self):
+		"""Prepared reports can still carry `Label:Link/DocType:width` column strings."""
+		from frappe.desk.query_report import get_column_as_dict
+
+		self.enable_link_titles("User")
+		columns = [get_column_as_dict("Allocated To:Link/User:120")]
+
+		titles = get_report_link_titles(columns, [["Administrator"]])
+
+		full_name = frappe.db.get_value("User", "Administrator", "full_name")
+		self.assertEqual(titles["User::Administrator"], full_name)
+
+	def make_link_column_report(self):
+		"""Script report with an ID column and a User link column, returning one row."""
+		frappe.set_user("Administrator")
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "ToDo",
+				"report_name": "Link Title Report " + frappe.generate_hash(length=6),
+				"report_type": "Script Report",
+				"is_standard": "No",
+				"roles": [{"role": "System Manager"}],
+				"columns": [
+					dict(fieldname="name", label="ID", fieldtype="Link", options="ToDo"),
+					dict(fieldname="allocated_to", label="Allocated To", fieldtype="Link", options="User"),
+				],
+			}
+		).insert(ignore_permissions=True)
+		report.report_script = 'result = [{"name": "todo-1", "allocated_to": "Administrator"}]'
+		report.save()
+		return report
+
+	def run_report(self, report):
+		previous_response = frappe.local.response
+		self.addCleanup(setattr, frappe.local, "response", previous_response)
+		frappe.local.response = frappe._dict()
+		run(report.name)
+
+	def enable_link_titles(self, doctype):
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+		make_property_setter(doctype, None, "show_title_field_in_link", "1", "Check", for_doctype=True)
+
+	def test_user_facing_error_keeps_line_breaks(self):
+		from frappe.desk.query_report import get_user_facing_error
+
+		traceback = (
+			"Traceback (most recent call last):\n  File 'x.py', line 1\n"
+			"frappe.exceptions.ValidationError: "
+			"Row 4: first.<br>Row 4: <b>second</b> one.<BR><br />Row 5: third."
+		)
+
+		# the report view shows each message on its own line
+		self.assertEqual(
+			"Row 4: first.\nRow 4: second one.\n\nRow 5: third.",
+			get_user_facing_error(traceback, keep_line_breaks=True),
+		)
+		# the notification stays on one line, since an email subject drops newlines
+		self.assertEqual(
+			"Row 4: first. Row 4: second one. Row 5: third.",
+			get_user_facing_error(traceback),
+		)
+
+
+def create_mock_data():
+	data = frappe._dict()
+	data.report_name = "Mock Report"
+
+	data.columns = [
+		{"label": "Column A", "fieldname": "column_a", "fieldtype": "Float"},
+		{"label": "Column B", "fieldname": "column_b", "width": 100, "fieldtype": "Float"},
+		{"label": "Column C", "fieldname": "column_c", "width": 150, "fieldtype": "Duration"},
+	]
+
+	data.result = [
+		[1.0, 3.0, 600],
+		{"column_a": 22.1, "column_b": 21.8, "column_c": 86412},
+		{"column_b": 5.1, "column_c": 53234, "column_a": 11.1},
+		[3.0, 1.5, 333],
+	]
+
+	data.applied_filters = {"Label 1": "Filter Value", "Label 2": None, "Label 3": list(range(5))}
+	data.filters = {"label_1": "Filter Value", "label_2": None, "label_3": list(range(5))}
+
+	return data

@@ -1,0 +1,7 @@
+// Espresso radius tokens.
+//
+// Canonical scale (--radius-*) lives in plain CSS at css/espresso/radius.css.
+// The old --border-radius-* names are kept as deprecated aliases in legacy.css
+// (mapped to Espresso --radius-*; values follow Espresso, not the old scale).
+// Migrate component usages from --border-radius-* to --radius-* over time.
+@import "frappe/public/css/espresso/radius.css";

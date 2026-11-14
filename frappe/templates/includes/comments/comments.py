@@ -1,66 +1,89 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+import re
 
 import frappe
-import re
-from frappe.website.render import clear_cache
-from frappe.utils import add_to_date, now
+from frappe import _, scrub
+from frappe.rate_limiter import rate_limit
+from frappe.utils.html_utils import clean_html
+from frappe.website.utils import clear_cache
 
-from frappe import _
+URLS_COMMENT_PATTERN = re.compile(
+	r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+", re.IGNORECASE
+)
+EMAIL_PATTERN = re.compile(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)", re.IGNORECASE)
 
-@frappe.whitelist()
-def add_comment(comment, comment_email, comment_by, reference_doctype, reference_name, route):
-	doc = frappe.get_doc(reference_doctype, reference_name)
+
+def get_limit():
+	method = frappe.get_hooks("comment_rate_limit")
+	if not method:
+		return 5
+	else:
+		limit = frappe.call(method[0])
+		return limit
+
+
+@frappe.whitelist(allow_guest=True)
+@rate_limit(limit=get_limit, seconds=60 * 60)
+def add_comment(
+	comment: str,
+	comment_email: str,
+	comment_by: str,
+	reference_doctype: str,
+	reference_name: str,
+	route: str,
+	web_form: str | None = None,
+):
+	if frappe.session.user == "Guest":
+		allowed_doctypes = ["Web Page"]
+		comments_permission_config = frappe.get_hooks("has_comment_permission")
+		guest_allowed = False
+		if len(comments_permission_config):
+			if comments_permission_config["doctype"]:
+				allowed_doctypes.append(comments_permission_config["doctype"][0])
+				check_permission_method = comments_permission_config["method"]
+				guest_allowed = frappe.call(check_permission_method[0], ref_doctype=reference_doctype)
+		if reference_doctype not in allowed_doctypes:
+			return
+
+		if not guest_allowed:
+			frappe.throw(_("Please login to post a comment."), exc=frappe.AuthenticationError)
+	else:
+		# override with the logged-in user's identity to prevent spoofing;
+		# guests must supply their own name/email in the request
+		comment_email = frappe.session.user
+		comment_by = frappe.get_value("User", frappe.session.user, "full_name")
 
 	if not comment.strip():
-		frappe.msgprint(_('The comment cannot be empty'))
+		frappe.msgprint(_("The comment cannot be empty"))
 		return False
 
-	url_regex = re.compile(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+", re.IGNORECASE)
-	email_regex = re.compile(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)", re.IGNORECASE)
-
-	if url_regex.search(comment) or email_regex.search(comment):
-		frappe.msgprint(_('Comments cannot have links or email addresses'))
+	if URLS_COMMENT_PATTERN.search(comment) or EMAIL_PATTERN.search(comment):
+		frappe.msgprint(_("Comments cannot have links or email addresses"))
 		return False
 
-	if not comment_email == frappe.session.user:
-		comment_email = frappe.session.user
+	perm_flag = True
+	doc = frappe.get_doc(reference_doctype, reference_name)
+	if web_form:
+		web_form = frappe.get_lazy_doc("Web Form", web_form)
+		perm_flag = web_form.doc_type == reference_doctype and web_form.has_web_form_permission(
+			reference_doctype, reference_name
+		)
+	elif not (frappe.session.user == "Guest" and guest_allowed):
+		perm_flag = doc.has_permission()
 
-	comments_count = frappe.db.count("Comment", {
-		"comment_type": "Comment",
-		"comment_email": frappe.session.user,
-		"creation": (">", add_to_date(now(), hours=-1))
-	})
+	if not perm_flag:
+		if frappe.session.user == "Guest":
+			raise frappe.AuthenticationError
+		raise frappe.PermissionError
 
-	if comments_count > 20:
-		frappe.msgprint(_('Hourly comment limit reached for: {0}').format(frappe.bold(frappe.session.user)))
-		return False
+	comment = doc.add_comment(text=clean_html(comment), comment_email=comment_email, comment_by=comment_by)
 
-	comment = doc.add_comment(
-		text=comment,
-		comment_email=comment_email,
-		comment_by=comment_by)
-
-	comment.db_set('published', 1)
+	comment.db_set("published", 1)
 
 	# since comments are embedded in the page, clear the web cache
 	if route:
 		clear_cache(route)
-
-	content = (comment.content
-		+ "<p><a href='{0}/app/Form/Comment/{1}' style='font-size: 80%'>{2}</a></p>".format(frappe.utils.get_request_site_address(),
-			comment.name,
-			_("View Comment")))
-
-	# notify creator
-	frappe.sendmail(
-		recipients=frappe.db.get_value('User', doc.owner, 'email') or doc.owner,
-		subject=_('New Comment on {0}: {1}').format(doc.doctype, doc.name),
-		message=content,
-		reference_doctype=doc.doctype,
-		reference_name=doc.name
-	)
 
 	# revert with template if all clear (no backlinks)
 	template = frappe.get_template("templates/includes/comments/comment.html")

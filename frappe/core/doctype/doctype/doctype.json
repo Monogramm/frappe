@@ -1,53 +1,78 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_rename": 1,
  "autoname": "Prompt",
  "creation": "2013-02-18 13:36:19",
  "description": "DocType is a Table / Form in the application.",
  "doctype": "DocType",
  "document_type": "Document",
+ "documentation": "https://docs.frappe.io/framework/user/en/basics/doctypes",
  "engine": "InnoDB",
  "field_order": [
+  "form_builder_tab",
+  "form_builder",
+  "permissions_tab",
+  "permissions",
+  "restrict_to_domain",
+  "read_only",
+  "in_create",
+  "protect_attached_files",
+  "sb1",
+  "naming_rule",
+  "autoname",
+  "column_break_nexu",
+  "title_field",
+  "allow_rename",
+  "settings_tab",
   "sb0",
   "module",
   "is_submittable",
   "istable",
   "issingle",
   "is_tree",
+  "is_calendar_and_gantt",
   "editable_grid",
   "quick_entry",
+  "grid_page_length",
+  "rows_threshold_for_grid_search",
+  "allow_bulk_edit",
   "cb01",
   "track_changes",
   "track_seen",
   "track_views",
   "custom",
   "beta",
-  "fields_section_break",
-  "fields",
-  "sb1",
-  "autoname",
-  "name_case",
-  "column_break_15",
+  "deprecated",
+  "is_virtual",
+  "queue_in_background",
   "description",
-  "documentation",
   "form_settings_section",
   "image_field",
   "timeline_field",
   "nsm_parent_field",
   "max_attachments",
+  "documentation",
   "column_break_23",
   "hide_toolbar",
   "allow_copy",
-  "allow_rename",
   "allow_import",
   "allow_events_in_timeline",
   "allow_auto_repeat",
+  "make_attachments_public",
+  "enable_upload_first_workflow",
+  "force_private_attachments",
   "view_settings",
-  "title_field",
+  "show_title_field_in_link",
+  "translated_doctype",
+  "link_display_mode",
+  "show_image_in_link",
   "search_fields",
   "default_print_format",
   "sort_field",
   "sort_order",
+  "default_view",
+  "force_re_route_to_default_view",
   "column_break_29",
   "document_type",
   "icon",
@@ -55,26 +80,32 @@
   "show_preview_popup",
   "show_name_in_global_search",
   "email_settings_sb",
+  "default_email_template",
+  "column_break_51",
   "email_append_to",
   "sender_field",
+  "sender_name_field",
+  "recipient_account_field",
   "subject_field",
-  "sb2",
-  "permissions",
-  "restrict_to_domain",
-  "read_only",
-  "in_create",
+  "fields_tab",
+  "fields_section",
+  "fields",
   "actions_section",
   "actions",
   "links_section",
   "links",
+  "document_states_section",
+  "states",
   "web_view",
   "has_web_view",
   "allow_guest_to_view",
-  "index_web_pages_for_search",
   "route",
   "is_published_field",
   "advanced",
-  "engine"
+  "engine",
+  "migration_hash",
+  "row_format",
+  "connections_tab"
  ],
  "fields": [
   {
@@ -133,8 +164,8 @@
   },
   {
    "default": "0",
-   "depends_on": "eval:!doc.istable && !doc.issingle",
-   "description": "Open a dialog with mandatory fields to create a new record quickly",
+   "depends_on": "eval:!doc.istable",
+   "description": "Open a dialog with mandatory fields to create a new record quickly. There must be at least one mandatory field to show in dialog.",
    "fieldname": "quick_entry",
    "fieldtype": "Check",
    "label": "Quick Entry"
@@ -144,7 +175,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "1",
+   "default": "0",
    "depends_on": "eval:!doc.istable",
    "description": "If enabled, changes to the document are tracked and shown in timeline",
    "fieldname": "track_changes",
@@ -175,15 +206,18 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "fieldname": "beta",
    "fieldtype": "Check",
    "label": "Beta"
   },
   {
-   "fieldname": "fields_section_break",
-   "fieldtype": "Section Break",
-   "label": "Fields",
-   "oldfieldtype": "Section Break"
+   "default": "0",
+   "depends_on": "eval:!doc.istable",
+   "description": "Marks this DocType as deprecated. It will continue to work, but users will be warned against using it.",
+   "fieldname": "deprecated",
+   "fieldtype": "Check",
+   "label": "Deprecated"
   },
   {
    "fieldname": "fields",
@@ -195,28 +229,15 @@
   },
   {
    "fieldname": "sb1",
-   "fieldtype": "Section Break",
+   "fieldtype": "Tab Break",
    "label": "Naming"
   },
   {
-   "description": "Naming Options:\n<ol><li><b>field:[fieldname]</b> - By Field</li><li><b>naming_series:</b> - By Naming Series (field called naming_series must be present</li><li><b>Prompt</b> - Prompt user for a name</li><li><b>[series]</b> - Series by prefix (separated by a dot); for example PRE.#####</li>\n<li><b>format:EXAMPLE-{MM}morewords{fieldname1}-{fieldname2}-{#####}</b> - Replace all braced words (fieldnames, date words (DD, MM, YY), series) with their value. Outside braces, any characters can be used.</li></ol>",
    "fieldname": "autoname",
    "fieldtype": "Data",
    "label": "Auto Name",
    "oldfieldname": "autoname",
    "oldfieldtype": "Data"
-  },
-  {
-   "fieldname": "name_case",
-   "fieldtype": "Select",
-   "label": "Name Case",
-   "oldfieldname": "name_case",
-   "oldfieldtype": "Select",
-   "options": "\nTitle Case\nUPPER CASE"
-  },
-  {
-   "fieldname": "column_break_15",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "description",
@@ -227,6 +248,7 @@
   },
   {
    "collapsible": 1,
+   "depends_on": "eval:!doc.istable",
    "fieldname": "form_settings_section",
    "fieldtype": "Section Break",
    "label": "Form Settings"
@@ -259,7 +281,7 @@
    "default": "0",
    "fieldname": "hide_toolbar",
    "fieldtype": "Check",
-   "label": "Hide Sidebar and Menu",
+   "label": "Hide Sidebar, Menu, and Comments",
    "oldfieldname": "hide_toolbar",
    "oldfieldtype": "Check"
   },
@@ -272,7 +294,8 @@
    "oldfieldtype": "Check"
   },
   {
-   "default": "0",
+   "default": "1",
+   "depends_on": "eval:!doc.issingle",
    "fieldname": "allow_rename",
    "fieldtype": "Check",
    "label": "Allow Rename",
@@ -281,6 +304,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.issingle",
    "fieldname": "allow_import",
    "fieldtype": "Check",
    "label": "Allow Import (via Data Import Tool)"
@@ -299,6 +323,7 @@
   },
   {
    "collapsible": 1,
+   "depends_on": "eval:!doc.istable",
    "fieldname": "view_settings",
    "fieldtype": "Section Break",
    "label": "View Settings"
@@ -307,7 +332,8 @@
    "depends_on": "eval:!doc.istable",
    "fieldname": "title_field",
    "fieldtype": "Data",
-   "label": "Title Field"
+   "label": "Title Field",
+   "mandatory_depends_on": "eval:doc.show_title_field_in_link"
   },
   {
    "depends_on": "eval:!doc.istable",
@@ -323,7 +349,7 @@
    "label": "Default Print Format"
   },
   {
-   "default": "modified",
+   "default": "creation",
    "depends_on": "eval:!doc.istable",
    "fieldname": "sort_field",
    "fieldtype": "Data",
@@ -351,7 +377,7 @@
   },
   {
    "fieldname": "icon",
-   "fieldtype": "Data",
+   "fieldtype": "Icon",
    "label": "Icon"
   },
   {
@@ -370,12 +396,6 @@
    "fieldname": "show_name_in_global_search",
    "fieldtype": "Check",
    "label": "Make \"name\" searchable in Global Search"
-  },
-  {
-   "depends_on": "eval:!doc.istable",
-   "fieldname": "sb2",
-   "fieldtype": "Section Break",
-   "label": "Permission Rules"
   },
   {
    "fieldname": "permissions",
@@ -408,9 +428,10 @@
    "oldfieldtype": "Check"
   },
   {
-   "depends_on": "eval:doc.custom===0",
+   "collapsible": 1,
+   "depends_on": "eval:doc.custom===0 && !doc.istable",
    "fieldname": "web_view",
-   "fieldtype": "Section Break",
+   "fieldtype": "Tab Break",
    "label": "Web View"
   },
   {
@@ -455,6 +476,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "description": "Tree structures are implemented using Nested Set",
    "fieldname": "is_tree",
    "fieldtype": "Check",
@@ -475,27 +497,29 @@
   {
    "collapsible": 1,
    "collapsible_depends_on": "actions",
+   "depends_on": "eval:!doc.istable",
    "fieldname": "actions_section",
-   "fieldtype": "Section Break",
+   "fieldtype": "Tab Break",
    "label": "Actions"
   },
   {
    "fieldname": "actions",
    "fieldtype": "Table",
-   "label": "Actions",
+   "label": "Document Actions",
    "options": "DocType Action"
   },
   {
    "collapsible": 1,
    "collapsible_depends_on": "links",
+   "depends_on": "eval:!doc.istable",
    "fieldname": "links_section",
-   "fieldtype": "Section Break",
-   "label": "Linked Documents"
+   "fieldtype": "Tab Break",
+   "label": "Links"
   },
   {
    "fieldname": "links",
    "fieldtype": "Table",
-   "label": "Links",
+   "label": "Document Links",
    "options": "DocType Link"
   },
   {
@@ -508,7 +532,7 @@
    "depends_on": "email_append_to",
    "fieldname": "sender_field",
    "fieldtype": "Data",
-   "label": "Sender Field",
+   "label": "Sender Email Field",
    "mandatory_depends_on": "email_append_to"
   },
   {
@@ -519,18 +543,225 @@
   },
   {
    "collapsible": 1,
+   "depends_on": "eval:!doc.istable",
    "fieldname": "email_settings_sb",
    "fieldtype": "Section Break",
    "label": "Email Settings"
   },
   {
-   "default": "1",
-   "fieldname": "index_web_pages_for_search",
+   "default": "0",
+   "fieldname": "is_virtual",
    "fieldtype": "Check",
-   "label": "Index Web Pages for Search"
+   "label": "Is Virtual"
+  },
+  {
+   "fieldname": "default_email_template",
+   "fieldtype": "Link",
+   "label": "Default Email Template",
+   "options": "Email Template"
+  },
+  {
+   "fieldname": "column_break_51",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "naming_rule",
+   "fieldtype": "Select",
+   "label": "Naming Rule",
+   "length": 40,
+   "options": "\nSet by user\nAutoincrement\nBy fieldname\nBy \"Naming Series\" field\nExpression\nExpression (old style)\nRandom\nUUID\nBy script"
+  },
+  {
+   "fieldname": "migration_hash",
+   "fieldtype": "Data",
+   "hidden": 1
+  },
+  {
+   "fieldname": "states",
+   "fieldtype": "Table",
+   "label": "Document States",
+   "options": "DocType State"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:!doc.istable",
+   "fieldname": "document_states_section",
+   "fieldtype": "Tab Break",
+   "label": "States"
+  },
+  {
+   "default": "0",
+   "fieldname": "show_title_field_in_link",
+   "fieldtype": "Check",
+   "label": "Show Title in Link Fields"
+  },
+  {
+   "default": "0",
+   "fieldname": "translated_doctype",
+   "fieldtype": "Check",
+   "label": "Translate Link Fields"
+  },
+  {
+   "default": "Search",
+   "description": "How Link fields to this DocType load their options. Search: fetch matches as the user types. Select: load the whole list once, without a search box (for short lists).",
+   "fieldname": "link_display_mode",
+   "fieldtype": "Select",
+   "label": "Link Display Mode",
+   "options": "Search\nSelect"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.image_field",
+   "description": "Show the Image Field as an avatar in Link field dropdowns.",
+   "fieldname": "show_image_in_link",
+   "fieldtype": "Check",
+   "label": "Show Image in Link Fields"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:!doc.force_private_attachments",
+   "fieldname": "make_attachments_public",
+   "fieldtype": "Check",
+   "label": "Make Attachments Public by Default"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:!doc.istable",
+   "description": "Users can upload a file first and write a document of this DocType from it.",
+   "fieldname": "enable_upload_first_workflow",
+   "fieldtype": "Check",
+   "label": "Allow documents to be created from an uploaded file"
+  },
+  {
+   "default": "0",
+   "description": "All files attached to this DocType must be private",
+   "fieldname": "force_private_attachments",
+   "fieldtype": "Check",
+   "label": "Force Private Attachments"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.is_submittable",
+   "description": "Enabling this will submit documents in background",
+   "fieldname": "queue_in_background",
+   "fieldtype": "Check",
+   "label": "Queue in Background (BETA)"
+  },
+  {
+   "fieldname": "default_view",
+   "fieldtype": "Select",
+   "label": "Default View"
+  },
+  {
+   "default": "0",
+   "fieldname": "force_re_route_to_default_view",
+   "fieldtype": "Check",
+   "label": "Force Re-route to Default View"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:!doc.istable",
+   "description": "Enables Calendar and Gantt views.",
+   "fieldname": "is_calendar_and_gantt",
+   "fieldtype": "Check",
+   "label": "Is Calendar and Gantt"
+  },
+  {
+   "fieldname": "settings_tab",
+   "fieldtype": "Tab Break",
+   "label": "Settings"
+  },
+  {
+   "depends_on": "eval:!doc.__islocal",
+   "fieldname": "form_builder_tab",
+   "fieldtype": "Tab Break",
+   "label": "Form"
+  },
+  {
+   "fieldname": "form_builder",
+   "fieldtype": "HTML",
+   "label": "Form Builder"
+  },
+  {
+   "fieldname": "fields_section",
+   "fieldtype": "Section Break",
+   "label": "Fields"
+  },
+  {
+   "fieldname": "connections_tab",
+   "fieldtype": "Tab Break",
+   "label": "Connections",
+   "show_dashboard": 1
+  },
+  {
+   "depends_on": "email_append_to",
+   "fieldname": "sender_name_field",
+   "fieldtype": "Data",
+   "label": "Sender Name Field"
+  },
+  {
+   "depends_on": "eval:!doc.istable",
+   "fieldname": "permissions_tab",
+   "fieldtype": "Tab Break",
+   "label": "Permissions"
+  },
+  {
+   "fieldname": "column_break_nexu",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fields_tab",
+   "fieldtype": "Tab Break",
+   "label": "Fields"
+  },
+  {
+   "default": "Dynamic",
+   "fieldname": "row_format",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Row Format",
+   "options": "Dynamic\nCompressed"
+  },
+  {
+   "default": "50",
+   "depends_on": "istable",
+   "fieldname": "grid_page_length",
+   "fieldtype": "Int",
+   "label": "Grid Page Length",
+   "non_negative": 1
+  },
+  {
+   "default": "0",
+   "description": "Users are only able to delete attached files if the document is either in draft or if the document is canceled and they are also able to delete the document.",
+   "fieldname": "protect_attached_files",
+   "fieldtype": "Check",
+   "label": "Protect Attached Files"
+  },
+  {
+   "default": "20",
+   "depends_on": "istable",
+   "fieldname": "rows_threshold_for_grid_search",
+   "fieldtype": "Int",
+   "label": "Rows Threshold for Grid Search",
+   "non_negative": 1
+  },
+  {
+   "depends_on": "email_append_to",
+   "fieldname": "recipient_account_field",
+   "fieldtype": "Data",
+   "label": "Recipient Account Field"
+  },
+  {
+   "default": "1",
+   "depends_on": "istable",
+   "description": "Enable bulk update of this field across child table rows.",
+   "fieldname": "allow_bulk_edit",
+   "fieldtype": "Check",
+   "label": "Allow Bulk Edit"
   }
  ],
- "icon": "fa fa-bolt",
+ "grid_page_length": 50,
+ "icon": "database",
  "idx": 6,
  "links": [
   {
@@ -555,7 +786,7 @@
   },
   {
    "group": "Customization",
-   "link_doctype": "Custom Script",
+   "link_doctype": "Client Script",
    "link_fieldname": "dt"
   },
   {
@@ -602,17 +833,13 @@
    "group": "Rules",
    "link_doctype": "Assignment Rule",
    "link_fieldname": "document_type"
-  },
-  {
-   "group": "Rules",
-   "link_doctype": "Energy Point Rule",
-   "link_fieldname": "reference_doctype"
   }
  ],
- "modified": "2020-12-10 15:10:09.227205",
+ "modified": "2026-11-02 09:54:18.575551",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "DocType",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -638,9 +865,13 @@
   }
  ],
  "route": "doctype",
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
  "search_fields": "module",
  "show_name_in_global_search": 1,
- "sort_field": "modified",
+ "sort_field": "creation",
  "sort_order": "DESC",
- "track_changes": 1
+ "states": [],
+ "track_changes": 1,
+ "translated_doctype": 1
 }

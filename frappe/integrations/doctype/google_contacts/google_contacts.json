@@ -1,7 +1,9 @@
 {
+ "actions": [],
  "autoname": "format:GC-{email_id}",
  "creation": "2019-06-14 00:09:39.441961",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/google_contacts",
  "engine": "InnoDB",
  "field_order": [
   "enable",
@@ -97,10 +99,12 @@
    "label": "Push to Google Contacts"
   }
  ],
- "modified": "2020-09-18 17:26:09.703215",
+ "links": [],
+ "modified": "2024-03-23 16:03:26.863560",
  "modified_by": "Administrator",
  "module": "Integrations",
  "name": "Google Contacts",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -116,17 +120,14 @@
   {
    "create": 1,
    "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
+   "if_owner": 1,
    "read": 1,
-   "report": 1,
-   "role": "All",
-   "share": 1,
+   "role": "Desk User",
    "write": 1
   }
  ],
- "sort_field": "modified",
- "sort_order": "ASC",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

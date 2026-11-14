@@ -1,4 +1,6 @@
 {
+ "actions": [],
+ "allow_bulk_edit": 1,
  "creation": "2019-02-07 10:10:46.845678",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -13,11 +15,10 @@
   "column_break_5",
   "reference_doctype",
   "reference_name",
-  "link_doctype",
-  "link_name",
   "reference_owner",
   "section_break_10",
-  "content"
+  "content",
+  "ip_address"
  ],
  "fields": [
   {
@@ -75,18 +76,6 @@
    "options": "reference_doctype"
   },
   {
-   "fieldname": "link_doctype",
-   "fieldtype": "Link",
-   "label": "Link DocType",
-   "options": "DocType"
-  },
-  {
-   "fieldname": "link_name",
-   "fieldtype": "Dynamic Link",
-   "label": "Link Name",
-   "options": "link_doctype"
-  },
-  {
    "fieldname": "reference_owner",
    "fieldtype": "Data",
    "label": "Reference Owner",
@@ -102,9 +91,17 @@
    "ignore_xss_filter": 1,
    "in_list_view": 1,
    "label": "Content"
+  },
+  {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "IP Address"
   }
  ],
- "modified": "2019-09-02 21:00:10.784787",
+ "icon": "message-circle",
+ "links": [],
+ "modified": "2024-08-14 16:10:15.413830",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Comment",
@@ -136,8 +133,10 @@
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "title_field": "comment_type",
  "track_changes": 1
 }

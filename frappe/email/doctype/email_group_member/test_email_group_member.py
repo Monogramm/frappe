@@ -1,12 +1,7 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+from frappe.tests import IntegrationTestCase
 
-import frappe
-import unittest
 
-# test_records = frappe.get_test_records('Email Group Member')
-
-class TestEmailGroupMember(unittest.TestCase):
+class TestEmailGroupMember(IntegrationTestCase):
 	pass

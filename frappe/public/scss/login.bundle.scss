@@ -1,0 +1,202 @@
+@import "./desk/variables";
+
+body {
+	background-color: var(--bg-color);
+
+	.page-content-wrapper {
+		min-height: calc(100vh - 220px);
+		padding-top: 60px;
+
+		@include media-breakpoint-down(xs) {
+			padding-top: 0;
+			min-height: 100svh;
+		}
+	}
+
+	.web-footer {
+		display: none;
+	}
+}
+
+.for-forgot,
+.for-login-with-email-link,
+.for-signup,
+.for-email-login {
+	display: none;
+}
+
+.for-login,
+.for-forgot,
+.for-login-with-email-link,
+.for-signup,
+.for-email-login,
+.for-reset-password {
+	.page-card {
+		padding: 24px;
+		background-color: var(--bg-color);
+		max-width: 400px;
+		width: 100%;
+		margin: 0 auto;
+		border-radius: var(--radius-lg);
+
+		@include media-breakpoint-down(xs) {
+			max-width: 100%;
+			min-height: 100svh;
+			border-radius: 0;
+			border: none;
+			padding: 60px 32px 32px;
+		}
+
+		.social-logins {
+			.btn-salesforce i {
+				color: var(--blue-400);
+			}
+
+			.social-login-buttons {
+				margin-top: var(--margin-md);
+
+				.login-button-wrapper {
+					@include media-breakpoint-up(md) {
+						min-width: 33.33%;
+					}
+
+					min-width: 50%;
+					padding: 0 4px;
+					margin-bottom: var(--margin-md);
+
+					&:last-child {
+						margin-bottom: 0;
+					}
+				}
+			}
+		}
+
+		.page-card-body {
+			::placeholder,
+			/* Chrome, Firefox, Opera, Safari 10.1+ */
+			::-ms-input-placeholder {
+				/* Microsoft Edge */
+				color: var(--ink-gray-4);
+				opacity: 1;
+				/* Firefox */
+			}
+
+			input[type="text"],
+			input[type="email"],
+			input[type="password"] {
+				border: 1px solid var(--outline-gray-2);
+				color: var(--text-color);
+				@include get_textstyle("base", "regular");
+				background-color: var(--surface-base);
+				height: 28px;
+				padding: 6px 8px;
+				border-radius: var(--radius);
+			}
+
+			&.invalid {
+				input[type="text"],
+				input[type="email"],
+				input[type="password"] {
+					border: 1px solid var(--outline-red-3);
+				}
+			}
+
+			.field-error {
+				display: none;
+			}
+
+			.form-group.invalid {
+				input[type="text"],
+				input[type="email"],
+				input[type="password"] {
+					border: 1px solid var(--outline-red-3);
+				}
+
+				.field-error {
+					display: block;
+				}
+			}
+
+			.otp-qr-code {
+				width: 200px;
+				height: 200px;
+				border-radius: var(--radius);
+			}
+
+			.otp-setup-key {
+				padding: var(--input-padding);
+				border-radius: var(--radius);
+				background-color: var(--surface-gray-2);
+				color: var(--ink-gray-8);
+				font-family: var(--font-family-monospace);
+				@include get_textstyle("base", "regular");
+				user-select: all;
+
+				span {
+					display: inline-block;
+					margin-inline-end: 1ch;
+				}
+			}
+
+			.email-field,
+			.password-field {
+				position: relative;
+				width: 100%;
+			}
+
+			.password-field {
+				input {
+					padding-right: 38px;
+
+					&::-ms-reveal {
+						display: none; /* Hide Edge's native password reveal icon */
+					}
+				}
+
+				.toggle-password {
+					right: 9px;
+					top: 50%;
+					transform: translateY(-50%);
+					position: absolute;
+					z-index: 2;
+					cursor: pointer;
+					stroke: var(--ink-gray-5);
+				}
+			}
+		}
+	}
+
+	.invalid-login {
+		animation: wiggle 0.4s ease-in-out;
+	}
+
+	@keyframes wiggle {
+		0%,
+		100% {
+			transform: translateX(0);
+		}
+
+		20% {
+			transform: translateX(-4px);
+		}
+
+		40% {
+			transform: translateX(4px);
+		}
+
+		60% {
+			transform: translateX(-3px);
+		}
+
+		80% {
+			transform: translateX(3px);
+		}
+	}
+}
+
+.page-card-head {
+	img.app-logo {
+		max-height: 32px;
+		width: auto;
+	}
+}

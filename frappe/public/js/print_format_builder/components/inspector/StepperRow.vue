@@ -1,0 +1,45 @@
+<template>
+	<InspectorRow :label="label">
+		<Stepper
+			:value="modelValue ?? ''"
+			:placeholder="placeholder"
+			:unit="unit"
+			@decrement="adjust(-step)"
+			@increment="adjust(step)"
+			@input="on_input"
+		/>
+	</InspectorRow>
+</template>
+
+<script setup>
+import Stepper from "./Stepper.vue";
+import InspectorRow from "./InspectorRow.vue";
+
+const props = defineProps({
+	label: { type: String, required: true },
+	modelValue: { type: Number, default: null },
+	step: { type: Number, default: 1 },
+	base: { type: Number, default: 0 },
+	min: { type: Number, default: 0 },
+	unit: { type: String, default: "" },
+	placeholder: { type: String, default: "" },
+	allowEmpty: { type: Boolean, default: false },
+	decimals: { type: Boolean, default: false },
+});
+const emit = defineEmits(["update:modelValue"]);
+
+function adjust(delta) {
+	const current = props.modelValue ?? props.base;
+	const next = props.decimals ? Math.round((current + delta) * 10) / 10 : current + delta;
+	emit("update:modelValue", Math.max(props.min, next));
+}
+
+function on_input(v) {
+	const n = props.decimals ? Math.round(parseFloat(v) * 10) / 10 : parseInt(v);
+	if (isNaN(n)) {
+		emit("update:modelValue", props.allowEmpty ? null : 0);
+		return;
+	}
+	emit("update:modelValue", Math.max(props.min, n));
+}
+</script>

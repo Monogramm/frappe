@@ -4,7 +4,7 @@
 			:stroke-dasharray="circumference + ' ' + circumference"
 			:style="{
 				stroke: secondary,
-				strokeDashoffset: 0
+				strokeDashoffset: 0,
 			}"
 			:stroke-width="stroke"
 			fill="transparent"
@@ -16,7 +16,7 @@
 			:stroke-dasharray="circumference + ' ' + circumference"
 			:style="{
 				stroke: primary,
-				strokeDashoffset: strokeDashoffset
+				strokeDashoffset: strokeDashoffset,
 			}"
 			:stroke-width="stroke"
 			fill="transparent"
@@ -32,41 +32,36 @@
 			:style="{
 				color: 'var(--text-color)',
 				fontSize: 'var(--text-xs)',
-				fontWeight: 'var(--text-bold)'
+				fontWeight: 'var(--text-bold)',
 			}"
 		>
 			{{ progress }}%
 		</text>
 	</svg>
 </template>
-<script>
-export default {
-	name: "ProgressRing",
-	props: {
-		primary: String,
-		secondary: String,
-		radius: Number,
-		progress: Number,
-		stroke: Number
-	},
-	data() {
-		const normalizedRadius = this.radius - this.stroke * 2;
-		const circumference = normalizedRadius * 2 * Math.PI;
 
-		return {
-			normalizedRadius,
-			circumference
-		};
-	},
-	computed: {
-		strokeDashoffset() {
-			return (
-				this.circumference - (this.progress / 100) * this.circumference
-			);
-		}
-	}
-};
+<script setup>
+import { computed, ref } from "vue";
+
+// props
+const props = defineProps({
+	primary: String,
+	secondary: String,
+	radius: Number,
+	progress: Number,
+	stroke: Number,
+});
+
+// variables
+let normalizedRadius = ref(props.radius - props.stroke * 2);
+let circumference = ref(normalizedRadius.value * 2 * Math.PI);
+
+// computed
+let strokeDashoffset = computed(() => {
+	return circumference.value - (props.progress / 100) * circumference.value;
+});
 </script>
+
 <style scoped>
 circle {
 	transition: stroke-dashoffset 0.35s;

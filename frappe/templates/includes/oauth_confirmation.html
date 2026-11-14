@@ -1,34 +1,161 @@
 {% if not error %}
-<div class="panel panel-default">
-  <div class="panel-heading">
-    <h3 class="panel-title">{{ _("{} wants to access the following details from your account").format(client_id) }}</h3>
-  </div>
-  <div class="panel-body">
-      <ul class="list-group">
-      {% for dtl in details %}
-        <li class="list-group-item">{{ dtl.title() }}</li>
-      {% endfor %}
-      </ul>
-    <ul class="list-inline">
-      <li>
-        <button id="allow" class="btn btn-sm btn-primary">{{ _("Allow") }}</button>
-      </li>
-      <li>
-        <button id="deny" class="btn btn-sm btn-light">{{ _("Deny") }}</button>
-      </li>
-    </ul>
-  </div>
-</div>
-<script type="text/javascript">
-  frappe.ready(function() {
-    $('#allow').on('click', function(event) {
-      window.location.replace("{{ success_url | string }}");
-    });
-    $('#deny').on('click', function(event) {
-      window.location.replace("{{ failure_url | string }}");
-    });
-  });
-</script>
+<style>
+	body {
+		background-color: var(--bg-color);
+	}
+
+	.error-page {
+		height: auto;
+		display: block;
+	}
+
+	.error-page > div > .page-card-head {
+		display: none;
+	}
+
+	.error-page .details {
+		max-width: none;
+		margin: 0;
+		padding: 60px 0 0;
+		border: 0;
+		text-align: left;
+	}
+
+	.error-page .details > p {
+		margin: 0;
+	}
+
+	.page-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--margin-lg);
+		width: 100%;
+		max-width: 371px;
+		margin: 0 auto;
+		padding: 24px;
+		background-color: var(--bg-color);
+		border-radius: var(--radius-lg);
+	}
+
+	.page-card-head {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 16px;
+		margin: 0;
+		padding: 0;
+		text-align: left;
+	}
+
+	.app-logo {
+		width: auto;
+		max-height: 32px;
+	}
+
+	.page-card-head-text,
+	.oauth-permissions {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.page-card-head h4 {
+		align-self: stretch;
+		margin: 0;
+		color: var(--heading-color);
+		font-size: var(--text-2xl);
+		font-weight: var(--weight-bold);
+		line-height: 115%;
+		text-align: left;
+	}
+
+	.page-card-subtitle,
+	.oauth-permissions-label {
+		margin: 0;
+		color: var(--ink-gray-6);
+	}
+
+	.oauth-scope-list {
+		overflow: hidden;
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius);
+	}
+
+	.oauth-scope {
+		padding: 10px 12px;
+		border-bottom: 1px solid var(--border-color);
+	}
+
+	.oauth-scope:last-child {
+		border-bottom: 0;
+	}
+
+	.oauth-actions {
+		display: flex;
+		gap: 12px;
+	}
+
+	.oauth-actions form,
+	.oauth-actions .btn {
+		flex: 1;
+	}
+
+	.oauth-actions .btn {
+		width: 100%;
+	}
+
+	.oauth-actions .btn-primary {
+		color: white;
+		background: var(--gray-900);
+		border-color: var(--gray-900);
+	}
+
+	@media (max-width: 575.98px) {
+		.error-page .details {
+			padding: 0;
+		}
+
+		.page-card {
+			max-width: 100%;
+			min-height: 100svh;
+			padding: 60px 32px 32px;
+			border: 0;
+			border-radius: 0;
+		}
+	}
+</style>
+<section>
+	<div class="oauth-content page-card">
+		<div class="page-card-head">
+			<img class="app-logo" src="{{ logo }}" alt="">
+			<div class="page-card-head-text">
+				<h4>{{ _("Authorize App") }}</h4>
+				<p class="page-card-subtitle">
+					{{ _("{0} wants to access your account").format(_(client_id)) }}
+				</p>
+			</div>
+		</div>
+
+		<div class="oauth-permissions">
+			<p class="oauth-permissions-label">{{ _("This will allow {0} to:").format(_(client_id)) }}</p>
+			<div class="oauth-scope-list">
+				{% for detail in details %}
+				<div class="oauth-scope">
+					<span>{{ _(detail.title()) }}</span>
+				</div>
+				{% endfor %}
+			</div>
+		</div>
+
+		<div class="oauth-actions">
+			<a href="{{ failure_url | string }}" class="btn btn-sm btn-default">{{ _("Deny") }}</a>
+			<form method="POST" action="{{ success_url | string }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<button type="submit" class="btn btn-sm btn-primary">{{ _("Allow") }}</button>
+			</form>
+		</div>
+	</div>
+</section>
 {% else %}
 <div class="panel panel-danger">
   <div class="panel-heading">
@@ -37,11 +164,6 @@
   <div class="panel-body">
     <p>{{ _("An unexpected error occurred while authorizing {}.").format(client_id) }}</p>
     <h4>{{ error }}</h4>
-    <ul class="list-inline">
-      <li>
-        <button class="btn btn-sm btn-light">{{ _("OK") }}</button>
-      </li>
-    </ul>
   </div>
 </div>
 {% endif %}

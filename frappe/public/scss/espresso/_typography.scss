@@ -1,0 +1,82 @@
+// Espresso typography.
+//
+// Canonical sizes/weights + ready-to-use type-style classes (.text-<size>-<weight>,
+// .text-p-<size>-<weight>) live in plain CSS at css/espresso/typography.css — use
+// those classes in new markup. This partial keeps Frappe-specific bits (font stack,
+// legacy line-height tokens) and the get_textstyle mixin, now a transitional shim
+// reading Espresso tokens; migrate its ~30 call sites to the classes over time.
+// Old --weight-* / --text-md names are kept as deprecated aliases in legacy.css.
+@import "frappe/public/css/espresso/typography.css";
+
+:root {
+	--font-stack: "InterVariable", "Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI",
+		"Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+		sans-serif;
+
+	// Legacy line-height tokens (Frappe-specific; not part of the Espresso scale).
+	--text-line-height-3xl: 115%;
+	--text-line-height-4xl: 160%;
+	--text-line-height-7xl: 140%;
+	--text-line-height-12xl: 130%;
+	--text-line-height-14xl: 120%;
+
+	--para-line-height-2-xs: 160%;
+	--para-line-height-sm: 150%;
+	--para-line-height-2xl: 148%;
+	--para-line-height-3xl: 140%;
+}
+
+$weight-list: "regular", "medium", "semibold", "bold", "black";
+
+$letter-space: (
+	"tiny": 0.09em,
+	"2xs": 0.01em,
+	"xs": 0.02em,
+	"xs-heavy": 0.015em,
+	"sm": 0.02em,
+	"sm-heavy": 0.015em,
+	"base": 0.02em,
+	"base-heavy": 0.015em,
+	"lg": 0.02em,
+	"lg-heavy": 0.015em,
+	"xl": 0.01em,
+	"2xl": 0.01em,
+	"3xl": 0.005em,
+	"4xl": 0.005em,
+	"5xl": 0.005em,
+	"5xl-heavy": 0.5px,
+	"6xl": 0.5px,
+);
+
+$letter-space-heavy: (
+	"xs": "semibold",
+	"sm": "semibold",
+	"base": "medium",
+	"lg": "medium",
+	"5xl": "bold",
+);
+
+@function get_letterspacing($name, $weight) {
+	$heavy: map-get($letter-space-heavy, $name);
+	@if ((index($weight-list, $heavy) or length($weight-list)) <= index($weight-list, $weight)) {
+		@return map-get($letter-space, #{$name}-heavy);
+	}
+	@return map-get($letter-space, $name);
+}
+
+@mixin get_textstyle($name, $weight) {
+	// Espresso has no "md"; it was a 14px alias of base.
+	$n: if($name == "md", "base", $name);
+	font-size: var(--text-#{$n});
+	font-weight: var(--font-weight-#{$weight});
+	letter-spacing: get_letterspacing($n, $weight);
+	@if $n == "tiny" {
+		text-transform: uppercase;
+	}
+}
+
+@mixin truncate {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

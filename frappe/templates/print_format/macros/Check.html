@@ -1,0 +1,5 @@
+{% extends "templates/print_format/macros/Data.html" %}
+
+{%- block value -%}
+<div class="value"{% if _val_style %} style="{{ _val_style|e }}"{% endif %}>{{ _("Yes") if value else _("No") }}</div>
+{%- endblock -%}

@@ -2,7 +2,7 @@
 // For license information, please see license.txt
 
 frappe.ui.form.on("Module Onboarding", {
-	refresh: function(frm) {
+	refresh: function (frm) {
 		frappe.boot.developer_mode &&
 			frm.set_intro(
 				__(
@@ -13,9 +13,13 @@ frappe.ui.form.on("Module Onboarding", {
 		if (!frappe.boot.developer_mode) {
 			frm.trigger("disable_form");
 		}
+
+		frm.add_custom_button(__("Reset"), () => {
+			frm.call("reset_progress");
+		});
 	},
 
-	disable_form: function(frm) {
+	disable_form: function (frm) {
 		frm.set_read_only();
 		frm.fields
 			.filter((field) => field.has_input)

@@ -1,34 +1,99 @@
-# Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# Copyright (c) 2022, Frappe Technologies Pvt. Ltd. and Contributors
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import unittest
 import frappe
+from frappe.tests import IntegrationTestCase
+from frappe.tests.test_db_query import setup_patched_blog_post, setup_test_user
+from frappe.tests.test_helpers import setup_for_tests
+from frappe.tests.utils import make_test_objects
+from frappe.utils import format_date, today
+from frappe.utils.goal import get_monthly_goal_graph_data, get_monthly_results
 
-from frappe.utils.goal import get_monthly_results, get_monthly_goal_graph_data
-from frappe.test_runner import make_test_objects
-import frappe.utils
+EXTRA_TEST_RECORD_DEPENDENCIES = ["User"]
 
-class TestGoal(unittest.TestCase):
+
+class TestGoal(IntegrationTestCase):
 	def setUp(self):
-		make_test_objects('Event', reset=True)
+		make_test_objects("Event", reset=True)
 
 	def tearDown(self):
-		frappe.db.sql('delete from `tabEvent`')
-		# make_test_objects('Event', reset=True)
-		frappe.db.commit()
+		frappe.db.delete("Event")
 
 	def test_get_monthly_results(self):
-		'''Test monthly aggregation values of a field'''
-		result_dict = get_monthly_results('Event', 'subject', 'creation', "event_type='Private'", 'count')
+		"""Test monthly aggregation values of a field"""
+		result_dict = get_monthly_results(
+			"Event",
+			"subject",
+			"creation",
+			filters={"event_type": "Private"},
+			aggregation="count",
+		)
 
-		from frappe.utils import today, formatdate
-		self.assertEqual(result_dict.get(formatdate(today(), "MM-yyyy")), 2)
+		self.assertEqual(result_dict.get(format_date(today(), "MM-yyyy")), 2)
+
+	def test_get_monthly_results_sum(self):
+		"""sum/avg must aggregate the column, not a string literal -- the literal form
+		(`sum('send_reminder')`) sums to 0 on MariaDB and errors on Postgres."""
+		for name in frappe.get_all("Event", filters={"event_type": "Private"}, pluck="name"):
+			frappe.db.set_value("Event", name, "send_reminder", 1)
+
+		result_dict = get_monthly_results(
+			"Event",
+			"send_reminder",
+			"creation",
+			filters={"event_type": "Private"},
+			aggregation="sum",
+		)
+
+		self.assertEqual(result_dict.get(format_date(today(), "MM-yyyy")), 2)
+
+	def test_get_monthly_results_field_permissions(self):
+		setup_for_tests()
+		with setup_patched_blog_post(), setup_test_user(set_user=True):
+			get_monthly_results("Test Blog Post", "idx", "creation", {}, "max")
+
+			for goal_field, date_col in (("published", "creation"), ("idx", "published")):
+				with self.subTest(goal_field=goal_field, date_col=date_col):
+					with self.assertRaises(frappe.PermissionError):
+						get_monthly_results("Test Blog Post", goal_field, date_col, {}, "max")
 
 	def test_get_monthly_goal_graph_data(self):
-		'''Test for accurate values in graph data (based on test_get_monthly_results)'''
-		docname = frappe.get_list('Event', filters = {"subject": ["=", "_Test Event 1"]})[0]["name"]
-		frappe.db.set_value('Event', docname, 'description', 1)
-		data = get_monthly_goal_graph_data('Test', 'Event', docname, 'description', 'description', 'description',
-			'Event', '', 'description', 'creation', "starts_on = '2014-01-01'", 'count')
-		self.assertEqual(float(data['data']['datasets'][0]['values'][-1]), 1)
+		"""Test for accurate values in graph data (based on test_get_monthly_results)"""
+		docname = frappe.get_list("Event", filters={"subject": ["=", "_Test Event 1"]})[0]["name"]
+		frappe.db.set_value("Event", docname, "description", 1)
+		data = get_monthly_goal_graph_data(
+			"Test",
+			"Event",
+			docname,
+			"description",
+			"description",
+			"description",
+			"Event",
+			"",
+			"description",
+			"creation",
+			filters={"starts_on": "2014-01-01"},
+			aggregation="count",
+		)
+		self.assertEqual(float(data["data"]["datasets"][0]["values"][-1]), 1)
+		self.assertEqual(data["fieldtype"], "Text Editor")
+		self.assertIsNone(data["currency"])
+
+	def test_monthly_goal_graph_data_for_a_standard_field(self):
+		docname = frappe.get_list("Event", filters={"subject": ["=", "_Test Event 1"]})[0]["name"]
+		data = get_monthly_goal_graph_data(
+			"Test",
+			"Event",
+			docname,
+			"idx",
+			"idx",
+			"description",
+			"Event",
+			"",
+			"description",
+			"creation",
+			filters={"starts_on": "2014-01-01"},
+			aggregation="count",
+		)
+		self.assertIsNone(data["fieldtype"])
+		self.assertIsNone(data["currency"])

@@ -1,0 +1,22 @@
+// Data Import
+
+.table-preview {
+	.datatable {
+		width: max-content;
+		min-width: 100%;
+	}
+
+	.datatable .dt-scrollable .dt-row:last-child .dt-cell {
+		border-bottom: 1px solid var(--border-color);
+	}
+
+	.dt-row:last-child:not(.dt-row-filter) {
+		border-bottom: none;
+	}
+
+	.datatable .dt-header .dt-row-header {
+		background-color: unset;
+	}
+}
+
+@import "data_import_wizard";

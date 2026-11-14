@@ -1,16 +1,18 @@
 <div class="section-with-collapsible-content {{ 'align-center' if align == 'Center' else '' }}">
-	<h2 class="section-title">{{ title }}</h2>
+	{%- if title -%}
+	<h2 class="section-title">{{ _(title) }}</h2>
+	{%- endif -%}
 	{%- if subtitle -%}
-	<p class="section-description">{{ subtitle }}</p>
+	<p class="section-description">{{ _(subtitle) }}</p>
 	{%- endif -%}
 
 	<div class="collapsible-items">
 		{%- for item in items -%}
 		<div class="collapsible-item">
-			{%- set collapse_id = 'id-' + frappe.utils.generate_hash('Collapse', 12) -%}
+			{%- set collapse_id = 'id-' + frappe.utils.generate_hash(length=12) -%}
 			<a class="collapsible-title" data-toggle="collapse" href="#{{ collapse_id }}" role="button"
 				aria-expanded="false" aria-controls="{{ collapse_id }}">
-				<h3>{{ item.title }}</h3>
+				<div class="collapsible-item-title">{{ _(item.title) }}</div>
 				<svg class="collapsible-icon" width="24" height="24" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
 					<path class="vertical" d="M8 4V12" stroke="currentColor" stroke-width="1.5" stroke-miterlimit="10"
 						stroke-linecap="round"
@@ -21,7 +23,9 @@
 				</svg>
 			</a>
 			<div class="collapse collapsible-content from-markdown" id="{{ collapse_id }}">
-				{{ frappe.utils.md_to_html(item.content) }}
+				<div>
+					{{ frappe.utils.md_to_html(_(item.content)) }}
+				</div>
 			</div>
 		</div>
 		{%- endfor -%}

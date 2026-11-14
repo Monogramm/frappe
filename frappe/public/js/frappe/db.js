@@ -2,131 +2,152 @@
 // MIT License. See license.txt
 
 frappe.db = {
-	get_list: function(doctype, args) {
+	get_list: function (doctype, args) {
 		if (!args) {
 			args = {};
 		}
 		args.doctype = doctype;
 		if (!args.fields) {
-			args.fields = ['name'];
+			args.fields = ["name"];
 		}
-		if (!args.limit) {
+		if (!("limit" in args)) {
 			args.limit = 20;
 		}
-		return new Promise ((resolve) => {
+		return new Promise((resolve) => {
 			frappe.call({
-				method: 'frappe.model.db_query.get_list',
+				method: "frappe.desk.reportview.get_list",
 				args: args,
-				type: 'GET',
-				callback: function(r) {
+				type: "GET",
+				callback: function (r) {
 					resolve(r.message);
-				}
+				},
 			});
 		});
 	},
-	exists: function(doctype, name) {
-		return new Promise ((resolve) => {
-			frappe.db.get_value(doctype, {name: name}, 'name').then((r) => {
-				(r.message && r.message.name) ? resolve(true) : resolve(false);
-			});
+	exists: function (doctype, nameOrFilters) {
+		return new Promise((resolve) => {
+			let filters;
+			if (typeof nameOrFilters === "string") {
+				// may be cached and more effecient
+				frappe.db.get_value(doctype, { name: nameOrFilters }, "name").then((r) => {
+					r.message && r.message.name ? resolve(true) : resolve(false);
+				});
+			} else if (typeof nameOrFilters === "object") {
+				frappe.db.count(doctype, { filters: nameOrFilters, limit: 1 }).then((count) => {
+					resolve(count > 0);
+				});
+			}
 		});
 	},
-	get_value: function(doctype, filters, fieldname, callback, parent_doc) {
+	get_value: function (doctype, filters, fieldname, callback, parent_doc) {
 		return frappe.call({
 			method: "frappe.client.get_value",
-			type: 'GET',
+			type: "GET",
 			args: {
 				doctype: doctype,
 				fieldname: fieldname,
 				filters: filters,
-				parent: parent_doc
+				parent: parent_doc,
 			},
-			callback: function(r) {
+			callback: function (r) {
 				callback && callback(r.message);
-			}
+			},
 		});
 	},
 	get_single_value: (doctype, field) => {
-		return new Promise(resolve => {
-			frappe.call({
-				method: 'frappe.client.get_single_value',
-				args: { doctype, field },
-				type: 'GET',
-			}).then(r => resolve(r ? r.message : null));
+		return new Promise((resolve) => {
+			frappe
+				.call({
+					method: "frappe.client.get_single_value",
+					args: { doctype, field },
+					type: "GET",
+				})
+				.then((r) => resolve(r ? r.message : null));
 		});
 	},
-	set_value: function(doctype, docname, fieldname, value, callback) {
+	set_value: function (doctype, docname, fieldname, value, callback) {
 		return frappe.call({
 			method: "frappe.client.set_value",
 			args: {
 				doctype: doctype,
 				name: docname,
 				fieldname: fieldname,
-				value: value
+				value: value,
 			},
-			callback: function(r) {
+			callback: function (r) {
 				callback && callback(r.message);
-			}
+			},
 		});
 	},
-	get_doc: function(doctype, name, filters = null) {
+	get_doc: function (doctype, name, filters) {
 		return new Promise((resolve, reject) => {
-			frappe.call({
-				method: "frappe.client.get",
-				type: 'GET',
-				args: { doctype, name, filters },
-				callback: r => {
-					frappe.model.sync(r.message);
-					resolve(r.message);
+			frappe
+				.call({
+					method: "frappe.client.get",
+					type: "GET",
+					args: { doctype, name, filters },
+					callback: (r) => {
+						frappe.model.sync(r.message);
+						resolve(r.message);
+					},
+				})
+				.fail(reject);
+		});
+	},
+	insert: function (doc) {
+		return frappe.xcall("frappe.client.insert", { doc });
+	},
+	delete_doc: function (doctype, name) {
+		return new Promise((resolve) => {
+			frappe.call("frappe.client.delete", { doctype, name }, (r) => {
+				if (!r.exc) {
+					frappe.model.delete_from_locals(doctype, name);
 				}
-			}).fail(reject);
+				resolve(r.message);
+			});
 		});
 	},
-	insert: function(doc) {
-		return frappe.xcall('frappe.client.insert', { doc });
-	},
-	delete_doc: function(doctype, name) {
-		return new Promise(resolve => {
-			frappe.call('frappe.client.delete', { doctype, name }, r => resolve(r.message));
-		});
-	},
-	count: function(doctype, args={}) {
+	count: function (doctype, args = {}, cache = false) {
 		let filters = args.filters || {};
-		const with_child_table_filter = Array.isArray(filters) && filters.some(filter => {
-			return filter[0] !== doctype;
-		});
+		let limit = args.limit;
 
-		const fields = [
-			// cannot break this line as it adds extra \n's and \t's which breaks the query
-			`count(${with_child_table_filter ? 'distinct': ''} ${frappe.model.get_full_column_name('name', doctype)}) AS total_count`
-		];
+		// has a filter with childtable?
+		const distinct =
+			Array.isArray(filters) &&
+			filters.some((filter) => {
+				return filter[0] !== doctype;
+			});
 
-		return frappe.call({
-			type: 'GET',
-			method: 'frappe.desk.reportview.get',
-			args: {
+		const fields = [];
+
+		return frappe.xcall(
+			"frappe.desk.reportview.get_count",
+			{
 				doctype,
 				filters,
 				fields,
-			}
-		}).then(r => {
-			return r.message.values[0][0];
-		});
+				distinct,
+				limit,
+			},
+			cache ? "GET" : "POST",
+			{ cache }
+		);
 	},
-	get_link_options(doctype, txt = '', filters={}) {
-		return new Promise(resolve => {
+	get_link_options(doctype, txt = "", filters = {}, page_length = 0) {
+		return new Promise((resolve) => {
 			frappe.call({
-				type: 'GET',
-				method: 'frappe.desk.search.search_link',
+				type: "GET",
+				method: "frappe.desk.search.search_link",
 				args: {
 					doctype,
 					txt,
-					filters
+					filters,
+					page_length,
 				},
 				callback(r) {
-					resolve(r.results);
-				}
+					resolve(r.message);
+				},
 			});
 		});
-	}
+	},
 };

@@ -4,7 +4,8 @@ table.user-perm {
 	overflow-x: scroll;
 	-webkit-overflow-scrolling: touch;
 	-ms-overflow-style: -ms-autohiding-scrollbar;
-	tr td, tr th {
+	tr td,
+	tr th {
 		padding: 5px;
 		border-bottom: 1px solid var(--border-color);
 		min-width: 30px;
@@ -12,7 +13,7 @@ table.user-perm {
 			text-align: center;
 		}
 	}
-	--icon-stroke: var(--text-muted)
+	--icon-stroke: var(--text-muted);
 }
 
 .frappe-control {
@@ -27,8 +28,9 @@ table.user-perm {
 		margin-bottom: var(--margin-sm);
 		label {
 			position: relative;
+			align-items: center;
 		}
-		input[type=checkbox] {
+		input[type="checkbox"] {
 			margin-left: 0;
 		}
 	}
@@ -41,6 +43,7 @@ table.user-perm {
 			text-decoration: underline;
 		}
 	}
+	break-inside: avoid;
 }
 
 .module-block-list .checkbox {

@@ -1,0 +1,156 @@
+// Contents of the Background Tasks panel. Everything around them -- position, size,
+// surface, heading, close button -- comes from .sidebar-panel (see sidebar_panel.scss),
+// so this file is only the list itself.
+.sidebar-panel-background-tasks {
+	// the panel body already scrolls; the tasks stack down it, with the footer sticking
+	.sidebar-panel-body {
+		@include flex(flex, null, null, column);
+	}
+
+	.bg-tasks-null-state {
+		padding: 40px 20px;
+		text-align: center;
+		color: var(--ink-gray-6);
+
+		.title {
+			font-weight: 500;
+			margin-top: 10px;
+			color: var(--ink-gray-8);
+		}
+		.subtitle {
+			font-size: var(--text-sm);
+			margin-top: 5px;
+		}
+	}
+
+	.bg-task-item {
+		padding: 16px 20px;
+		border-bottom: 1px solid var(--outline-gray-1);
+		text-decoration: none;
+		color: inherit;
+		transition: background-color 0.2s ease;
+		display: block;
+
+		&:hover {
+			background-color: var(--surface-gray-2);
+		}
+
+		// the footer is the last child, so this is the last task in the list
+		&:nth-last-child(2) {
+			border-bottom: none;
+		}
+
+		.bg-task-header {
+			@include flex(flex, space-between, flex-start, row);
+			gap: 12px;
+
+			.bg-task-title {
+				font-weight: 400;
+				font-size: var(--text-sm);
+				color: var(--ink-gray-8);
+				white-space: normal;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				display: -webkit-box;
+				-webkit-line-clamp: 2;
+				line-clamp: 2;
+				-webkit-box-orient: vertical;
+				line-height: 1.5;
+			}
+
+			.status-badge {
+				font-size: 12px;
+				padding: 2px 8px;
+				height: 18px;
+			}
+		}
+
+		// The action a task offers takes the badge's place on hover, so the row shows its
+		// status at rest and what you can do about it when you reach for it.
+		&.cancellable,
+		&.retryable {
+			.btn-cancel-task,
+			.btn-retry-task {
+				display: none;
+			}
+
+			&:hover {
+				.status-badge {
+					display: none;
+				}
+
+				.btn-cancel-task,
+				.btn-retry-task {
+					display: flex;
+					font-size: var(--text-xs);
+					font-weight: 500;
+					padding: 2px 8px;
+
+					&:hover {
+						background-color: var(--surface-gray-2);
+						text-decoration: underline;
+						text-underline-offset: 3px;
+					}
+				}
+			}
+		}
+
+		.bg-task-stage {
+			font-size: var(--text-xs);
+			color: var(--ink-gray-6);
+			margin-top: 12px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+
+			&:empty {
+				display: none;
+			}
+
+			&:not(:empty) + .progress {
+				margin-top: 8px;
+			}
+		}
+
+		.progress {
+			width: 100%;
+			height: 4px;
+			margin-top: 16px;
+			background-color: var(--outline-gray-1);
+			border-radius: 2px;
+			box-shadow: none;
+
+			.progress-bar {
+				border-radius: 2px;
+
+				// Bootstrap's own `.progress-bar` fill is invisible on the dark track, so dark
+				// paints its own. Through the token rather than a literal white: gray-10 is the
+				// surface that inverts with the theme, which is what this wanted all along.
+				[data-theme="dark"] & {
+					background-color: var(--surface-gray-10) !important;
+				}
+			}
+		}
+	}
+
+	.bg-task-footer {
+		position: sticky;
+		bottom: 0;
+		z-index: 10;
+		padding: 12px 15px;
+		text-align: center;
+		font-weight: 500;
+		font-size: var(--text-sm);
+		color: var(--ink-gray-6);
+		text-decoration: none;
+		border-top: 1px solid var(--outline-gray-1);
+		background-color: var(--surface-base);
+		cursor: pointer;
+		transition: all 0.2s ease;
+
+		&:hover {
+			color: var(--ink-gray-8);
+			background-color: var(--surface-gray-2);
+		}
+	}
+}

@@ -1,43 +1,105 @@
 <div class="timeline-message-box" data-communication-type="{{ doc.communication_type }}">
-	<span class="flex justify-between">
+	{% is_mini = frappe.is_mobile() ? true : false %}
+	{% var show_absolute_datetime = cint(frappe.boot.user.show_absolute_datetime_in_timeline) || cint(frappe.boot.sysdefaults.show_absolute_datetime_in_timeline) %}
+	<span class="flex justify-between m-1 mb-3">
 		<span class="text-color flex">
-			{% if (doc.comment_type && doc.comment_type == "Comment") { %}
+			{% if (doc.communication_type && doc.communication_type == "Automated Message") { %}
 				<span>
-					{{ doc.user_full_name || frappe.user.full_name(doc.owner) }} {{ __("commented") }}
-					<span class="text-muted margin-left">
-						{{ comment_when(doc.creation) }}
-					</span>
+					<!-- Display maximum of 3 users-->
+					{{ __("Notification sent to") }}
+					{% var recipients = (doc.recipients && doc.recipients.split(",")) || [] %}
+					{% var cc = (doc.cc && doc.cc.split(",")) || [] %}
+					{% var bcc = (doc.bcc && doc.bcc.split(",")) || [] %}
+					{% var emails = recipients.concat(cc, bcc) %}
+					{% var display_emails_len = Math.min(emails.length, 3) %}
+
+					{% for (var i=0, len=display_emails_len; i<len; i++) { var email = emails[i]; %}
+						{{ frappe.user_info(email).fullname || email }}
+						{% if (len > i+1) { %}
+							{{ "," }}
+						{% } %}
+					{% } %}
+
+					{% if (emails.length > display_emails_len) { %}
+						{{ "..." }}
+					{% } %}
+
+					<div class="text-extra-muted">
+						{{ show_absolute_datetime ? frappe.datetime.str_to_user(doc.communication_date || doc.creation) : comment_when(doc.communication_date || doc.creation) }}
+					</div>
+				</span>
+			{% } else if (doc.comment_type && doc.comment_type == "Comment") { %}
+				<span>
+						{{ frappe.avatar(doc.owner, "avatar-medium") }}
+						<span class="ml-2" style="font-size: var(--text-base);">{{ doc.user_full_name || frappe.user.full_name(doc.owner) }}</span>
+						<span class="text-extra-muted">{{ __("commented") }}</span>
+						<span> · </span>
+						<span class="text-extra-muted">
+							{{ show_absolute_datetime ? frappe.datetime.str_to_user(doc.communication_date || doc.creation) : comment_when(doc.communication_date || doc.creation, is_mini) }}
+						</span>
+					{% if (doc.published) { %}
+						<span> · </span>
+						<span class="text-extra-muted" title="{{ __('Visible to website/portal users.') }}">
+							{{ __("Published") }}
+						</span>
+					{% } %}
 				</span>
 			{% } else { %}
 				<span class="margin-right">
 					{{ frappe.avatar(doc.owner, "avatar-medium") }}
 				</span>
-				<span>
-					{{ doc.user_full_name || frappe.user.full_name(doc.owner) }}
-					<div class="text-muted">
-						{{ comment_when(doc.creation) }}
+					<div>
+						{{ doc.user_full_name || frappe.user.full_name(doc.owner) }}
+						<span> . </span>
+
+						<span class="text-muted">
+							{{ show_absolute_datetime ? frappe.datetime.str_to_user(doc.communication_date || doc.creation) : comment_when(doc.communication_date || doc.creation, is_mini) }}
+						</span>
+						{% if (doc.subject) { %}
+							<div class="text-muted my-1">{{doc.subject}}</div>
+						{% } %}
 					</div>
-				</span>
 			{% } %}
 		</span>
-		<span class="actions">
+		<span class="actions" style="flex-shrink: 0">
 			{% if (doc._doc_status && doc._doc_status_indicator) { %}
-			<span class="indicator-pill {%= doc._doc_status_indicator %}"
-				title="{%= __(doc._doc_status) %}"
-				style="order: -1">
-				<span class="hidden-xs small">
-					{%= __(doc._doc_status) %}
-				</span>
-			</span>
+			{%= frappe.ui.badge.html({
+				label: __(doc._doc_status),
+				theme: doc._doc_status_indicator,
+				title: __(doc._doc_status),
+				attrs: { style: "order: -1" },
+			}) %}
 			{% } %}
 
-			{% if (doc._url) { %}
+			{% if (doc._url && !frappe.is_mobile()) { %}
 			<a class="action-btn" href="{{ doc._url }}" title="{{ __("Open Communication") }}">
-				<svg class="icon icon-sm">
-					<use href="#icon-link-url" class="like-icon"></use>
+				<svg class="icon">
+					<use href="#icon-link"></use>
 				</svg>
 			</a>
 			{% } %}
+			<div class="custom-actions"></div>
+			<div class="more-actions">
+				<a type="button" class="action-btn"
+					data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+					<svg class="icon icon-sm">
+						<use href="#icon-ellipsis"></use>
+					</svg>
+				</a>
+
+				<ul class="dropdown-menu small">
+					<li>
+						<a class="dropdown-item" data-action="copy_link">
+							{{ __('Copy Link') }}
+						</a>
+						{% if (frappe.is_mobile()) { %}
+						<a class="dropdown-item" href="{{ doc._url }}" title="{{ __("Open Communication") }}">
+							{{  __("Open Communication") }}
+						</a>
+						{% } %}
+					</li>
+				</ul>
+			</div>
 		</span>
 	</span>
 	<div class="content">

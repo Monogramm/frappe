@@ -1,38 +1,84 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2019, Frappe Technologies and contributors
-# For license information, please see license.txt
+# Copyright (c) 2021, Frappe Technologies and contributors
+# License: MIT. See LICENSE
+from typing import Any
 
-# imports - standard imports
-from __future__ import unicode_literals
+from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
-# imports - module imports
 import frappe
-from frappe.model.document import Document
+from frappe.utils import cstr
+from frappe.utils.logging import get_log_db, log_cutoff, log_table
+from frappe.utils.sqlite_document import SQLiteLogDocument
 
 
-class AccessLog(Document):
-	pass
+class AccessLog(SQLiteLogDocument):
+	_DOCTYPE_NAME = "Access Log"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		columns: DF.HTMLEditor | None
+		export_from: DF.Data | None
+		file_type: DF.Data | None
+		filters: DF.Code | None
+		method: DF.Data | None
+		page: DF.HTMLEditor | None
+		reference_document: DF.Data | None
+		report_name: DF.Data | None
+		timestamp: DF.Datetime | None
+		user: DF.Link | None
+	# end: auto-generated types
+
+	@staticmethod
+	def clear_old_logs(days=30):
+		db = get_log_db()
+		qb, table = log_table("Access Log")
+
+		db.sql(qb.from_(table).where(table.creation < log_cutoff(days)).delete())
+		db.commit()
 
 
 @frappe.whitelist()
-def make_access_log(doctype=None, document=None, method=None, file_type=None,
-		report_name=None, filters=None, page=None, columns=None):
+@frappe.write_only()
+@retry(
+	stop=stop_after_attempt(3),
+	retry=retry_if_exception_type(frappe.DuplicateEntryError),
+	reraise=True,
+)
+def make_access_log(
+	doctype: str | None = None,
+	document: str | int | None = None,
+	method: str | None = None,
+	file_type: str | None = None,
+	report_name: str | None = None,
+	filters: str | list | dict[str, Any] | None = None,
+	page: str | None = None,
+	columns: str | None = None,
+):
+	access_log = frappe.get_doc(
+		{
+			"doctype": "Access Log",
+			"user": frappe.session.user,
+			"export_from": doctype,
+			"reference_document": document,
+			"file_type": file_type,
+			"report_name": report_name,
+			"page": page,
+			"method": method,
+			"filters": cstr(filters) or None,
+			"columns": columns,
+		}
+	)
 
-	user = frappe.session.user
+	if not frappe.in_test:
+		access_log.deferred_insert()
+	else:
+		access_log.db_insert()
 
-	doc = frappe.get_doc({
-		'doctype': 'Access Log',
-		'user': user,
-		'export_from': doctype,
-		'reference_document': document,
-		'file_type': file_type,
-		'report_name': report_name,
-		'page': page,
-		'method': method,
-		'filters': frappe.utils.cstr(filters) if filters else None,
-		'columns': columns
-	})
-	doc.insert(ignore_permissions=True)
 
-	# `frappe.db.commit` added because insert doesnt `commit` when called in GET requests like `printview`
-	frappe.db.commit()
+# only for backward compatibility
+_make_access_log = make_access_log

@@ -1,17 +1,112 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import frappe, unittest
-
+import frappe
 from frappe.desk.form.linked_with import get_linked_docs, get_linked_doctypes
+from frappe.desk.form.utils import _sort_field_fallback, add_comment, get_next
+from frappe.tests import IntegrationTestCase
+from frappe.tests.test_model_utils import set_user
 
-class TestForm(unittest.TestCase):
+
+class TestForm(IntegrationTestCase):
 	def test_linked_with(self):
 		results = get_linked_docs("Role", "System Manager", linkinfo=get_linked_doctypes("Role"))
 		self.assertTrue("User" in results)
 		self.assertTrue("DocType" in results)
 
-if __name__=="__main__":
-	frappe.connect()
-	unittest.main()
+	def test_add_comment_ignores_client_supplied_author(self):
+		todo = frappe.get_doc(doctype="ToDo", description="comment author test").insert()
+		user = "test@example.com"
+		with set_user(user):
+			comment = add_comment(
+				"ToDo", todo.name, "spoof attempt", comment_email="Administrator", comment_by="Administrator"
+			)
+
+		self.assertEqual(comment.comment_email, user)
+		self.assertEqual(comment.comment_by, frappe.utils.get_fullname(user))
+
+	def test_savedocs_accepts_native_dict(self):
+		from frappe.desk.form.save import savedocs
+
+		frappe.local.form_dict = frappe._dict()
+		# doc as a native dict instead of a JSON string (frappe.parse_json passthrough, L18)
+		savedocs(doc={"doctype": "ToDo", "description": "via dict"}, action="Save")
+		self.assertTrue(frappe.local.response.docs)
+		self.assertEqual(frappe.local.response.docs[0].description, "via dict")
+		frappe.delete_doc("ToDo", frappe.local.response.docs[0].name)
+
+	def test_savedocs_cancel_keeps_stored_values(self):
+		from frappe.desk.form.save import savedocs
+
+		doc = self.make_submitted_doc()
+		savedocs(doc=doc.as_dict() | {"test": "changed"}, action="Cancel")
+
+		doc.reload()
+		self.assertEqual((doc.docstatus, doc.test), (2, "original"))
+
+	def test_cancel_ignores_non_workflow_field(self):
+		from frappe.desk.form.save import cancel
+
+		doc = self.make_submitted_doc()
+		cancel(doc.doctype, doc.name, workflow_state_fieldname="test", workflow_state="changed")
+
+		doc.reload()
+		self.assertEqual((doc.docstatus, doc.test), (2, "original"))
+
+	def make_submitted_doc(self):
+		from frappe.automation.doctype.auto_repeat.test_auto_repeat import create_submittable_doctype
+
+		create_submittable_doctype("Test Cancel Scope")
+		self.addCleanup(frappe.response.docs.clear)
+		doc = frappe.get_doc(doctype="Test Cancel Scope", test="original").insert()
+		doc.submit()
+		return doc
+
+	def test_sort_field_fallback(self):
+		self.assertIsNone(_sort_field_fallback("Note", "name"))
+		self.assertIsNone(_sort_field_fallback("Note", "creation"))
+		self.assertIsNone(_sort_field_fallback("Note", "public"))
+		self.assertEqual(_sort_field_fallback("Note", "expire_notification_on"), "0001-01-01")
+		self.assertEqual(_sort_field_fallback("Event Notifications", "time"), "00:00:00")
+		self.assertEqual(_sort_field_fallback("Note", "title"), "")
+		self.assertEqual(_sort_field_fallback("Note", "nonexistent_field_xyz"), "")
+
+	def test_get_next_with_null_sort_field(self):
+		notes = []
+		for i, expire in enumerate([None, "2099-01-01", None]):
+			note = frappe.get_doc(
+				{
+					"doctype": "Note",
+					"title": f"test_navigate_null_{frappe.generate_hash(length=8)}_{i}",
+					"expire_notification_on": expire,
+				}
+			).insert(ignore_permissions=True)
+			notes.append(note.name)
+
+		try:
+			filters = {"name": ["in", notes]}
+
+			next_name = get_next(
+				"Note",
+				notes[0],
+				prev=0,
+				sort_field="expire_notification_on",
+				sort_order="asc",
+				filters=filters,
+			)
+			self.assertIsNotNone(next_name)
+			self.assertIn(next_name, notes)
+
+			prev_name = get_next(
+				"Note",
+				notes[1],
+				prev=1,
+				sort_field="expire_notification_on",
+				sort_order="asc",
+				filters=filters,
+			)
+			self.assertIsNotNone(prev_name)
+			self.assertIn(prev_name, [notes[0], notes[2]])
+		finally:
+			for name in notes:
+				frappe.delete_doc("Note", name, force=1, ignore_permissions=True)

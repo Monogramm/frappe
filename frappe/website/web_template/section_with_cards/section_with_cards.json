@@ -42,8 +42,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_1_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_1_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -66,8 +72,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_2_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_2_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -90,8 +102,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_3_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_3_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -114,8 +132,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_4_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_4_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -138,8 +162,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_5_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_5_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -162,8 +192,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_6_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_6_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -186,8 +222,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_7_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_7_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -210,8 +252,14 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_8_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_8_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   },
@@ -234,14 +282,20 @@
    "reqd": 0
   },
   {
+   "fieldname": "card_9_image",
+   "fieldtype": "Attach Image",
+   "label": "Image",
+   "reqd": 0
+  },
+  {
    "fieldname": "card_9_url",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "label": "URL",
    "reqd": 0
   }
  ],
  "idx": 0,
- "modified": "2020-10-26 17:42:53.356024",
+ "modified": "2023-06-05 13:26:34.470232",
  "modified_by": "Administrator",
  "module": "Website",
  "name": "Section with Cards",

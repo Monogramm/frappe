@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang={{ lang }} dir={{ layout_direction }}>
+	<head>
+		<meta charset="utf-8">
+		{% for tag in head -%}
+			{{ tag | string }}
+		{%- endfor %}
+
+		<style>
+			/* No body / wrapper padding: paperHeight is calculated from the wrapper's
+			   measured height, so any extra vertical space pushes content off the page. */
+			body {
+				margin: 0 !important;
+				border: 0 !important;
+				padding: 0 !important;
+			}
+			html > body > .print-format {
+				margin-top: 0;
+				margin-bottom: 0;
+				padding-top: 0;
+				padding-bottom: 0;
+			}
+			/* Contain floated letterhead children (logo left / company name right)
+			   so height measurement includes them.
+			   display:flow-root = modern BFC; overflow:hidden = legacy BFC fallback;
+			   ::after clearfix = last-resort fallback for unusual letterhead CSS. */
+			.wrapper {
+				display: flow-root;
+				overflow: hidden;
+			}
+			.wrapper::after {
+				content: "";
+				display: table;
+				clear: both;
+			}
+			@media print {
+				.wrapper {
+					box-sizing: border-box;
+					padding: 0 !important;
+					margin: 0 !important;
+					/* Keep each wrapper clone on its own page; don't let Chrome
+					   split a single clone across two pages. */
+					page-break-inside: avoid;
+					break-inside: avoid;
+				}
+				/* Force a page break before every clone after the first, so each
+				   wrapper (= one header copy per body page) occupies exactly one
+				   page in the header PDF. */
+				.wrapper + .wrapper {
+					page-break-before: always;
+					break-before: always;
+				}
+				[document-status] {
+					margin-bottom: 0 !important;
+				}
+				a[href]:after {
+					content: none;
+				}
+				/* Block child elements from forcing a page break inside a wrapper clone. */
+				.wrapper * {
+					page-break-after: auto !important;
+					break-after: auto !important;
+					page-break-before: auto !important;
+					break-before: auto !important;
+				}
+			}
+		</style>
+		{% for tag in styles -%}
+			{{ tag | string }}
+		{%- endfor %}
+
+	</head>
+	<body>
+		<div class="print-format">
+			<div class="wrapper print-format-doc">
+				{% for tag in content -%}
+					{{ tag | string }}
+				{%- endfor %}
+			</div>
+		</div>
+	</body>
+</html>

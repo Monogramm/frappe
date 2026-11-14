@@ -1,73 +1,157 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
+from typing import Any
+
 import frappe
-from frappe.model.document import Document
 from frappe import _
+from frappe.core.doctype.submission_queue.submission_queue import queue_submission
+from frappe.model.document import Document
 from frappe.utils import cint
+from frappe.utils.scheduler import is_scheduler_inactive
+
 
 class BulkUpdate(Document):
-	pass
+	_DOCTYPE_NAME = "Bulk Update"
 
-@frappe.whitelist()
-def update(doctype, field, value, condition='', limit=500):
-	if not limit or cint(limit) > 500:
-		limit = 500
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
 
-	if condition:
-		condition = ' where ' + condition
+	from typing import TYPE_CHECKING
 
-	if ';' in condition:
-		frappe.throw(_('; not allowed in condition'))
+	if TYPE_CHECKING:
+		from frappe.types import DF
 
-	docnames = frappe.db.sql_list(
-		'''select name from `tab{0}`{1} limit 0, {2}'''.format(doctype, condition, limit)
-	)
-	data = {}
-	data[field] = value
-	return submit_cancel_or_update_docs(doctype, docnames, 'update', data)
+		condition: DF.SmallText | None
+		document_type: DF.Link
+		field: DF.Literal[None]
+		limit: DF.Int
+		update_value: DF.SmallText
+	# end: auto-generated types
 
-@frappe.whitelist()
-def submit_cancel_or_update_docs(doctype, docnames, action='submit', data=None):
-	docnames = frappe.parse_json(docnames)
+	@frappe.whitelist()
+	def bulk_update(self):
+		self.check_permission("write")
+		limit = self.limit if self.limit and cint(self.limit) < 500 else 500
+		query_args = {"doctype": self.document_type, "limit": limit, "pluck": "name"}
+		if self.condition:
+			try:
+				filters = frappe.parse_json(self.condition)
+				if isinstance(filters, dict):
+					if "or_filters" in filters:
+						query_args["or_filters"] = filters.pop("or_filters")
+				query_args["filters"] = filters
+			except Exception as e:
+				frappe.throw(_("The Bulk Update could not happen due to <b>{0}</b>").format(str(e)))
 
+		docnames = frappe.get_all(**query_args)
+		return submit_cancel_or_update_docs(
+			self.document_type, docnames, "update", {self.field: self.update_value}
+		)
+
+
+@frappe.whitelist(methods=["POST"])
+def submit_cancel_or_update_docs(
+	doctype: str,
+	docnames: str | list[str],
+	action: str = "submit",
+	data: str | dict[str, Any] | None = None,
+	task_id: str | None = None,
+) -> list[str] | None:
+	if not frappe.get_cached_value("User", frappe.session.user, "bulk_actions"):
+		frappe.throw(_("You are not allowed to perform bulk actions."), frappe.PermissionError)
+
+	if isinstance(docnames, str):
+		docnames = frappe.parse_json(docnames)
+
+	if len(docnames) < 20:
+		return _bulk_action(doctype, docnames, action, data, task_id)
+	elif len(docnames) <= 500:
+		if action == "submit":
+			task_name = _("Bulk Submission")
+		elif action == "cancel":
+			task_name = _("Bulk Cancellation")
+		else:
+			task_name = _("Bulk Update")
+
+		frappe.enqueue_task(
+			method="frappe.desk.doctype.bulk_update.bulk_update._bulk_action",
+			doctype=doctype,
+			docnames=docnames,
+			action=action,
+			data=data,
+			task_name=task_name,
+			queue="short",
+			timeout=1000,
+			enqueue_after_commit=True,
+		)
+	else:
+		frappe.throw(_("Bulk operations only support up to 500 documents."), title=_("Too Many Documents"))
+
+
+def _bulk_action(doctype, docnames, action, data, task_id=None):
 	if data:
 		data = frappe.parse_json(data)
 
+	child_table_updates = data.get("child_table_updates") if data else None
 	failed = []
+	num_documents = len(docnames)
+	task = frappe.get_current_task()
 
-	for i, d in enumerate(docnames, 1):
-		doc = frappe.get_doc(doctype, d)
+	for idx, docname in enumerate(docnames, 1):
+		doc = frappe.get_doc(doctype, docname)
 		try:
-			message = ''
-			if action == 'submit' and doc.docstatus==0:
-				doc.submit()
-				message = _('Submiting {0}').format(doctype)
-			elif action == 'cancel' and doc.docstatus==1:
+			message = ""
+			if action == "submit" and doc.docstatus.is_draft():
+				if doc.meta.queue_in_background and not is_scheduler_inactive():
+					queue_submission(doc, action)
+					message = _("Queuing {0} for Submission").format(docname)
+				else:
+					doc.submit()
+					message = _("Submitting {0}").format(docname)
+			elif action == "cancel" and doc.docstatus.is_submitted():
 				doc.cancel()
-				message = _('Cancelling {0}').format(doctype)
-			elif action == 'update' and doc.docstatus < 2:
-				doc.update(data)
+				message = _("Cancelling {0}").format(docname)
+			elif action == "update" and not doc.docstatus.is_cancelled():
+				# Handle child table updates
+				if child_table_updates:
+					table_fields = doc.meta.get_table_fields()
+					for child_doctype, field_updates in child_table_updates.items():
+						# Find the table field that contains this child doctype
+						table_fieldname = next(
+							(field.fieldname for field in table_fields if field.options == child_doctype),
+							None,
+						)
+
+						if table_fieldname and hasattr(doc, table_fieldname):
+							child_meta = frappe.get_meta(child_doctype)
+							child_docs = getattr(doc, table_fieldname)
+							for child_doc in child_docs:
+								for fieldname, value in field_updates.items():
+									if child_meta.has_field(fieldname):
+										setattr(child_doc, fieldname, value)
+
+				# Handle regular field updates
+				if data:
+					doc.update(data)
+
 				doc.save()
-				message = _('Updating {0}').format(doctype)
+				message = _("Updating {0}").format(docname)
 			else:
-				failed.append(d)
+				failed.append(docname)
 			frappe.db.commit()
-			show_progress(docnames, message, i, d)
+			if task:
+				task.publish_progress(
+					percent=idx / num_documents * 100,
+					stage=message,
+				)
 
 		except Exception:
-			failed.append(d)
+			frappe.log_error("Bulk action failed")
+			failed.append(docname)
 			frappe.db.rollback()
 
 	return failed
 
-def show_progress(docnames, message, i, description):
-	n = len(docnames)
-	if n >= 10:
-		frappe.publish_progress(
-			float(i) * 100 / n,
-			title = message,
-			description = description
-		)
+
+from frappe.deprecation_dumpster import show_progress

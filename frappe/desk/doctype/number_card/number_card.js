@@ -1,151 +1,119 @@
 // Copyright (c) 2020, Frappe Technologies and contributors
 // For license information, please see license.txt
 
-frappe.ui.form.on('Number Card', {
-	refresh: function(frm) {
+frappe.ui.form.on("Number Card", {
+	refresh: function (frm) {
 		if (!frappe.boot.developer_mode && frm.doc.is_standard) {
-			frm.disable_form();
+			frm.disable_save();
+		} else {
+			frm.enable_save();
 		}
+
 		frm.set_df_property("filters_section", "hidden", 1);
 		frm.set_df_property("dynamic_filters_section", "hidden", 1);
-		frm.trigger('set_options');
+		frm.trigger("set_options");
 
 		if (!frm.doc.type) {
-			frm.set_value('type', 'Document Type');
+			frm.set_value("type", "Document Type");
 		}
 
-		if (frm.doc.type == 'Report' && frm.doc.report_name) {
-			frm.trigger('set_report_filters');
+		if (frm.doc.type == "Report" && frm.doc.report_name) {
+			frm.trigger("set_report_filters");
 		}
 
-		if (frm.doc.type == 'Custom') {
-			if (!frappe.boot.developer_mode) {
-				frm.disable_form();
-			}
+		if (frm.doc.type == "Custom") {
 			frm.filters = eval(frm.doc.filters_config);
-			frm.trigger('set_filters_description');
-			frm.trigger('set_method_description');
-			frm.trigger('render_filters_table');
+			frm.trigger("render_filters_table");
 		}
-		frm.trigger('create_add_to_dashboard_button');
+		frm.trigger("set_parent_document_type");
+		frm.trigger("set_document_type_description");
+
+		if (!frm.is_new()) {
+			frm.trigger("create_add_to_dashboard_button");
+		}
 	},
 
-	create_add_to_dashboard_button: function(frm) {
-		frm.add_custom_button('Add Card to Dashboard', () => {
+	create_add_to_dashboard_button: function (frm) {
+		frm.add_custom_button(__("Add Card to Dashboard"), () => {
 			const dialog = frappe.dashboard_utils.get_add_to_dashboard_dialog(
 				frm.doc.name,
-				'Number Card',
-				'frappe.desk.doctype.number_card.number_card.add_card_to_dashboard'
+				"Number Card",
+				"frappe.desk.doctype.number_card.number_card.add_card_to_dashboard"
 			);
 
 			if (!frm.doc.name) {
-				frappe.msgprint(__('Please create Card first'));
+				frappe.msgprint(__("Please create Card first"));
 			} else {
 				dialog.show();
 			}
 		});
 	},
 
-	before_save: function(frm) {
-		let dynamic_filters = JSON.parse(frm.doc.dynamic_filters_json || 'null');
-		let static_filters = JSON.parse(frm.doc.filters_json || 'null');
-		static_filters =
-			frappe.dashboard_utils.remove_common_static_filter_values(static_filters, dynamic_filters);
+	before_save: function (frm) {
+		let dynamic_filters = JSON.parse(frm.doc.dynamic_filters_json || "null");
+		let static_filters = JSON.parse(frm.doc.filters_json || "null");
+		static_filters = frappe.dashboard_utils.remove_common_static_filter_values(
+			static_filters,
+			dynamic_filters
+		);
 
-		frm.set_value('filters_json', JSON.stringify(static_filters));
-		frm.trigger('render_filters_table');
-		frm.trigger('render_dynamic_filters_table');
+		frm.set_value("filters_json", JSON.stringify(static_filters));
+		frm.trigger("render_filters_table");
+		frm.trigger("render_dynamic_filters_table");
 	},
 
-	is_standard: function(frm) {
-		frm.trigger('render_dynamic_filters_table');
+	is_standard: function (frm) {
+		frm.trigger("render_dynamic_filters_table");
 		frm.set_df_property("dynamic_filters_section", "hidden", 1);
 	},
 
-	set_filters_description: function(frm) {
-		if (frm.doc.type == 'Custom') {
-			frm.fields_dict.filters_config.set_description(`
-		Set the filters here. For example:
-<pre class="small text-muted">
-<code>
-[{
-	fieldname: "company",
-	label: __("Company"),
-	fieldtype: "Link",
-	options: "Company",
-	default: frappe.defaults.get_user_default("Company"),
-	reqd: 1
-},
-{
-	fieldname: "account",
-	label: __("Account"),
-	fieldtype: "Link",
-	options: "Account",
-	reqd: 1
-}]
-</code></pre>`);
-		}
-	},
+	type: function (frm) {
+		frm.trigger("set_document_type_description");
 
-	set_method_description: function(frm) {
-		if (frm.doc.type == 'Custom') {
-			frm.fields_dict.method.set_description(`
-		Set the path to a whitelisted function that will return the number on the card in the format:
-<pre class="small text-muted">
-<code>
-{
-	"value": value,
-	"fieldtype": "Currency"
-}
-</code></pre>`);
-		}
-	},
-
-	type: function(frm) {
-		frm.trigger('set_filters_description');
-		if (frm.doc.type == 'Report') {
-			frm.set_query('report_name', () => {
+		if (frm.doc.type == "Report") {
+			frm.set_query("report_name", () => {
 				return {
 					filters: {
-						'report_type': ['!=', 'Report Builder']
-					}
+						report_type: ["!=", "Report Builder"],
+					},
 				};
 			});
 		}
-
 	},
 
-	report_name: function(frm) {
+	report_name: function (frm) {
 		frm.filters = [];
-		frm.set_value('filters_json', '{}');
-		frm.set_value('dynamic_filters_json', '{}');
-		frm.set_df_property('report_field', 'options', []);
-		frm.trigger('set_report_filters');
+		frm.set_value("filters_json", "{}");
+		frm.set_value("dynamic_filters_json", "{}");
+		frm.set_df_property("report_field", "options", []);
+		frm.trigger("set_report_filters");
 	},
 
-	filters_config: function(frm) {
+	filters_config: function (frm) {
 		frm.filters = eval(frm.doc.filters_config);
 		const filter_values = frappe.report_utils.get_filter_values(frm.filters);
-		frm.set_value('filters_json', JSON.stringify(filter_values));
-		frm.trigger('render_filters_table');
+		frm.set_value("filters_json", JSON.stringify(filter_values));
+		frm.trigger("render_filters_table");
 	},
 
-	document_type: function(frm) {
-		frm.set_query('document_type', function() {
+	document_type: function (frm) {
+		frm.set_query("document_type", function () {
 			return {
 				filters: {
-					'issingle': false
-				}
+					issingle: false,
+				},
 			};
 		});
-		frm.set_value('filters_json', '[]');
-		frm.set_value('dynamic_filters_json', '[]');
-		frm.set_value('aggregate_function_based_on', '');
-		frm.trigger('set_options');
+		frm.set_value("filters_json", "[]");
+		frm.set_value("dynamic_filters_json", "[]");
+		frm.set_value("aggregate_function_based_on", "");
+		frm.set_value("parent_document_type", "");
+		frm.trigger("set_options");
+		frm.trigger("set_parent_document_type");
 	},
 
-	set_options: function(frm) {
-		if (frm.doc.type !== 'Document Type') {
+	set_options: function (frm) {
+		if (frm.doc.type !== "Document Type") {
 			return;
 		}
 
@@ -154,134 +122,137 @@ frappe.ui.form.on('Number Card', {
 
 		if (doctype) {
 			frappe.model.with_doctype(doctype, () => {
-				frappe.get_meta(doctype).fields.map(df => {
+				frappe.get_meta(doctype).fields.map((df) => {
 					if (frappe.model.numeric_fieldtypes.includes(df.fieldtype)) {
-						if (df.fieldtype == 'Currency') {
-							if (!df.options || df.options !== 'Company:company:default_currency') {
-								return;
-							}
-						}
-						aggregate_based_on_fields.push({label: df.label, value: df.fieldname});
+						aggregate_based_on_fields.push({ label: df.label, value: df.fieldname });
 					}
 				});
 
-				frm.set_df_property('aggregate_function_based_on', 'options', aggregate_based_on_fields);
+				frm.set_df_property(
+					"aggregate_function_based_on",
+					"options",
+					aggregate_based_on_fields
+				);
 			});
-			frm.trigger('render_filters_table');
-			frm.trigger('render_dynamic_filters_table');
+			frm.trigger("render_filters_table");
+			frm.trigger("render_dynamic_filters_table");
 		}
 	},
 
-	set_report_filters: function(frm) {
+	set_report_filters: function (frm) {
 		const report_name = frm.doc.report_name;
 		if (report_name) {
-			frappe.report_utils.get_report_filters(report_name).then(filters => {
+			frappe.report_utils.get_report_filters(report_name).then((filters) => {
 				if (filters) {
 					frm.filters = filters;
 					const filter_values = frappe.report_utils.get_filter_values(filters);
 					if (frm.doc.filters_json.length <= 2) {
-						frm.set_value('filters_json', JSON.stringify(filter_values));
+						frm.set_value("filters_json", JSON.stringify(filter_values));
 					}
 				}
-				frm.trigger('render_filters_table');
-				frm.trigger('set_report_field_options');
-				frm.trigger('render_dynamic_filters_table');
+				frm.trigger("render_filters_table");
+				frm.trigger("set_report_field_options");
+				frm.trigger("render_dynamic_filters_table");
 			});
 		}
 	},
 
-	set_report_field_options: function(frm) {
+	set_report_field_options: function (frm) {
 		let filters = frm.doc.filters_json.length > 2 ? JSON.parse(frm.doc.filters_json) : null;
 		if (frm.doc.dynamic_filters_json && frm.doc.dynamic_filters_json.length > 2) {
 			filters = frappe.dashboard_utils.get_all_filters(frm.doc);
 		}
-		frappe.xcall(
-			'frappe.desk.query_report.run',
-			{
+		frappe
+			.xcall("frappe.desk.query_report.run", {
 				report_name: frm.doc.report_name,
 				filters: filters,
-				ignore_prepared_report: 1
-			}
-		).then(data => {
-			if (data.result.length) {
-				frm.field_options = frappe.report_utils.get_field_options_from_report(data.columns, data);
-				frm.set_df_property('report_field', 'options', frm.field_options.numeric_fields);
-				if (!frm.field_options.numeric_fields.length) {
-					frappe.msgprint(__("Report has no numeric fields, please change the Report Name"));
+				ignore_prepared_report: 1,
+			})
+			.then((data) => {
+				if (data.result.length) {
+					frm.field_options = frappe.report_utils.get_field_options_from_report(
+						data.columns,
+						data
+					);
+					frm.set_df_property(
+						"report_field",
+						"options",
+						frm.field_options.numeric_fields
+					);
+					if (!frm.field_options.numeric_fields.length) {
+						frappe.msgprint(
+							__("Report has no numeric fields, please change the Report Name")
+						);
+					}
+				} else {
+					frappe.msgprint(
+						__(
+							"Report has no data, please modify the filters or change the Report Name"
+						)
+					);
 				}
-			} else {
-				frappe.msgprint(__('Report has no data, please modify the filters or change the Report Name'));
-			}
-		});
+			});
 	},
 
-	render_filters_table: function(frm) {
+	render_filters_table: function (frm) {
 		frm.set_df_property("filters_section", "hidden", 0);
-		let is_document_type = frm.doc.type == 'Document Type';
-		let is_dynamic_filter = f => ['Date', 'DateRange'].includes(f.fieldtype) && f.default;
+		let is_document_type = frm.doc.type == "Document Type";
 
-		let wrapper = $(frm.get_field('filters_json').wrapper).empty();
-		let table = $(`<table class="table table-bordered" style="cursor:pointer; margin:0px;">
+		let wrapper = $(frm.get_field("filters_json").wrapper).empty();
+		let table = $(`<table class="table table-bordered" style="cursor:${
+			frm.has_perm("write") ? "pointer" : "default"
+		}; margin:0px;">
 			<thead>
 				<tr>
-					<th style="width: 20%">${__('Filter')}</th>
-					<th style="width: 20%">${__('Condition')}</th>
-					<th>${__('Value')}</th>
+					<th style="width: 20%">${__("Filter")}</th>
+					<th style="width: 20%">${__("Condition")}</th>
+					<th>${__("Value")}</th>
 				</tr>
 			</thead>
 			<tbody></tbody>
 		</table>`).appendTo(wrapper);
-		$(`<p class="text-muted small">${__("Click table to edit")}</p>`).appendTo(wrapper);
 
-		let filters = JSON.parse(frm.doc.filters_json || '[]');
-		let filters_set = false;
-
-		// Set dynamic filters for reports
-		if (frm.doc.type == 'Report') {
-			let set_filters = false;
-			frm.filters.forEach(f => {
-				if (is_dynamic_filter(f)) {
-					filters[f.fieldname] = f.default;
-					set_filters = true;
-				}
-			});
-			set_filters && frm.set_value('filters_json', JSON.stringify(filters));
+		if (frm.has_perm("write")) {
+			$(`<p class="text-muted small mt-2">${__("Click table to edit")}</p>`).appendTo(
+				wrapper
+			);
 		}
+
+		let filters = JSON.parse(frm.doc.filters_json || "[]");
+		let filters_set = false;
 
 		let fields = [];
 		if (is_document_type) {
 			fields = [
 				{
-					fieldtype: 'HTML',
-					fieldname: 'filter_area',
-				}
+					fieldtype: "HTML",
+					fieldname: "filter_area",
+				},
 			];
 
 			if (filters.length) {
-				filters.forEach(filter => {
-					const filter_row =
-						$(`<tr>
-							<td>${filter[1]}</td>
-							<td>${filter[2] || ""}</td>
-							<td>${filter[3]}</td>
+				filters.forEach((filter) => {
+					const filter_row = $(`<tr>
+							<td>${frappe.utils.escape_html(filter[1])}</td>
+							<td>${frappe.utils.escape_html(filter[2] || "")}</td>
+							<td>${frappe.utils.escape_html(filter[3])}</td>
 						</tr>`);
 
-					table.find('tbody').append(filter_row);
+					table.find("tbody").append(filter_row);
 				});
 				filters_set = true;
 			}
 		} else if (frm.filters.length) {
-			fields = frm.filters.filter(f => f.fieldname);
-			fields.map(f => {
+			fields = frm.filters.filter((f) => f.fieldname);
+			fields.map((f) => {
 				if (filters[f.fieldname]) {
-					let condition = '=';
-					const filter_row =
-						$(`<tr>
-							<td>${f.label}</td>
+					let condition = "=";
+					const filter_row = $(`<tr>
+							<td>${frappe.utils.escape_html(f.label)}</td>
 							<td>${condition}</td>
-							<td>${filters[f.fieldname] || ""}</td>
+							<td>${frappe.utils.escape_html(filters[f.fieldname] || "")}</td>
 						</tr>`);
-					table.find('tbody').append(filter_row);
+					table.find("tbody").append(filter_row);
 					if (!filters_set) filters_set = true;
 				}
 			});
@@ -290,33 +261,43 @@ frappe.ui.form.on('Number Card', {
 		if (!filters_set) {
 			const filter_row = $(`<tr><td colspan="3" class="text-muted text-center">
 				${__("Click to Set Filters")}</td></tr>`);
-			table.find('tbody').append(filter_row);
+			table.find("tbody").append(filter_row);
 		}
 
-		table.on('click', () => {
+		table.on("click", () => {
+			if (!frm.has_perm("write")) {
+				return;
+			}
+
+			if (!frappe.boot.developer_mode && frm.doc.is_standard) {
+				frappe.throw(__("Cannot edit filters for standard number cards"));
+			}
 			let dialog = new frappe.ui.Dialog({
-				title: __('Set Filters'),
-				fields: fields.filter(f => !is_dynamic_filter(f)),
-				primary_action: function() {
-					let values = this.get_values();
-					if (values) {
-						this.hide();
-						if (is_document_type) {
-							let filters = frm.filter_group.get_filters();
-							frm.set_value('filters_json', JSON.stringify(filters));
-						} else {
-							frm.set_value('filters_json', JSON.stringify(values));
-						}
-						frm.trigger('render_filters_table');
+				title: __("Set Filters"),
+				fields,
+				primary_action: function (values) {
+					this.hide();
+					if (is_document_type) {
+						let filters = frm.filter_group.get_filters();
+						frm.set_value("filters_json", JSON.stringify(filters));
+					} else {
+						frappe.report_utils.add_cleared_filter_values(
+							frappe.query_reports[frm.doc.report_name],
+							this,
+							values
+						);
+						frm.set_value("filters_json", JSON.stringify(values));
 					}
+					frm.trigger("render_filters_table");
 				},
-				primary_action_label: "Set"
+				primary_action_label: __("Update"),
 			});
 
 			if (is_document_type) {
 				frm.filter_group = new frappe.ui.FilterGroup({
-					parent: dialog.get_field('filter_area').$wrapper,
+					parent: dialog.get_field("filter_area").$wrapper,
 					doctype: frm.doc.document_type,
+					parent_doctype: frm.doc.parent_document_type,
 					on_change: () => {},
 				});
 				filters && frm.filter_group.add_filters_to_filter_group(filters);
@@ -324,118 +305,316 @@ frappe.ui.form.on('Number Card', {
 
 			dialog.show();
 
-			if (frm.doc.type == 'Report') {
+			if (frm.doc.type == "Report") {
 				//Set query report object so that it can be used while fetching filter values in the report
-				frappe.query_report = new frappe.views.QueryReport({'filters': dialog.fields_list});
-				frappe.query_reports[frm.doc.report_name]
-					&& frappe.query_reports[frm.doc.report_name].onload
-						&& frappe.query_reports[frm.doc.report_name].onload(frappe.query_report);
+				frappe.query_report = new frappe.views.QueryReport({
+					filters: dialog.fields_list,
+				});
+				frappe.query_reports[frm.doc.report_name] &&
+					frappe.query_reports[frm.doc.report_name].onload &&
+					frappe.query_reports[frm.doc.report_name].onload(frappe.query_report);
 			}
 
 			dialog.set_values(filters);
 		});
-
 	},
 
 	render_dynamic_filters_table(frm) {
-		if (!frappe.boot.developer_mode || !frm.doc.is_standard || frm.doc.type == 'Custom') {
+		if (frm.doc.type == "Custom") {
 			return;
 		}
 
 		frm.set_df_property("dynamic_filters_section", "hidden", 0);
 
-		let is_document_type = frm.doc.type == 'Document Type';
+		let wrapper = $(frm.get_field("dynamic_filters_json").wrapper).empty();
 
-		let wrapper = $(frm.get_field('dynamic_filters_json').wrapper).empty();
-
-		frm.dynamic_filter_table = $(`<table class="table table-bordered" style="cursor:pointer; margin:0px;">
+		frm.dynamic_filter_table = $(`<table class="table table-bordered" style="cursor:${
+			frm.has_perm("write") ? "pointer" : "default"
+		}; margin:0px;">
 			<thead>
 				<tr>
-					<th style="width: 20%">${__('Filter')}</th>
-					<th style="width: 20%">${__('Condition')}</th>
-					<th>${__('Value')}</th>
+					<th style="width: 30%">${__("Filter")}</th>
+					<th>${__("Expression")}</th>
 				</tr>
 			</thead>
 			<tbody></tbody>
 		</table>`).appendTo(wrapper);
 
-		frm.dynamic_filters = frm.doc.dynamic_filters_json && frm.doc.dynamic_filters_json.length > 2
-			? JSON.parse(frm.doc.dynamic_filters_json)
-			: null;
+		if (frm.has_perm("write")) {
+			$(`<p class="text-muted small mt-2">${__("Click table to edit")}</p>`).appendTo(
+				wrapper
+			);
+		}
 
-		frm.trigger('set_dynamic_filters_in_table');
+		frm.trigger("set_dynamic_filters_in_table");
 
-		let filters = JSON.parse(frm.doc.filters_json || '[]');
+		frm.dynamic_filter_table.on("click", () => {
+			if (!frm.has_perm("write")) {
+				return;
+			}
 
-		let fields = frappe.dashboard_utils.get_fields_for_dynamic_filter_dialog(
-			is_document_type, filters, frm.dynamic_filters
-		);
+			if (!frappe.boot.developer_mode && frm.doc.is_standard) {
+				frappe.throw(__("Cannot edit filters for standard number cards"));
+			}
 
-		frm.dynamic_filter_table.on('click', () => {
-			let dialog = new frappe.ui.Dialog({
-				title: __('Set Dynamic Filters'),
-				fields: fields,
-				primary_action: () => {
-					let values = dialog.get_values();
-					dialog.hide();
-					let dynamic_filters = [];
-					for (let key of Object.keys(values)) {
-						if (is_document_type) {
-							let [doctype, fieldname] = key.split(':');
-							dynamic_filters.push([doctype, fieldname, '=', values[key]]);
-						}
-					}
-
-					if (is_document_type) {
-						frm.set_value('dynamic_filters_json', JSON.stringify(dynamic_filters));
-					} else {
-						frm.set_value('dynamic_filters_json', JSON.stringify(values));
-					}
-					frm.trigger('set_dynamic_filters_in_table');
-				},
-				primary_action_label: "Set"
-			});
-
-			dialog.show();
-			dialog.set_values(frm.dynamic_filters);
+			frm.trigger("show_dynamic_filter_dialog");
 		});
 	},
 
-	set_dynamic_filters_in_table: function(frm) {
-		frm.dynamic_filters =  frm.doc.dynamic_filters_json && frm.doc.dynamic_filters_json.length > 2
-			? JSON.parse(frm.doc.dynamic_filters_json)
-			: null;
+	show_dynamic_filter_dialog: function (frm) {
+		if (frm.doc.type === "Document Type") {
+			if (!frm.doc.document_type) {
+				frappe.msgprint(__("Please select a Document Type first"));
+				return;
+			}
+			frappe.model.with_doctype(frm.doc.document_type, () => {
+				frm.trigger("show_doctype_dynamic_filter_dialog");
+			});
+			return;
+		}
 
-		if (!frm.dynamic_filters) {
-			const filter_row = $(`<tr><td colspan="3" class="text-muted text-center">
-				${__("Click to Set Dynamic Filters")}</td></tr>`);
-			frm.dynamic_filter_table.find('tbody').html(filter_row);
-		} else {
-			let filter_rows = '';
-			if ($.isArray(frm.dynamic_filters)) {
-				frm.dynamic_filters.forEach(filter => {
-					filter_rows +=
-						`<tr>
-							<td>${filter[1]}</td>
-							<td>${filter[2] || ""}</td>
-							<td>${filter[3]}</td>
-						</tr>`;
+		if (!frm.doc.report_name) {
+			frappe.msgprint(__("Please select a Report first"));
+			return;
+		}
+		if (!frm.filters?.length) {
+			frappe.msgprint(__("No filters available for this report"));
+			return;
+		}
+		frm.trigger("show_report_dynamic_filter_dialog");
+	},
+
+	show_doctype_dynamic_filter_dialog: function (frm) {
+		const meta = frappe.get_meta(frm.doc.document_type);
+		const field_options = meta.fields
+			.filter((df) => df.fieldname && !frappe.model.no_value_type.includes(df.fieldtype))
+			.map((df) => ({ label: df.label || df.fieldname, value: df.fieldname }));
+
+		frappe.model.std_fields.forEach((df) => {
+			field_options.push({ label: df.label, value: df.fieldname });
+		});
+
+		frm.events.show_dynamic_filter_dialog_common(frm, field_options, frm.doc.document_type);
+	},
+
+	show_report_dynamic_filter_dialog: function (frm) {
+		const field_options = frm.filters
+			.filter((f) => f.fieldname)
+			.map((f) => ({ label: f.label || f.fieldname, value: f.fieldname }));
+
+		frm.events.show_dynamic_filter_dialog_common(frm, field_options, frm.doc.report_name);
+	},
+
+	show_dynamic_filter_dialog_common: function (frm, field_options, doctype_or_report) {
+		let dynamic_filters =
+			frm.doc.dynamic_filters_json?.length > 2
+				? JSON.parse(frm.doc.dynamic_filters_json)
+				: [];
+
+		const dialog = new frappe.ui.Dialog({
+			title: __("Set Dynamic Filters"),
+			fields: [
+				{
+					fieldtype: "HTML",
+					fieldname: "help_text",
+					options: frm.events.get_dynamic_filter_help_text(),
+				},
+				{ fieldtype: "HTML", fieldname: "filter_area" },
+			],
+			size: "large",
+			primary_action: () => {
+				const filters = [];
+				dialog.$wrapper.find(".dynamic-filter-row").each(function () {
+					const $row = $(this);
+					const fieldname = $row.data("selected_fieldname");
+					const expression = $row.find(".filter-expression").val();
+					if (fieldname && expression) {
+						filters.push([doctype_or_report, fieldname, "=", expression]);
+					}
 				});
-			} else {
-				let condition = '=';
-				for (let [key, val] of Object.entries(frm.dynamic_filters)) {
-					filter_rows +=
-						`<tr>
-							<td>${key}</td>
-							<td>${condition}</td>
-							<td>${val || ""}</td>
-						</tr>`
-					;
-				}
+				dialog.hide();
+				frm.set_value("dynamic_filters_json", JSON.stringify(filters));
+				frm.trigger("set_dynamic_filters_in_table");
+			},
+			primary_action_label: __("Update"),
+		});
+
+		const add_filter_row = frm.events.build_dynamic_filter_interface(
+			dialog.fields_dict.filter_area.$wrapper,
+			field_options,
+			doctype_or_report
+		);
+
+		if (dynamic_filters?.length) {
+			dynamic_filters.forEach((filter) => {
+				add_filter_row(filter[1], filter[3]);
+			});
+		} else {
+			add_filter_row();
+		}
+
+		dialog.show();
+	},
+
+	get_dynamic_filter_help_text: function () {
+		return `<p class="text-muted small">
+			${__("Enter expressions that will be evaluated when the card is displayed. For example:")}<br>
+			<code>frappe.defaults.get_user_default("Company")</code><br>
+			<code>frappe.datetime.get_today()</code><br>
+		</p>`;
+	},
+
+	build_dynamic_filter_interface: function ($filter_area, field_options, doctype_or_report) {
+		const filter_html = `
+			<div>
+				<table class="table table-bordered" style="margin-bottom: 12px;">
+					<thead>
+						<tr>
+							<th style="width: 35%">${__("Field")}</th>
+							<th style="width: 60%">${__("Expression")}</th>
+							<th style="width: 5%"></th>
+						</tr>
+					</thead>
+					<tbody class="filter-rows"></tbody>
+				</table>
+				<div style="display: flex; justify-content: space-between; align-items: center;">
+					<button class="text-muted add-filter btn btn-xs">
+						+ ${__("Add Filter")}
+					</button>
+					<button class="btn btn-secondary btn-xs clear-filters">
+						${__("Clear Filters")}
+					</button>
+				</div>
+			</div>
+		`;
+
+		$filter_area.html(filter_html);
+
+		const filter_fields = field_options.map((opt) => ({
+			fieldname: opt.value,
+			label: opt.label,
+			parent: doctype_or_report,
+		}));
+
+		const add_filter_row = (fieldname = "", expression = "") => {
+			const row_html = `
+				<tr class="dynamic-filter-row">
+					<td class="fieldname-select-area"></td>
+					<td>
+						<input type="text" class="form-control input-xs filter-expression">
+					</td>
+					<td class="text-center">
+						<a class="remove-filter text-muted" style="cursor: pointer;">
+							<svg class="icon icon-sm">
+								<use href="#icon-x" class="close"></use>
+							</svg>
+						</a>
+					</td>
+				</tr>
+			`;
+
+			const $row = $(row_html);
+
+			const field_select = new frappe.ui.FieldSelect({
+				parent: $row.find(".fieldname-select-area"),
+				doctype: doctype_or_report,
+				filter_fields: filter_fields,
+				input_class: "input-xs",
+				select: (_, selected_fieldname) => {
+					$row.data("selected_fieldname", selected_fieldname);
+				},
+			});
+
+			if (fieldname) {
+				field_select.set_value(doctype_or_report, fieldname);
+				$row.data("selected_fieldname", fieldname);
 			}
 
-			frm.dynamic_filter_table.find('tbody').html(filter_rows);
-		}
-	}
+			$row.find(".filter-expression").val(expression);
+			$row.data("field_select", field_select);
+			$filter_area.find(".filter-rows").append($row);
+		};
 
+		$filter_area.on("click", ".add-filter", () => add_filter_row());
+		$filter_area.on("click", ".remove-filter", function () {
+			$(this).closest("tr").remove();
+		});
+		$filter_area.on("click", ".clear-filters", () => {
+			$filter_area.find(".filter-rows").empty();
+			add_filter_row();
+		});
+
+		return add_filter_row;
+	},
+
+	set_dynamic_filters_in_table: function (frm) {
+		let dynamic_filters =
+			frm.doc.dynamic_filters_json?.length > 2
+				? JSON.parse(frm.doc.dynamic_filters_json)
+				: [];
+
+		if (!dynamic_filters?.length) {
+			const filter_row = $(`<tr><td colspan="2" class="text-muted text-center">
+				${__("Click to Set Dynamic Filters")}</td></tr>`);
+			frm.dynamic_filter_table.find("tbody").html(filter_row);
+		} else {
+			let filter_rows = "";
+			dynamic_filters.forEach((filter) => {
+				filter_rows += `<tr>
+						<td>${frappe.utils.escape_html(filter[1])}</td>
+						<td><code>${frappe.utils.escape_html(filter[3] || "")}</code></td>
+					</tr>`;
+			});
+
+			frm.dynamic_filter_table.find("tbody").html(filter_rows);
+		}
+	},
+
+	set_parent_document_type: async function (frm) {
+		let document_type = frm.doc.document_type;
+		let doc_is_table =
+			document_type &&
+			(await new Promise((resolve) => {
+				frappe.model.with_doctype(document_type, () => {
+					resolve(frappe.get_meta(document_type).istable);
+				});
+			}));
+
+		frm.set_df_property("parent_document_type", "hidden", !doc_is_table);
+
+		if (document_type && doc_is_table) {
+			let parents = await frappe.xcall(
+				"frappe.desk.doctype.dashboard_chart.dashboard_chart.get_parent_doctypes",
+				{ child_type: document_type }
+			);
+
+			frm.set_query("parent_document_type", function () {
+				return {
+					filters: {
+						name: ["in", parents],
+					},
+				};
+			});
+
+			if (parents.length === 1) {
+				frm.set_value("parent_document_type", parents[0]);
+			}
+		}
+	},
+
+	set_document_type_description: function (frm) {
+		if (frm.doc.type == "Custom") {
+			frm.set_df_property(
+				"document_type",
+				"description",
+				__(
+					"This card is visible only to Administrator and System Managers by default. Set a DocType to share with users who have read access.",
+					null,
+					"Number Card"
+				)
+			);
+		} else {
+			frm.set_df_property("document_type", "description", "");
+		}
+	},
 });

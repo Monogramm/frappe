@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "autoname": "Prompt",
  "creation": "2017-10-23 13:02:10.295824",
  "doctype": "DocType",
@@ -52,11 +53,13 @@
    "label": "All Day"
   }
  ],
+ "icon": "calendar-days",
  "links": [],
- "modified": "2020-09-18 17:26:09.703215",
+ "modified": "2024-03-23 16:01:29.668268",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Calendar View",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -73,9 +76,11 @@
   },
   {
    "read": 1,
-   "role": "All"
+   "role": "Desk User"
   }
  ],
- "sort_field": "modified",
- "sort_order": "DESC"
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

@@ -1,4 +1,4 @@
-import utils from './utils';
+import utils from "./utils";
 
 class Picker {
 	constructor(opts) {
@@ -13,32 +13,30 @@ class Picker {
 	refresh() {
 		this.set_selector_position(true);
 		this.update_color_map();
+		this.mark_active_swatch();
 	}
 
 	setup_picker() {
-		let color_picker_template = document.createElement('template');
+		let color_picker_template = document.createElement("template");
 		color_picker_template.innerHTML = `
 			<div class="color-picker">
-				<div class="swatch-section">
-					${__('SWATCHES')}<br>
-					<div class="swatches"></div>
-				</div>
-				${__('COLOR PICKER')}<br>
 				<div class="color-map">
 					<div class="color-selector"></div>
 				</div>
 				<div class="hue-map">
 					<div class="hue-selector"></div>
 				</div>
+				<div class="swatches"></div>
 			</div>
 		`.trim();
-		this.color_picker_wrapper = color_picker_template.content.firstElementChild.cloneNode(true);
+		this.color_picker_wrapper =
+			color_picker_template.content.firstElementChild.cloneNode(true);
 		this.parent.appendChild(this.color_picker_wrapper);
-		this.color_map = this.color_picker_wrapper.getElementsByClassName('color-map')[0];
-		this.color_selector_circle = this.color_map.getElementsByClassName('color-selector')[0];
-		this.hue_map = this.color_picker_wrapper.getElementsByClassName('hue-map')[0];
-		this.swatches_wrapper = this.color_picker_wrapper.getElementsByClassName('swatches')[0];
-		this.hue_selector_circle = this.hue_map.getElementsByClassName('hue-selector')[0];
+		this.color_map = this.color_picker_wrapper.getElementsByClassName("color-map")[0];
+		this.color_selector_circle = this.color_map.getElementsByClassName("color-selector")[0];
+		this.hue_map = this.color_picker_wrapper.getElementsByClassName("hue-map")[0];
+		this.swatches_wrapper = this.color_picker_wrapper.getElementsByClassName("swatches")[0];
+		this.hue_selector_circle = this.hue_map.getElementsByClassName("hue-selector")[0];
 		this.refresh();
 		this.setup_events();
 		this.setup_swatches();
@@ -50,17 +48,22 @@ class Picker {
 	}
 
 	setup_swatches() {
-		let swatch_template = document.createElement('template');
-		swatch_template.innerHTML = '<div class="swatch" tabindex=0></div>';
-		this.swatches.forEach(color => {
+		let swatch_template = document.createElement("template");
+		swatch_template.innerHTML = '<div class="swatch" tabindex=0 role="button"></div>';
+		this.swatch_elements = [];
+		this.swatches.forEach((color) => {
 			let swatch = swatch_template.content.firstElementChild.cloneNode(true);
+			swatch.dataset.color = color.toLowerCase();
+			swatch.setAttribute("aria-label", color);
+			swatch.title = color;
 			this.swatches_wrapper.appendChild(swatch);
+			this.swatch_elements.push(swatch);
 			const set_values = () => {
 				this.set_color(color);
 				this.set_selector_position();
 				this.update_color_map();
 			};
-			swatch.addEventListener('click', () => {
+			swatch.addEventListener("click", () => {
 				set_values();
 			});
 			swatch.onkeydown = (e) => {
@@ -72,14 +75,22 @@ class Picker {
 			};
 			swatch.style.backgroundColor = color;
 		});
+		this.mark_active_swatch();
+	}
+
+	mark_active_swatch() {
+		const color = this.get_color().toLowerCase();
+		(this.swatch_elements || []).forEach((swatch) =>
+			swatch.classList.toggle("active", swatch.dataset.color === color)
+		);
 	}
 
 	set_selector_position(silent) {
 		this.hue = utils.get_hue(this.get_color());
 		this.color_selector_position = this.get_pointer_coords();
 		this.hue_selector_position = {
-			x: this.hue * this.hue_map.offsetWidth / 360,
-			y: this.hue_map.offsetHeight / 2
+			x: (this.hue * this.hue_map.offsetWidth) / 360,
+			y: this.hue_map.offsetHeight / 2,
 		};
 		this.update_color_selector(silent);
 		this.update_hue_selector(silent);
@@ -102,8 +113,8 @@ class Picker {
 		let h = this.color_map.offsetHeight;
 		let color = utils.hsv_to_hex(
 			this.hue,
-			Math.round(x / w * 100),
-			Math.round((1 - (y / h)) * 100),
+			Math.round((x / w) * 100),
+			Math.round((1 - y / h) * 100)
 		);
 		this.set_color(color);
 	}
@@ -112,17 +123,18 @@ class Picker {
 		let x = this.color_selector_position.x;
 		let y = this.color_selector_position.y;
 		// set color selector position and background
-		this.color_selector_circle.style.top = (y - this.color_selector_circle.offsetHeight / 2) + 'px';
-		this.color_selector_circle.style.left = (x - this.color_selector_circle.offsetWidth / 2) + 'px';
+		this.color_selector_circle.style.top =
+			y - this.color_selector_circle.offsetHeight / 2 + "px";
+		this.color_selector_circle.style.left =
+			x - this.color_selector_circle.offsetWidth / 2 + "px";
 		this.color_map.style.color = this.get_color();
 		!silent && this.on_change && this.on_change(this.get_color());
 	}
 
 	setup_hue_event() {
-		// eslint-disable-next-line no-unused-vars
 		let on_drag = (x, y) => {
 			this.hue_selector_position.x = x;
-			this.hue = Math.round(x * 360 / this.hue_map.offsetWidth);
+			this.hue = Math.round((x * 360) / this.hue_map.offsetWidth);
 			this.update_color_map();
 			this.update_hue_selector();
 			this.update_color();
@@ -141,23 +153,21 @@ class Picker {
 
 	update_hue_selector() {
 		let x = this.hue_selector_position.x - 1;
-		let y = (this.hue_map.offsetHeight / 2) - 1;
+		let y = this.hue_map.offsetHeight / 2 - 1;
 		// set color selector position and background
-		this.hue_selector_circle.style.top = (y - this.hue_selector_circle.offsetHeight / 2) + 'px';
-		this.hue_selector_circle.style.left = (x - this.hue_selector_circle.offsetWidth / 2) + 'px';
+		this.hue_selector_circle.style.top = y - this.hue_selector_circle.offsetHeight / 2 + "px";
+		this.hue_selector_circle.style.left = x - this.hue_selector_circle.offsetWidth / 2 + "px";
 		this.hue_map.style.color = `hsl(${this.hue}, 100%, 50%)`;
 	}
 
 	get_pointer_coords() {
-		// eslint-disable-next-line no-unused-vars
 		let h, s, v;
-		// eslint-disable-next-line no-unused-vars
 		[h, s, v] = utils.get_hsv(this.get_color());
 		let width = this.color_map.offsetWidth;
 		let height = this.color_map.offsetHeight;
-		let x = utils.clamp(0, s * width / 100, width);
-		let y = utils.clamp(0, (1 - (v / 100)) * height, height);
-		return {x, y};
+		let x = utils.clamp(0, (s * width) / 100, width);
+		let y = utils.clamp(0, (1 - v / 100) * height, height);
+		return { x, y };
 	}
 
 	setup_drag_event(element, callback) {
@@ -174,14 +184,14 @@ class Picker {
 			}
 		};
 
-		element.addEventListener("mousedown", () => element.drag_enabled = true);
-		document.addEventListener("mouseup", () => element.drag_enabled = false);
+		element.addEventListener("mousedown", () => (element.drag_enabled = true));
+		document.addEventListener("mouseup", () => (element.drag_enabled = false));
 		document.addEventListener("mousemove", on_drag);
 		element.addEventListener("click", (event) => on_drag(event, true));
 
-		element.addEventListener("touchstart", () => element.drag_enabled = true);
-		element.addEventListener("touchend", () => element.drag_enabled = false);
-		element.addEventListener("touchcancel", () => element.drag_enabled = false);
+		element.addEventListener("touchstart", () => (element.drag_enabled = true));
+		element.addEventListener("touchend", () => (element.drag_enabled = false));
+		element.addEventListener("touchcancel", () => (element.drag_enabled = false));
 		element.addEventListener("touchmove", (event) => {
 			if (event.touches.length == 1) {
 				on_drag(event);
@@ -192,11 +202,12 @@ class Picker {
 	}
 
 	set_color(color) {
-		this.color = color || '#ffffff';
+		this.color = color || "#ffffff";
+		this.mark_active_swatch();
 	}
 
 	get_color() {
-		return this.color || '#ffffff';
+		return this.color || "#ffffff";
 	}
 }
 

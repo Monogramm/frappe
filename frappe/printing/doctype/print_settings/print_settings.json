@@ -3,13 +3,20 @@
  "creation": "2014-07-17 06:54:20.782907",
  "doctype": "DocType",
  "document_type": "System",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/print-settings",
  "engine": "InnoDB",
  "field_order": [
   "pdf_settings",
   "send_print_as_pdf",
   "repeat_header_footer",
+  "print_generated_pdf",
+  "pdf_generator",
+  "max_bulk_print_docs",
+  "max_concurrent_bulk_exports",
   "column_break_4",
   "pdf_page_size",
+  "pdf_page_height",
+  "pdf_page_width",
   "view_link_in_email",
   "with_letterhead",
   "allow_print_for_draft",
@@ -19,9 +26,6 @@
   "allow_print_for_cancelled",
   "server_printer",
   "enable_print_server",
-  "server_ip",
-  "printer_name",
-  "port",
   "raw_printing_section",
   "enable_raw_printing",
   "print_style_section",
@@ -48,7 +52,22 @@
    "default": "1",
    "fieldname": "repeat_header_footer",
    "fieldtype": "Check",
-   "label": "Repeat Header and Footer in PDF"
+   "label": "Repeat Header and Footer"
+  },
+  {
+   "default": "0",
+   "description": "The Print button prints the generated PDF instead of the page preview, so the printout matches the downloaded PDF.",
+   "fieldname": "print_generated_pdf",
+   "fieldtype": "Check",
+   "label": "Print the PDF"
+  },
+  {
+   "default": "PlutoPrint",
+   "description": "PlutoPrint is light and fast. Formats that use JavaScript or CSS grid print with chrome.",
+   "fieldname": "pdf_generator",
+   "fieldtype": "Select",
+   "label": "PDF Generator",
+   "options": "chrome\nPlutoPrint"
   },
   {
    "fieldname": "column_break_4",
@@ -59,7 +78,7 @@
    "fieldname": "pdf_page_size",
    "fieldtype": "Select",
    "label": "PDF Page Size",
-   "options": "A4\nLetter"
+   "options": "A0\nA1\nA2\nA3\nA4\nA5\nA6\nA7\nA8\nA9\nB0\nB1\nB2\nB3\nB4\nB5\nB6\nB7\nB8\nB9\nB10\nC5E\nComm10E\nDLE\nExecutive\nFolio\nLedger\nLegal\nLetter\nTabloid\nCustom"
   },
   {
    "fieldname": "view_link_in_email",
@@ -107,29 +126,11 @@
   },
   {
    "default": "0",
+   "depends_on": "enable_print_server",
    "fieldname": "enable_print_server",
    "fieldtype": "Check",
-   "label": "Enable Print Server"
-  },
-  {
-   "default": "localhost",
-   "depends_on": "enable_print_server",
-   "fieldname": "server_ip",
-   "fieldtype": "Data",
-   "label": "Server IP"
-  },
-  {
-   "depends_on": "enable_print_server",
-   "fieldname": "printer_name",
-   "fieldtype": "Select",
-   "label": "Printer Name"
-  },
-  {
-   "default": "631",
-   "depends_on": "enable_print_server",
-   "fieldname": "port",
-   "fieldtype": "Int",
-   "label": "Port"
+   "label": "Enable Print Server",
+   "mandatory_depends_on": "enable_print_server"
   },
   {
    "fieldname": "raw_printing_section",
@@ -148,7 +149,7 @@
    "label": "Print Style"
   },
   {
-   "default": "Modern",
+   "default": "Redesign",
    "fieldname": "print_style",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -177,13 +178,41 @@
    "fieldname": "font_size",
    "fieldtype": "Float",
    "label": "Font Size"
+  },
+  {
+   "depends_on": "eval:doc.pdf_page_size == \"Custom\"",
+   "fieldname": "pdf_page_height",
+   "fieldtype": "Float",
+   "label": "PDF Page Height (in mm)"
+  },
+  {
+   "depends_on": "eval:doc.pdf_page_size == \"Custom\"",
+   "fieldname": "pdf_page_width",
+   "fieldtype": "Float",
+   "label": "PDF Page Width (in mm)"
+  },
+  {
+   "default": "100",
+   "description": "Maximum number of documents that can be combined into a single bulk PDF export.",
+   "fieldname": "max_bulk_print_docs",
+   "fieldtype": "Int",
+   "label": "Max Bulk Print Documents",
+   "non_negative": 1
+  },
+  {
+   "default": "5",
+   "description": "Maximum number of bulk PDF export jobs a single user can have queued or running at once.",
+   "fieldname": "max_concurrent_bulk_exports",
+   "fieldtype": "Int",
+   "label": "Max Concurrent Bulk Exports Per User",
+   "non_negative": 1
   }
  ],
  "icon": "fa fa-cog",
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2020-10-22 23:42:09.471022",
+ "modified": "2026-10-25 12:17:11.871169",
  "modified_by": "Administrator",
  "module": "Printing",
  "name": "Print Settings",
@@ -198,7 +227,9 @@
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

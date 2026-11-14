@@ -1,40 +1,66 @@
+{%- if standalone -%}
+{{ body }}
+{%- else -%}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}" dir="{{ layout_direction }}">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>{{ title }}</title>
 	<meta name="generator" content="frappe">
-	<link type="text/css" rel="stylesheet" href="/assets/css/printview.css">
-	{%- if has_rtl -%}
-		<link type="text/css" rel="stylesheet" href="assets/css/frappe-rtl.css">
-	{%- endif -%}
-	<style>
-	{{ css }}
-	</style>
+	<meta name="frappe-print-filename" content="{{ print_filename | default('') | e }}">
+	{{ include_style('print.bundle.css') }}
+	{{ include_script('print.bundle.js') }}
+	{% if print_style %}
+		<style>
+		{{ print_style }}
+		</style>
+	{% endif %}
 </head>
 <body>
+	{% if not no_action_banner %}{% include "templates/print_formats/print_action_banner.html" %}{% endif %}
 	<div class="print-format-gutter">
-	    <div class="print-format">
-		{{ body }}
-	    </div>
+		<div class="print-format">
+			{{ body }}
+		</div>
 	</div>
-	<script>
+	<script data-frappe-print>
 		document.addEventListener('DOMContentLoaded', () => {
 			const page_div = document.querySelector('.page-break');
 
-			page_div.style.display = 'flex';
-			page_div.style.flexDirection = 'column';
+			if (page_div) {
+				page_div.style.display = 'flex';
+				page_div.style.flexDirection = 'column';
+			}
 
 			const footer_html = document.getElementById('footer-html');
-			footer_html.classList.add('hidden-pdf');
-			footer_html.classList.remove('visible-pdf');
-			footer_html.style.order = 1;
-			footer_html.style.marginTop = '20px';
+			if (footer_html)  {
+				footer_html.classList.add('hidden-pdf');
+				footer_html.classList.remove('visible-pdf');
+				footer_html.style.order = 1;
+				footer_html.style.marginTop = '20px';
+			}
+			document.querySelectorAll("svg[data-barcode-value]").forEach(render_barcode)
 		});
+
+		(() => {
+			const meta = document.querySelector('meta[name="frappe-print-filename"]');
+			const print_filename = meta && meta.content;
+			if (!print_filename) return;
+
+			let original_title = document.title;
+			window.addEventListener('beforeprint', () => {
+				original_title = document.title;
+				document.title = print_filename;
+			});
+			window.addEventListener('afterprint', () => {
+				document.title = original_title;
+			});
+		})();
 	</script>
 </body>
 {%- if comment -%}
 <!-- {{ comment }} -->
 {%- endif -%}
 </html>
+{%- endif -%}

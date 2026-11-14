@@ -1,12 +1,18 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
-from __future__ import unicode_literals
-
+# License: MIT. See LICENSE
 import frappe
+from frappe.model.meta import get_field_precision
+from frappe.tests import IntegrationTestCase
 from frappe.utils import fmt_money
-import unittest
 
-class TestFmtMoney(unittest.TestCase):
+
+class TestFmtMoney(IntegrationTestCase):
+	def set_defaults(self, **defaults):
+		"""Set System Settings defaults for a test, restoring the previous values on cleanup."""
+		for key, value in defaults.items():
+			self.addCleanup(frappe.db.set_default, key, frappe.db.get_default(key))
+			frappe.db.set_default(key, value)
+
 	def test_standard(self):
 		frappe.db.set_default("number_format", "#,###.##")
 		self.assertEqual(fmt_money(100), "100.00")
@@ -39,7 +45,6 @@ class TestFmtMoney(unittest.TestCase):
 		self.assertEqual(fmt_money(-10000000), "-10.000.000,00")
 		self.assertEqual(fmt_money(-100000000), "-100.000.000,00")
 		self.assertEqual(fmt_money(-1000000000), "-1.000.000.000,00")
-
 
 	def test_lacs(self):
 		frappe.db.set_default("number_format", "#,##,###.##")
@@ -83,6 +88,17 @@ class TestFmtMoney(unittest.TestCase):
 		self.assertEqual(fmt_money(1000000000.2718272637), "1,000,000,000.2718")
 		frappe.db.set_default("currency_precision", "")
 
+	def test_currency_precision_zero(self):
+		self.set_defaults(currency_precision="0", number_format="#,###.##")
+		self.assertEqual(fmt_money(100), "100")
+		self.assertEqual(fmt_money(1000.6), "1,001")
+		self.assertEqual(fmt_money(100000.23), "100,000")
+
+	def test_get_field_precision_currency_zero(self):
+		self.set_defaults(currency_precision="0")
+		df = frappe._dict(fieldtype="Currency", precision="")
+		self.assertEqual(get_field_precision(df), 0)
+
 	def test_currency_precision_de_format(self):
 		frappe.db.set_default("currency_precision", "4")
 		frappe.db.set_default("number_format", "#.###,##")
@@ -94,6 +110,11 @@ class TestFmtMoney(unittest.TestCase):
 		self.assertEqual(fmt_money(1000.456), "1.000,456")
 		frappe.db.set_default("currency_precision", "")
 
-if __name__=="__main__":
-	frappe.connect()
-	unittest.main()
+	def test_custom_fmt_money_format(self):
+		self.assertEqual(fmt_money(100000, format="#,###.##"), "100,000.00")
+		self.assertEqual(fmt_money(None, format="#,###.##"), "0.00")
+
+	def test_fmt_with_symbol_pos(self):
+		frappe.db.set_value("Currency", "JPY", "symbol_on_right", 1)
+		self.assertEqual(fmt_money(100.0, format="#,###.##", currency="JPY"), "100.00 ¥")
+		self.assertEqual(fmt_money(100.0, format="#,###.##", currency="USD"), "$ 100.00")

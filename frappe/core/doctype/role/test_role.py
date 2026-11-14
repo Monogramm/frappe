@@ -1,13 +1,12 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
 
 import frappe
-import unittest
+from frappe.core.doctype.role.role import get_info_based_on_role
+from frappe.tests import IntegrationTestCase
 
-test_records = frappe.get_test_records('Role')
 
-class TestUser(unittest.TestCase):
+class TestUser(IntegrationTestCase):
 	def test_disable_role(self):
 		frappe.get_doc("User", "test@example.com").add_roles("_Test Role 3")
 
@@ -25,26 +24,50 @@ class TestUser(unittest.TestCase):
 		self.assertTrue("_Test Role 3" in frappe.get_roles("test@example.com"))
 
 	def test_change_desk_access(self):
-		'''if we change desk acecss from role, remove from user'''
-		frappe.delete_doc_if_exists('User', 'test-user-for-desk-access@example.com')
-		frappe.delete_doc_if_exists('Role', 'desk-access-test')
-		user = frappe.get_doc(dict(
-			doctype='User',
-			email='test-user-for-desk-access@example.com',
-			first_name='test')).insert()
-		role = frappe.get_doc(dict(
-			doctype = 'Role',
-			role_name = 'desk-access-test',
-			desk_access = 0
-		)).insert()
+		"""if we change desk acecss from role, remove from user"""
+		frappe.delete_doc_if_exists("User", "test-user-for-desk-access@example.com")
+		frappe.delete_doc_if_exists("Role", "desk-access-test")
+		user = frappe.get_doc(
+			doctype="User", email="test-user-for-desk-access@example.com", first_name="test"
+		).insert()
+		role = frappe.get_doc(doctype="Role", role_name="desk-access-test", desk_access=0).insert()
 		user.add_roles(role.name)
 		user.save()
-		self.assertTrue(user.user_type=='Website User')
+		self.assertTrue(user.user_type == "Website User")
 		role.desk_access = 1
 		role.save()
 		user.reload()
-		self.assertTrue(user.user_type=='System User')
+		self.assertTrue(user.user_type == "System User")
 		role.desk_access = 0
 		role.save()
 		user.reload()
-		self.assertTrue(user.user_type=='Website User')
+		self.assertTrue(user.user_type == "Website User")
+
+	def test_get_users_by_role(self):
+		role = "System Manager"
+		sys_managers = get_info_based_on_role(role, field="name")
+
+		for user in sys_managers:
+			self.assertIn(role, frappe.get_roles(user))
+
+	def test_has_role_query_needs_parent_doctype(self):
+		frappe.get_doc("User", "test@example.com").add_roles("_Test Role 2")
+		frappe.set_user("test@example.com")
+		try:
+			self.assertRaises(
+				frappe.PermissionError,
+				frappe.get_list,
+				"Has Role",
+				filters={"role": "_Test Role 2", "parenttype": "User"},
+				fields=["parent"],
+			)
+
+			parents = frappe.get_list(
+				"Has Role",
+				filters={"role": "_Test Role 2", "parenttype": "User"},
+				fields=["parent"],
+				parent_doctype="User",
+			)
+			self.assertIn("test@example.com", [p.parent for p in parents])
+		finally:
+			frappe.set_user("Administrator")

@@ -7,67 +7,69 @@
  "field_order": [
   "logo_section",
   "app_logo",
-  "column_break_3",
-  "logo_width",
   "section_break_2",
   "settings_dropdown",
-  "help_dropdown"
+  "help_dropdown",
+  "announcements_section",
+  "announcement_widget",
+  "announcement_widget_color",
+  "dismissible_announcement_widget"
  ],
  "fields": [
   {
    "fieldname": "app_logo",
    "fieldtype": "Attach Image",
-   "label": "Application Logo",
-   "show_days": 1,
-   "show_seconds": 1
+   "label": "Application Logo"
   },
   {
    "fieldname": "settings_dropdown",
    "fieldtype": "Table",
    "label": "Settings Dropdown",
-   "options": "Navbar Item",
-   "show_days": 1,
-   "show_seconds": 1
+   "options": "Navbar Item"
   },
   {
    "fieldname": "help_dropdown",
    "fieldtype": "Table",
    "label": "Help Dropdown",
-   "options": "Navbar Item",
-   "show_days": 1,
-   "show_seconds": 1
+   "options": "Navbar Item"
   },
   {
    "fieldname": "section_break_2",
    "fieldtype": "Section Break",
-   "label": "Dropdowns",
-   "show_days": 1,
-   "show_seconds": 1
+   "label": "Dropdowns"
   },
   {
    "fieldname": "logo_section",
    "fieldtype": "Section Break",
-   "label": "Application Logo",
-   "show_days": 1,
-   "show_seconds": 1
+   "label": "Application Logo"
   },
   {
-   "fieldname": "column_break_3",
-   "fieldtype": "Column Break",
-   "show_days": 1,
-   "show_seconds": 1
+   "fieldname": "announcements_section",
+   "fieldtype": "Section Break",
+   "label": "Announcements"
   },
   {
-   "fieldname": "logo_width",
-   "fieldtype": "Int",
-   "label": "Logo Width",
-   "show_days": 1,
-   "show_seconds": 1
+   "description": "These announcements will appear inside an alert below the Navbar.",
+   "fieldname": "announcement_widget",
+   "fieldtype": "Text Editor",
+   "label": "Announcement Widget",
+   "max_height": "10em"
+  },
+  {
+   "fieldname": "announcement_widget_color",
+   "fieldtype": "Color",
+   "label": "Widget Color"
+  },
+  {
+   "default": "1",
+   "fieldname": "dismissible_announcement_widget",
+   "fieldtype": "Check",
+   "label": "Is Dismissible"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2020-08-06 18:11:29.955835",
+ "modified": "2026-02-05 15:19:55.524034",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Navbar Settings",
@@ -85,7 +87,9 @@
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

@@ -1,0 +1,280 @@
+import json
+import os
+from unittest.mock import patch
+
+import frappe
+import frappe.modules.utils
+from frappe.core.doctype.doctype.test_doctype import new_doctype
+from frappe.desk.form.save import savedocs
+from frappe.model.db_query import DatabaseQuery
+from frappe.model.document import Document
+from frappe.model.virtual_doctype import validate_controller
+from frappe.tests import IntegrationTestCase
+
+TEST_DOCTYPE_NAME = "VirtualDoctypeTest"
+TEST_CHILD_DOCTYPE_NAME = "VirtualDoctypeTestChild"
+
+
+class VirtualDoctypeTest(Document):
+	"""This is a virtual doctype controller for test/demo purposes.
+
+	- It uses a JSON file on disk as "backend".
+	- Key is docname and value is the document itself.
+
+	Example:
+	{
+	        "doc1": {"name": "doc1", ...}
+	        "doc2": {"name": "doc2", ...}
+	}
+	"""
+
+	DATA_FILE = "data_file.json"
+
+	@staticmethod
+	def get_current_data() -> dict[str, dict]:
+		"""Read data from disk"""
+		if not os.path.exists(VirtualDoctypeTest.DATA_FILE):
+			return {}
+
+		with open(VirtualDoctypeTest.DATA_FILE) as f:
+			return json.load(f)
+
+	@staticmethod
+	def update_data(data: dict[str, dict]) -> None:
+		"""Flush updated data to disk"""
+		with open(VirtualDoctypeTest.DATA_FILE, "w+") as data_file:
+			json.dump(data, data_file)
+
+	def db_insert(self, *args, **kwargs):
+		d = self.get_valid_dict(convert_dates_to_str=True)
+
+		data = self.get_current_data()
+		data[d.name] = d
+
+		self.update_data(data)
+
+	def load_from_db(self):
+		data = self.get_current_data()
+		d = data.get(self.name)
+		self.init_from_dict(d)
+
+	def db_update(self, *args, **kwargs):
+		# For this example insert and update are same operation,
+		# it might be  different for you
+		self.db_insert(*args, **kwargs)
+
+	def delete(self):
+		data = self.get_current_data()
+		data.pop(self.name, None)
+		self.update_data(data)
+
+	@staticmethod
+	def get_list():
+		data = VirtualDoctypeTest.get_current_data()
+		return [frappe._dict(doc) for name, doc in data.items()]
+
+	@staticmethod
+	def get_count():
+		data = VirtualDoctypeTest.get_current_data()
+		return len(data)
+
+	@staticmethod
+	def get_stats():
+		return {}
+
+
+class TestVirtualDoctypes(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		frappe.flags.allow_doctype_export = True
+		cls.addClassCleanup(frappe.flags.pop, "allow_doctype_export", None)
+
+		cdt = new_doctype(name=TEST_CHILD_DOCTYPE_NAME, is_virtual=1, istable=1, custom=0).insert()
+		vdt = new_doctype(
+			name=TEST_DOCTYPE_NAME,
+			is_virtual=1,
+			custom=0,
+			fields=[
+				{
+					"label": "Child Table",
+					"fieldname": "child_table",
+					"fieldtype": "Table",
+					"options": TEST_CHILD_DOCTYPE_NAME,
+				}
+			],
+		).insert()
+		cls.addClassCleanup(vdt.delete, force=True)
+		cls.addClassCleanup(cdt.delete, force=True)
+
+		patch_virtual_doc = patch(
+			"frappe.controllers", new={frappe.local.site: {TEST_DOCTYPE_NAME: VirtualDoctypeTest}}
+		)
+		patch_virtual_doc.start()
+		cls.addClassCleanup(patch_virtual_doc.stop)
+
+	def tearDown(self):
+		if os.path.exists(VirtualDoctypeTest.DATA_FILE):
+			os.remove(VirtualDoctypeTest.DATA_FILE)
+
+	def test_insert_update_and_load_from_desk(self):
+		"""Insert, update, reload and assert changes"""
+
+		frappe.response.docs = []
+		doc = json.dumps(
+			{
+				"docstatus": 0,
+				"doctype": TEST_DOCTYPE_NAME,
+				"name": "new-doctype-1",
+				"__islocal": 1,
+				"__unsaved": 1,
+				"owner": "Administrator",
+				TEST_DOCTYPE_NAME: "Original Data",
+			}
+		)
+		savedocs(doc, "Save")
+
+		docname = frappe.response.docs[0]["name"]
+
+		doc = frappe.get_doc(TEST_DOCTYPE_NAME, docname)
+
+		doc.update({"child_table": [{"name": "child-1", "some_fieldname": "child1-field-value"}]})
+
+		savedocs(doc.as_json(), "Save")
+		doc.reload()
+		self.assertEqual(doc.child_table[0].some_fieldname, "child1-field-value")
+
+	def test_multiple_doc_insert_and_get_list(self):
+		doc1 = frappe.new_doc(doctype=TEST_DOCTYPE_NAME)
+		doc1.append("child_table", {"name": "first", "some_fieldname": "first-value"})
+		doc1.insert()
+		doc2 = frappe.new_doc(doctype=TEST_DOCTYPE_NAME)
+		doc2.append("child_table", {"name": "second", "some_fieldname": "second-value"})
+		doc2.insert()
+
+		docs = {doc1.name, doc2.name}
+
+		doc2.reload()
+		doc1.reload()
+		updated_docs = {doc1.name, doc2.name}
+		self.assertEqual(docs, updated_docs)
+
+		listed_docs = {d.name for d in VirtualDoctypeTest.get_list()}
+		self.assertEqual(docs, listed_docs)
+
+	def test_get_count(self):
+		self.assertIsInstance(VirtualDoctypeTest.get_count(), int)
+
+	def test_delete_doc(self):
+		doc = frappe.get_doc(doctype=TEST_DOCTYPE_NAME).insert()
+
+		frappe.delete_doc(doc.doctype, doc.name)
+
+		listed_docs = {d.name for d in VirtualDoctypeTest.get_list()}
+		self.assertNotIn(doc.name, listed_docs)
+
+	def test_controller_validity(self):
+		validate_controller(TEST_DOCTYPE_NAME)
+		validate_controller(TEST_CHILD_DOCTYPE_NAME)
+
+	def test_guest_cannot_list_virtual_doctype(self):
+		frappe.get_doc(doctype=TEST_DOCTYPE_NAME).insert()
+
+		with self.set_user("Guest"):
+			self.assertRaises(frappe.PermissionError, frappe.get_list, TEST_DOCTYPE_NAME)
+
+	def test_authorized_user_can_list_virtual_doctype(self):
+		doc = frappe.get_doc(doctype=TEST_DOCTYPE_NAME).insert()
+
+		listed_docs = {d.name for d in frappe.get_list(TEST_DOCTYPE_NAME)}
+		self.assertIn(doc.name, listed_docs)
+
+	def test_get_list_without_order_by_keeps_controller_default(self):
+		def get_list(order_by="name asc"):
+			return [frappe._dict(order_by=order_by)]
+
+		with patch.object(VirtualDoctypeTest, "get_list", staticmethod(get_list)):
+			self.assertEqual(frappe.get_list(TEST_DOCTYPE_NAME)[0].order_by, "name asc")
+			self.assertEqual(
+				frappe.get_list(TEST_DOCTYPE_NAME, order_by="creation desc")[0].order_by, "creation desc"
+			)
+			self.assertEqual(DatabaseQuery(TEST_DOCTYPE_NAME).execute()[0].order_by, "name asc")
+			self.assertEqual(
+				DatabaseQuery(TEST_DOCTYPE_NAME).execute(order_by="creation desc")[0].order_by,
+				"creation desc",
+			)
+
+	def test_guest_cannot_delete_virtual_doctype(self):
+		doc = frappe.get_doc(doctype=TEST_DOCTYPE_NAME).insert()
+
+		with self.set_user("Guest"):
+			self.assertRaises(frappe.PermissionError, frappe.delete_doc, doc.doctype, doc.name)
+
+		# document must survive the rejected delete attempt
+		listed_docs = {d.name for d in VirtualDoctypeTest.get_list()}
+		self.assertIn(doc.name, listed_docs)
+
+	def test_authorized_user_can_delete_virtual_doctype(self):
+		doc = frappe.get_doc(doctype=TEST_DOCTYPE_NAME).insert()
+
+		frappe.delete_doc(doc.doctype, doc.name)
+
+		listed_docs = {d.name for d in VirtualDoctypeTest.get_list()}
+		self.assertNotIn(doc.name, listed_docs)
+
+
+class TestVirtualDoctypeValidation(IntegrationTestCase):
+	"""`validate_controller` judges a controller by what it actually implements.
+
+	A controller may inherit the virtual-DocType contract from an intermediate base shared by
+	a family of doctypes -- Frappe's own log doctypes do exactly this. Such a controller
+	overrides nothing itself, and an earlier version of the check compared each method against
+	`controller.mro()[1]`, which saw only one level up and reported it as incomplete. The
+	baseline is `Document`, so inheriting a real implementation counts as implementing it.
+	"""
+
+	@staticmethod
+	def _warnings_for(controller) -> list:
+		"""Run the validator against `controller` and return the warnings it raised."""
+		with (
+			patch("frappe.model.virtual_doctype.get_controller", return_value=controller),
+			patch("frappe.msgprint") as msgprint,
+		):
+			validate_controller("Some Virtual DocType")
+
+		return msgprint.call_args_list
+
+	def test_controller_inheriting_its_implementation_is_accepted(self):
+		class IntermediateBase(Document):
+			@staticmethod
+			def get_list(**kwargs):
+				return []
+
+			@staticmethod
+			def get_count(**kwargs):
+				return 0
+
+			@staticmethod
+			def get_stats(**kwargs):
+				return {}
+
+			def db_insert(self, *args, **kwargs): ...
+
+			def db_update(self, *args, **kwargs): ...
+
+			def load_from_db(self): ...
+
+			def delete(self, *args, **kwargs): ...
+
+		class InheritingController(IntermediateBase):
+			"""Declares nothing; every requirement is satisfied by the base."""
+
+		self.assertEqual(self._warnings_for(InheritingController), [])
+
+	def test_controller_implementing_nothing_is_still_rejected(self):
+		"""The relaxed baseline must not let a controller that implements nothing through."""
+
+		class BareController(Document):
+			pass
+
+		# three static methods plus four instance methods, none of them provided
+		self.assertEqual(len(self._warnings_for(BareController)), 7)

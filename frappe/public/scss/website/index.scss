@@ -1,39 +1,36 @@
-@import '~quill/dist/quill.core';
-@import 'variables';
-@import 'css_variables';
-@import '~bootstrap/scss/bootstrap';
-@import "../common/mixins.scss";
-@import "../common/global.scss";
-@import "../common/icons.scss";
-@import 'base';
+@import "variables";
+@import "../../css/fonts/inter/inter.scss";
+@import "../common/quill";
+@import "~bootstrap/scss/bootstrap";
+@import "~cropperjs/dist/cropper.min";
+@import "../common/mixins";
+@import "../common/global";
+@import "../common/icons";
+@import "../common/alert";
+@import "../common/flex";
 @import "../common/buttons";
 @import "../common/modal";
-@import "../common/indicator.scss";
-@import 'multilevel_dropdown';
-@import 'website_image';
-@import 'website_avatar';
-@import 'page_builder';
-@import 'blog';
-@import 'markdown';
-@import 'sidebar';
-@import 'portal';
-@import 'search';
-@import 'doc';
-@import 'navbar';
-@import 'footer';
+@import "../common/css_variables.scss";
+@import "../common/indicator";
+@import "../common/controls";
+@import "../common/awesomeplete";
+@import "base";
+@import "multilevel_dropdown";
+@import "website_image";
+@import "website_avatar";
+@import "web_form";
+@import "page_builder";
+@import "markdown";
+@import "sidebar";
+@import "portal";
+@import "doc";
+@import "navbar";
+@import "footer";
+@import "error-state";
 
 .ql-editor.read-mode {
 	padding: 0;
 	line-height: 1.6;
-
-	h1,
-	h2,
-	h3,
-	h4,
-	h5 {
-		margin-top: 0.5em;
-		margin-bottom: 0.25em;
-	}
 }
 
 .container {
@@ -71,10 +68,27 @@
 
 .dropdown-menu {
 	padding: 0.25rem;
+	box-shadow: var(--shadow-2xl);
+	border-color: var(--gray-200);
 }
 
 .dropdown-item {
 	border-radius: $dropdown-border-radius;
+	padding: var(--dropdown-padding) !important;
+}
+
+.dropdown-item:active {
+	color: var(--fg-color);
+	text-decoration: none;
+	background-color: var(--gray-600);
+}
+
+.dropdown-item:active:hover {
+	color: var(--fg-color);
+}
+
+.dropdown-menu a:hover {
+	cursor: pointer;
 }
 
 .input-dark {
@@ -87,19 +101,71 @@
 	margin: 2rem 0;
 }
 
+@media (max-width: map-get($grid-breakpoints, "lg")) {
+	.page-content-wrapper .container {
+		padding-left: 1.5rem;
+		padding-right: 1.5rem;
+	}
+}
+
+.page-header-wrapper {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+
+.page_content {
+	min-height: 50vh;
+}
+
 .breadcrumb-container {
 	margin-top: 1rem;
-	padding-top:  0.25rem;
+	padding-top: 0.25rem;
 }
 
 .breadcrumb {
-	padding: 0;
+	padding-left: 0;
+	padding-right: 0;
 	font-size: $font-size-sm;
-	background-color: $breadcrumb-bg;
 }
+
+.breadcrumb-item {
+	+ .breadcrumb-item {
+		font-size: $font-size-sm;
+
+		&::before {
+			content: var(--right-arrow-svg);
+			display: inline-block;
+		}
+	}
+
+	a {
+		color: var(--text-color);
+	}
+
+	li.disabled {
+		a {
+			color: var(--text-muted);
+			pointer-events: none;
+		}
+	}
+}
+
+// rtlcss value directives don't survive esbuild's CSS printer (comments inside
+// declaration values are dropped), so flip the breadcrumb arrow via a raw block.
+/*!rtl:raw:
+.breadcrumb-item + .breadcrumb-item::before {
+	content: var(--left-arrow-svg);
+}
+*/
 
 a.card {
 	text-decoration: none;
+}
+
+a.card-link,
+a.card-link:hover {
+	text-decoration: underline;
 }
 
 .hidden {
@@ -115,7 +181,7 @@ a.card {
 }
 
 .text-extra-muted {
-	color: #d1d8dd !important;
+	color: var(--gray-500) !important;
 }
 
 .no-underline {
@@ -126,8 +192,13 @@ a.card {
 	font-size: inherit;
 }
 
+.indicator-pill {
+	font-size: var(--font-size-xs);
+}
+
 h4.modal-title {
 	font-size: 1em;
+	margin: 0px !important;
 }
 
 h5.modal-title {
@@ -137,36 +208,47 @@ h5.modal-title {
 .col-xs-1 {
 	@extend .col-1;
 }
+
 .col-xs-2 {
 	@extend .col-2;
 }
+
 .col-xs-3 {
 	@extend .col-3;
 }
+
 .col-xs-4 {
 	@extend .col-4;
 }
+
 .col-xs-5 {
 	@extend .col-5;
 }
+
 .col-xs-6 {
 	@extend .col-6;
 }
+
 .col-xs-7 {
 	@extend .col-7;
 }
+
 .col-xs-8 {
 	@extend .col-8;
 }
+
 .col-xs-9 {
 	@extend .col-9;
 }
+
 .col-xs-10 {
 	@extend .col-10;
 }
+
 .col-xs-11 {
 	@extend .col-11;
 }
+
 .col-xs-12 {
 	@extend .col-12;
 }
@@ -180,8 +262,11 @@ h5.modal-title {
 }
 
 .hidden-xs {
-	@extend .d-none;
-	@extend .d-sm-block;
+	@extend .d-block;
+
+	@include media-breakpoint-between(xs, sm) {
+		display: none !important;
+	}
 }
 
 .visible-xs {
@@ -202,6 +287,10 @@ h5.modal-title {
 
 .pull-right {
 	float: right;
+}
+
+.pull-left {
+	float: left;
 }
 
 .image-with-blur {
@@ -234,9 +323,40 @@ h5.modal-title {
 	white-space: nowrap;
 	text-overflow: ellipsis;
 }
+
 .about-section {
 	padding-top: 1rem;
 }
+
 .about-footer {
 	padding-top: 1rem;
+}
+
+.login-content.container {
+	background-color: var(--fg-color);
+	padding-bottom: 45px;
+	padding-top: 45px;
+	box-shadow: var(--shadow-base);
+	border-radius: var(--radius-md);
+	max-width: 400px;
+	margin: 70px auto;
+	font-size: $font-size-sm;
+}
+
+.empty-list-icon {
+	height: 70px;
+}
+
+.null-state {
+	height: 60px;
+	width: auto;
+	margin-bottom: var(--margin-md);
+
+	img {
+		fill: var(--fg-color);
+	}
+}
+
+.no-result {
+	min-height: #{"calc(100vh - 284px)"};
 }

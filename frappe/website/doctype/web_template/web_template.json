@@ -19,7 +19,7 @@
    "fieldname": "template",
    "fieldtype": "Code",
    "label": "Template",
-   "options": "HTML"
+   "options": "Jinja"
   },
   {
    "fieldname": "fields",
@@ -45,7 +45,6 @@
    "options": "Component\nSection\nNavbar\nFooter"
   },
   {
-   "depends_on": "standard",
    "fieldname": "module",
    "fieldtype": "Link",
    "label": "Module",
@@ -54,16 +53,12 @@
   }
  ],
  "index_web_pages_for_search": 1,
- "links": [
-  {
-   "link_doctype": "Web Page",
-   "link_fieldname": "web_template"
-  }
- ],
- "modified": "2020-10-26 17:22:55.459453",
+ "links": [],
+ "modified": "2026-08-21 23:24:24.408508",
  "modified_by": "Administrator",
  "module": "Website",
  "name": "Web Template",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -77,9 +72,15 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "role": "Website Manager",
+   "select": 1
   }
  ],
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

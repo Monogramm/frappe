@@ -1,0 +1,382 @@
+// avatar menu items are sorted by `order` (lower first); anything added via
+// `add_menu_item()` without one lands after the built-ins but before Logout.
+const DEFAULT_MENU_ITEM_ORDER = 50;
+
+// One avatar-menu entry as a frappe.ui.Dropdown row.
+//
+// Rows apps contribute through `add_menu_item()` were written against the menu this one replaced,
+// so its key names are still accepted alongside the component's own: `onClick` for `onclick`,
+// `url` for `href`. Labels arrive untranslated here, as they always have.
+function menu_row(item) {
+	const row = { label: __(item.label), icon: item.icon, condition: item.condition };
+	const href = item.href || item.url;
+	if (href) row.href = href;
+	const onclick = item.onclick || item.onClick;
+	if (onclick) row.onclick = onclick;
+	return row;
+}
+
+frappe.pages["desktop"].on_page_load = function (wrapper) {
+	var page = frappe.ui.make_app_page({
+		parent: wrapper,
+		title: "Desktop",
+		single_column: true,
+		hide_sidebar: true,
+		hide_dock: true,
+	});
+
+	// Desktop Settings -> Desktop Page picks which grid renders here. `Desktop Icons` is the
+	// arrangeable icon grid; it's ~1200 lines in its own bundle (Page.load_assets only serves
+	// one <page_name>.js), so load it lazily. Construct and update inside the callback --
+	// on_page_show fires before this resolves on first load, so it can't do the initial render.
+	if (frappe.boot.desktop_page === "Desktop Icons") {
+		frappe.require("desktop_icons.bundle.js").then(() => {
+			frappe.pages["desktop"].desktop_page = new frappe.ui.DesktopIconsPage(page);
+			frappe.pages["desktop"].desktop_page.update();
+		});
+		return;
+	}
+
+	frappe.pages["desktop"].desktop_page = new DesktopPage(page);
+};
+
+frappe.pages["desktop"].on_page_show = function (wrapper) {
+	// optional-chained: the lazy Desktop Icons bundle may not have resolved yet
+	frappe.pages["desktop"].desktop_page?.update();
+};
+
+class DesktopPage {
+	constructor(page) {
+		this.page = page;
+		this.desktop_menu_items = [];
+		// Set up the awesomebar + Ctrl+K shortcut only once for the lifetime of the
+		// desktop page. `make()` re-renders on every `on_page_show`, but the click
+		// handler is delegated on `document` and the search modal is reused, so
+		// re-running setup would stack another modal + handler and open duplicate
+		// dialogs on Ctrl+K. Keep this flag out of `make()` so it survives navigation.
+		this.awesomebar_setup = false;
+		// An app's title is cut to one line with an ellipsis; name it in full on hover, but only
+		// when it was actually cut. Delegated on the page body, which outlives every re-render in
+		// `make()`, so this is set up once.
+		frappe.ui.Tooltip.delegate(this.page.body, ".icon-title", {
+			only_on_overflow: true,
+			side: "bottom",
+			delay: 150,
+		});
+	}
+	update() {
+		this.make();
+	}
+	make() {
+		this.page.page_head.hide();
+		$(this.page.body).empty();
+		$(frappe.render_template("desktop")).appendTo(this.page.body);
+		this.render();
+	}
+	render() {
+		this.wrapper = this.page.body.find(".desktop-container");
+		this.render_app_icons();
+		this.setup();
+	}
+	render_app_icons() {
+		// One icon per app that opts in through the `add_to_apps_screen` hook, plus each Studio
+		// App with a published page, in `get_apps_screen_apps` order.
+		// The destination is the landing ladder (see app_landing_route).
+		//
+		// An app that resolves to none of the three keeps its icon. It used to be filtered out,
+		// which was tolerable while every app's rail was every module it owned. Now that a rail
+		// is exactly the record an app ships, a dock-less app would have had no rail and no icon,
+		// so no way in at all. The icon leads to the desk's root, which is somewhere rather than
+		// nowhere.
+		const apps = frappe.utils.get_apps_screen_apps().map((app) => ({
+			...app,
+			route: frappe.app.sidebar?.app_landing_route(app) || "/desk",
+		}));
+
+		const $container = $(`<div class="icons-container"></div>`).appendTo(this.wrapper);
+		const columns = frappe.is_mobile() ? 3 : null;
+		const $grid = $(
+			`<div class="icons" style="display: grid;${
+				columns ? ` grid-template-columns: repeat(${columns}, 1fr);` : ""
+			}"></div>`
+		).appendTo($container);
+
+		apps.forEach((app) => {
+			const icon_data = {
+				label: app.app_title,
+				logo_url: app.app_logo_url,
+				// A route into the desk for an app whose own UI isn't the desk, declared as
+				// `desk_route` on its `add_to_apps_screen` hook. Empty for a desk-native app,
+				// which renders no subtitle.
+				desk_route: app.desk_route,
+				module_icons: app.module_icons,
+			};
+			this.add_icon($grid, icon_data, app.route);
+		});
+	}
+	add_icon($grid, icon_data, route) {
+		const $icon = $(frappe.render_template("desktop_icon", { icon: icon_data }));
+		// The tile is a <div> so the "Open in Desk" subtitle can be its own link; the logo and
+		// the title are the two anchors that lead to the app itself.
+		const $app_links = $icon.find(".icon-link, .icon-title");
+		if (route.startsWith("http")) {
+			$app_links.attr("target", "_blank");
+		}
+		$app_links.attr("href", route);
+		const $module_icons = $icon.find(".module-icon");
+		$module_icons
+			.filter((_, link) => link.getAttribute("href").startsWith("http"))
+			.attr("target", "_blank");
+
+		// The caption names the module icon under the pointer while the stack is fanned out.
+		const $title = $icon.find(".icon-title");
+		$module_icons
+			.on("mouseenter focus", (e) => $title.text(e.currentTarget.dataset.title))
+			.on("mouseleave blur", () => $title.text(__(icon_data.label)));
+		$grid.append($icon);
+	}
+	setup() {
+		$(document).trigger("desktop_screen", { desktop: this });
+		this.setup_avatar();
+		this.setup_notifications();
+		this.setup_cloud_settings();
+		this.setup_navbar();
+		this.setup_awesomebar();
+		this.handle_route_change();
+	}
+
+	setup_cloud_settings() {
+		const $button = $(".desktop-cloud-settings");
+		const settings = frappe.boot.cloud_settings;
+		// The UI is hosted by pilot; without its URL there's nothing to open.
+		if (!settings?.enabled || !settings.bundle?.js) {
+			$button.addClass("hidden");
+			return;
+		}
+
+		$button.removeClass("hidden");
+
+		// Warm the cache on hover so the first click feels instant.
+		$button.off("mouseenter.cloud-settings").on("mouseenter.cloud-settings", () => {
+			this.prefetch_cloud_settings(settings.bundle);
+		});
+
+		$button.off("click.cloud-settings").on("click.cloud-settings", () => {
+			this.open_cloud_settings(settings);
+		});
+	}
+
+	// Warm the module only; a pilot without it then warms the classic script instead.
+	prefetch_cloud_settings(bundle) {
+		if (this._cloud_settings_prefetched) return;
+		this._cloud_settings_prefetched = true;
+
+		if (!bundle.module) {
+			this.preload_cloud_settings("prefetch", bundle.js);
+			return;
+		}
+		const link = this.preload_cloud_settings("modulepreload", bundle.module);
+		link.onerror = () => this.preload_cloud_settings("prefetch", bundle.js);
+	}
+
+	preload_cloud_settings(rel, url) {
+		const link = document.createElement("link");
+		link.rel = rel;
+		link.href = this.cloud_settings_url(url);
+		link.dataset.cloudSettingsBundle = "1";
+		document.head.appendChild(link);
+		return link;
+	}
+
+	async open_cloud_settings(settings) {
+		let runtime;
+		try {
+			runtime = await this.load_cloud_settings(settings.bundle);
+		} catch (error) {
+			// Pilot may be unreachable or the origin blocked; let the user retry.
+			console.error("Cloud settings failed to load", error); // eslint-disable-line no-console
+			frappe.show_alert({
+				message: __("Couldn't open Cloud settings. Please try again."),
+				indicator: "red",
+			});
+			return;
+		}
+		runtime.mount(settings);
+	}
+
+	// Load pilot's UI once. The ES runtime loads each panel on first use. A pilot that
+	// predates it, or sends no CORS header, still serves the classic script. A failed
+	// load clears the cache and busts the URLs so a later click can retry.
+	load_cloud_settings(bundle) {
+		this._cloud_settings_loaded ??= this.import_cloud_settings_module(bundle)
+			.catch((error) => {
+				console.warn("Cloud settings module failed, loading the script", error); // eslint-disable-line no-console
+				return this.load_cloud_settings_script(bundle);
+			})
+			.catch((error) => {
+				this.invalidate_cloud_settings();
+				throw error;
+			});
+		return this._cloud_settings_loaded;
+	}
+
+	async import_cloud_settings_module(bundle) {
+		if (!bundle.module) throw new Error("Pilot serves no Cloud Settings module");
+
+		const module = await import(this.cloud_settings_url(bundle.module));
+		if (typeof module.mountCloudSettings !== "function") {
+			throw new Error(`${bundle.module} exports no mountCloudSettings`);
+		}
+		return { mount: (settings) => module.mountCloudSettings(settings, {}) };
+	}
+
+	// The classic script is an IIFE, so no CORS is involved. It carries its own styles
+	// (the dialog renders in a shadow root), so there is no stylesheet to link.
+	load_cloud_settings_script(bundle) {
+		const src = this.cloud_settings_url(bundle.js);
+		return new Promise((resolve, reject) => {
+			const script = document.createElement("script");
+			script.src = src;
+			script.dataset.cloudSettingsBundle = "1";
+			script.onload = resolve;
+			script.onerror = () => reject(new Error(`Failed to load ${src}`));
+			document.head.appendChild(script);
+		}).then(() => {
+			// A 200 that never registers show() must not stick.
+			if (typeof frappe.cloudSettings?.show !== "function") {
+				throw new Error(`${src} did not register Cloud settings`);
+			}
+			return { mount: (settings) => frappe.cloudSettings.show(settings) };
+		});
+	}
+
+	invalidate_cloud_settings() {
+		this._cloud_settings_loaded = null;
+		this._cloud_settings_prefetched = false;
+		this._cloud_settings_cache_bust = Date.now();
+		// Drop any partial global left by an API-less evaluation so a retry can
+		// re-register cleanly.
+		delete frappe.cloudSettings;
+		document.querySelectorAll("[data-cloud-settings-bundle]").forEach((el) => el.remove());
+	}
+
+	cloud_settings_url(url) {
+		if (!this._cloud_settings_cache_bust) return url;
+		const sep = url.includes("?") ? "&" : "?";
+		return `${url}${sep}_=${this._cloud_settings_cache_bust}`;
+	}
+
+	setup_notifications() {
+		this.notifications = new frappe.ui.Notifications({
+			wrapper: $(".desktop-notifications"),
+			popover: true,
+		});
+	}
+	setup_avatar() {
+		$(".desktop-avatar").html(frappe.avatar(frappe.session.user, "avatar-medium"));
+		let is_dark = document.documentElement.getAttribute("data-theme") === "dark";
+		let menu_items = [
+			{
+				icon: "pencil",
+				label: "Edit Profile",
+				url: `/desk/user/${frappe.session.user}`,
+				order: 10,
+			},
+			{
+				icon: is_dark ? "sun" : "moon",
+				label: "Toggle Theme",
+				onclick: function () {
+					new frappe.ui.ThemeSwitcher().show();
+				},
+				order: 20,
+			},
+			{
+				icon: "info",
+				label: "About",
+				onclick: function () {
+					return frappe.ui.toolbar.show_about();
+				},
+				order: 30,
+			},
+			{
+				icon: "life-buoy",
+				label: "Frappe Support",
+				onclick: function () {
+					window.open("https://support.frappe.io/help", "_blank");
+				},
+				order: 40,
+			},
+		];
+		// sort() is stable, so items sharing an `order` keep the order they were added in.
+		menu_items = [...menu_items, ...this.desktop_menu_items].sort(
+			(a, b) => (a.order ?? DEFAULT_MENU_ITEM_ORDER) - (b.order ?? DEFAULT_MENU_ITEM_ORDER)
+		);
+		// Logout is appended after sorting so it stays last whatever `order` apps pass in.
+		menu_items.push({
+			icon: "log-out",
+			label: "Logout",
+			onclick: function () {
+				frappe.app.logout();
+			},
+		});
+		new frappe.ui.Dropdown({
+			trigger: $(".desktop-avatar"),
+			// The avatar sits at the end of the header, so the menu hangs back under it.
+			// "end" is the logical edge, which the component mirrors under RTL.
+			align: "end",
+			options: menu_items.map(menu_row),
+		});
+	}
+	// `item.order` is optional; lower sorts higher up the menu. Built-ins occupy
+	// 10-40, so omitting it drops the item below them (see DEFAULT_MENU_ITEM_ORDER).
+	// Logout is always last and can't be displaced.
+	add_menu_item(item) {
+		if (this.desktop_menu_items.find((i) => i.label === item.label)) return;
+		this.desktop_menu_items.push(item);
+	}
+	setup_navbar() {
+		$(".sticky-top > .navbar").hide();
+	}
+	setup_awesomebar() {
+		if (!frappe.is_mobile()) {
+			$(".search-widget-shortcut").html("Ctrl+K");
+			if (frappe.utils.is_mac()) {
+				$(".search-widget-shortcut").html("⌘K");
+			}
+		}
+		if (this.awesomebar_setup) return;
+		this.awesomebar_setup = true;
+
+		if (frappe.boot.desk_settings.search_bar) {
+			let awesome_bar = new frappe.search.AwesomeBar();
+			awesome_bar.setup(".search-widget-wrapper #search-widget-button");
+
+			frappe.ui.keys.add_shortcut({
+				shortcut: "ctrl+k",
+				action: function (e) {
+					$(".search-widget-wrapper #search-widget-button").click();
+					e.preventDefault();
+					return false;
+				},
+				description: __("Toggle Awesomebar"),
+				ignore_inputs: true,
+			});
+		}
+	}
+	handle_route_change() {
+		// setup() runs on every render, but one listener is enough
+		if (this.route_change_bound) return;
+		this.route_change_bound = true;
+		const me = this;
+		frappe.router.on("change", function () {
+			if (frappe.get_route()[0] == "desktop" || frappe.get_route()[0] == "") {
+				me.setup_navbar();
+			} else {
+				$(".navbar").show();
+			}
+		});
+	}
+}
+
+// The Desktop Icons grid in desktop_icons.bundle.js extends this page, so both modes share it.
+frappe.ui.DesktopPage = DesktopPage;

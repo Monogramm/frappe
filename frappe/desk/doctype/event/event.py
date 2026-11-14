@@ -1,23 +1,103 @@
 # Copyright (c) 2018, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-from six.moves import range
-from six import string_types
-import frappe
+
 import json
+from datetime import date, datetime
+from typing import Any
 
-from frappe.utils import (getdate, cint, add_months, date_diff, add_days,
-	nowdate, get_datetime_str, cstr, get_datetime, now_datetime, format_datetime)
+import frappe
+import frappe.share
 from frappe import _
-from frappe.model.document import Document
-from frappe.utils.user import get_enabled_system_users
+from frappe.contacts.doctype.contact.contact import get_default_contact
+from frappe.desk.doctype.notification_settings.notification_settings import (
+	is_email_enabled_for_feature,
+)
 from frappe.desk.reportview import get_filters_cond
+from frappe.model.document import Document
+from frappe.model.utils.user_settings import get_user_settings, sync_user_settings, update_user_settings
+from frappe.utils import (
+	add_days,
+	add_months,
+	add_years,
+	date_diff,
+	format_datetime,
+	get_fullname,
+	getdate,
+	month_diff,
+	now_datetime,
+	nowdate,
+)
+from frappe.utils.caching import http_cache
+from frappe.utils.user import get_enabled_system_users
 
 weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-communication_mapping = {"": "Event", "Event": "Event", "Meeting": "Meeting", "Call": "Phone", "Sent/Received Email": "Email", "Other": "Other"}
+communication_mapping = {
+	"": "Event",
+	"Event": "Event",
+	"Meeting": "Meeting",
+	"Call": "Phone",
+	"Sent/Received Email": "Email",
+	"Other": "Other",
+}
+
+from typing import TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+	from frappe.core.doctype.communication.communication import Communication
+
 
 class Event(Document):
+	_DOCTYPE_NAME = "Event"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.core.doctype.dynamic_link.dynamic_link import DynamicLink
+		from frappe.desk.doctype.event_notifications.event_notifications import EventNotifications
+		from frappe.desk.doctype.event_participants.event_participants import EventParticipants
+		from frappe.types import DF
+
+		add_video_conferencing: DF.Check
+		all_day: DF.Check
+		attending: DF.Literal["", "Yes", "No", "Maybe"]
+		color: DF.Color | None
+		description: DF.TextEditor | None
+		ends_on: DF.Datetime | None
+		event_category: DF.Literal["Event", "Meeting", "Call", "Sent/Received Email", "Other"]
+		event_participants: DF.Table[EventParticipants]
+		event_type: DF.Literal["Private", "Public"]
+		friday: DF.Check
+		google_calendar: DF.Link | None
+		google_calendar_event_id: DF.Data | None
+		google_calendar_id: DF.Data | None
+		google_meet_link: DF.SmallText | None
+		links: DF.Table[DynamicLink]
+		location: DF.Data | None
+		monday: DF.Check
+		notifications: DF.Table[EventNotifications]
+		pulled_from_google_calendar: DF.Check
+		reference_docname: DF.DynamicLink | None
+		reference_doctype: DF.Link | None
+		repeat_on: DF.Literal["", "Daily", "Weekly", "Monthly", "Quarterly", "Half Yearly", "Yearly"]
+		repeat_this_event: DF.Check
+		repeat_till: DF.Date | None
+		saturday: DF.Check
+		send_reminder: DF.Check
+		sender: DF.Data | None
+		starts_on: DF.Datetime
+		status: DF.Literal["Open", "Completed", "Closed", "Cancelled"]
+		subject: DF.SmallText
+		sunday: DF.Check
+		sync_with_google_calendar: DF.Check
+		thursday: DF.Check
+		tuesday: DF.Check
+		wednesday: DF.Check
+	# end: auto-generated types
+
 	def validate(self):
 		if not self.starts_on:
 			self.starts_on = now_datetime()
@@ -34,50 +114,90 @@ class Event(Document):
 		if self.sync_with_google_calendar and not self.google_calendar:
 			frappe.throw(_("Select Google Calendar to which event should be synced."))
 
+		if not self.sync_with_google_calendar:
+			self.add_video_conferencing = 0
+
+		if self.google_meet_link and not self.google_meet_link.startswith("https://"):
+			self.google_meet_link = ""
+
+	def before_save(self):
+		self.set_participants_email()
+
 	def on_update(self):
+		self.delete_removed_participant_communications()
 		self.sync_communication()
 
-	def on_trash(self):
-		communications = frappe.get_all("Communication", dict(reference_doctype=self.doctype, reference_name=self.name))
-		if communications:
-			for communication in communications:
-				frappe.delete_doc_if_exists("Communication", communication.name)
+	def delete_removed_participant_communications(self):
+		before = self.get_doc_before_save()
+		if not before:
+			return
 
-	def sync_communication(self):
-		if self.event_participants:
-			for participant in self.event_participants:
-				filters = [
+		current = {(p.reference_doctype, p.reference_docname) for p in self.event_participants}
+		for participant in before.event_participants:
+			if (participant.reference_doctype, participant.reference_docname) in current:
+				continue
+			for communication in frappe.get_all(
+				"Communication",
+				filters=[
 					["Communication", "reference_doctype", "=", self.doctype],
 					["Communication", "reference_name", "=", self.name],
 					["Communication Link", "link_doctype", "=", participant.reference_doctype],
-					["Communication Link", "link_name", "=", participant.reference_docname]
-				]
-				comms = frappe.get_all("Communication", filters=filters, fields=["name"])
+					["Communication Link", "link_name", "=", participant.reference_docname],
+				],
+				pluck="name",
+			):
+				frappe.delete_doc("Communication", communication, force=True, ignore_permissions=True)
 
-				if comms:
-					for comm in comms:
-						communication = frappe.get_doc("Communication", comm.name)
-						self.update_communication(participant, communication)
-				else:
-					meta = frappe.get_meta(participant.reference_doctype)
-					if hasattr(meta, "allow_events_in_timeline") and meta.allow_events_in_timeline==1:
-						self.create_communication(participant)
+	def on_trash(self):
+		communications = frappe.get_all(
+			"Communication",
+			filters={"reference_doctype": self.doctype, "reference_name": self.name},
+			pluck="name",
+		)
+		for communication in communications:
+			frappe.delete_doc("Communication", communication, force=True)
 
-	def create_communication(self, participant):
+		self.remove_event_from_user_settings()
+
+	def sync_communication(self):
+		if not self.event_participants:
+			return
+
+		for participant in self.event_participants:
+			if communications := frappe.get_docs(
+				"Communication",
+				filters=[
+					["Communication", "reference_doctype", "=", self.doctype],
+					["Communication", "reference_name", "=", self.name],
+					["Communication Link", "link_doctype", "=", participant.reference_doctype],
+					["Communication Link", "link_name", "=", participant.reference_docname],
+				],
+				distinct=True,
+			):
+				for communication in communications:
+					self.update_communication(participant, communication)
+			else:
+				meta = frappe.get_meta(participant.reference_doctype)
+				if hasattr(meta, "allow_events_in_timeline") and meta.allow_events_in_timeline == 1:
+					self.create_communication(participant)
+
+	def create_communication(self, participant: "EventParticipants"):
 		communication = frappe.new_doc("Communication")
 		self.update_communication(participant, communication)
 		self.communication = communication.name
 
-	def update_communication(self, participant, communication):
+	def update_communication(self, participant: "EventParticipants", communication: "Communication"):
 		communication.communication_medium = "Event"
 		communication.subject = self.subject
 		communication.content = self.description if self.description else self.subject
 		communication.communication_date = self.starts_on
 		communication.sender = self.owner
-		communication.sender_full_name = frappe.utils.get_fullname(self.owner)
+		communication.sender_full_name = get_fullname(self.owner)
 		communication.reference_doctype = self.doctype
 		communication.reference_name = self.name
-		communication.communication_medium = communication_mapping.get(self.event_category) if self.event_category else ""
+		communication.communication_medium = (
+			communication_mapping.get(self.event_category) if self.event_category else ""
+		)
 		communication.status = "Linked"
 		communication.add_link(participant.reference_doctype, participant.reference_docname)
 		communication.save(ignore_permissions=True)
@@ -86,70 +206,125 @@ class Event(Document):
 		"""Add a single participant to event participants
 
 		Args:
-			doctype (string): Reference Doctype
-			docname (string): Reference Docname
+		        doctype (string): Reference Doctype
+		        docname (string): Reference Docname
 		"""
-		self.append("event_participants", {
-			"reference_doctype": doctype,
-			"reference_docname": docname,
-		})
+		self.append(
+			"event_participants",
+			{
+				"reference_doctype": doctype,
+				"reference_docname": docname,
+			},
+		)
 
 	def add_participants(self, participants):
 		"""Add participant entry
 
 		Args:
-			participants ([Array]): Array of a dict with doctype and docname
+		        participants ([Array]): Array of a dict with doctype and docname
 		"""
-		for participant in  participants:
+		for participant in participants:
 			self.add_participant(participant["doctype"], participant["docname"])
 
+	def set_participants_email(self):
+		for participant in self.event_participants:
+			if participant.email:
+				continue
+
+			if participant.reference_doctype != "Contact":
+				participant_contact = get_default_contact(
+					participant.reference_doctype, participant.reference_docname
+				)
+			else:
+				participant_contact = participant.reference_docname
+
+			participant.email = (
+				frappe.get_value("Contact", participant_contact, "email_id") if participant_contact else None
+			)
+
+	def remove_event_from_user_settings(self):
+		user_settings = get_user_settings("Event", for_update=True)
+		if user_settings:
+			user_settings = json.loads(user_settings)
+
+			if "notifications" in user_settings:
+				notifications = user_settings.get("notifications")
+				completedEvents = notifications.get("completedEvents", [])
+				if self.name in completedEvents:
+					completedEvents.remove(self.name)
+					notifications["completedEvents"] = completedEvents
+				updated_notifications = notifications
+				user_settings["notifications"] = updated_notifications
+
+			update_user_settings("Event", json.dumps(user_settings), for_update=True)
+			sync_user_settings()
+
+
 @frappe.whitelist()
-def delete_communication(event, reference_doctype, reference_docname):
-	deleted_participant = frappe.get_doc(reference_doctype, reference_docname)
-	if isinstance(event, string_types):
-		event = json.loads(event)
+def update_attending_status(event_name: str, attendee: str, status: str):
+	event_doc = frappe.get_doc("Event", event_name)
+	caller = frappe.session.user
 
-	filters = [
-		["Communication", "reference_doctype", "=", event.get("doctype")],
-		["Communication", "reference_name", "=", event.get("name")],
-		["Communication Link", "link_doctype", "=", deleted_participant.reference_doctype],
-		["Communication Link", "link_name", "=", deleted_participant.reference_docname]
-	]
+	if attendee != caller:
+		if event_doc.owner != caller and not frappe.has_permission("Event", "write", event_name):
+			frappe.throw(
+				_("You are not allowed to update attendance for another user."), frappe.PermissionError
+			)
 
-	comms = frappe.get_list("Communication", filters=filters, fields=["name"])
+	if event_doc.owner == caller:
+		frappe.db.set_value("Event", event_name, "attending", status)
+		return
 
-	if comms:
-		deletion = []
-		for comm in comms:
-			delete = frappe.get_doc("Communication", comm.name).delete()
-			deletion.append(delete)
+	for participant in event_doc.event_participants:
+		if participant.email == attendee:
+			frappe.db.set_value("Event Participants", participant.name, "attending", status)
+			return
 
-		return deletion
-
-	return {}
+	frappe.throw(_("Attendee not found in this event."))
 
 
 def get_permission_query_conditions(user):
-	if not user: user = frappe.session.user
-	return """(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`=%(user)s)""" % {
-			"user": frappe.db.escape(user),
-		}
+	if not user:
+		user = frappe.session.user
+	query = f"""(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`={frappe.db.escape(user)})"""
+	if shared_events := frappe.share.get_shared("Event", user=user):
+		query += f" or `tabEvent`.`name` in ({', '.join([frappe.db.escape(e) for e in shared_events])})"
 
-def has_permission(doc, user):
-	if doc.event_type=="Public" or doc.owner==user:
+	query += f" or exists (select 'x' from `tabEvent Participants` ep where ep.parent=`tabEvent`.name and ep.email={frappe.db.escape(user)})"
+
+	return query
+
+
+def has_permission(doc, ptype=None, user=None):
+	if doc.event_type == "Public" or doc.owner == user:
 		return True
+
+	for participant in doc.event_participants:
+		if participant.email == user:
+			if ptype in ["write", "create", "delete"]:
+				return False
+			return True
 
 	return False
 
+
 def send_event_digest():
-	today = nowdate()
-	for user in get_enabled_system_users():
+	today = getdate()
+
+	# select only those users that have event reminder email notifications enabled
+	users = [
+		user
+		for user in get_enabled_system_users()
+		if is_email_enabled_for_feature(user.name, "enable_email_event_reminders")
+	]
+
+	for user in users:
 		events = get_events(today, today, user.name, for_reminder=True)
 		if events:
 			frappe.set_user_lang(user.name, user.language)
 
 			for e in events:
-				e.starts_on = format_datetime(e.starts_on, 'hh:mm a')
+				e.starts_on = format_datetime(e.starts_on, "hh:mm a")
 				if e.all_day:
 					e.starts_on = "All Day"
 
@@ -158,26 +333,41 @@ def send_event_digest():
 				subject=frappe._("Upcoming Events for Today"),
 				template="upcoming_events",
 				args={
-					'events': events,
+					"events": events,
 				},
-				header=[frappe._("Events in Today's Calendar"), 'blue']
+				header=[frappe._("Events in Today's Calendar"), "blue"],
 			)
 
+
 @frappe.whitelist()
-def get_events(start, end, user=None, for_reminder=False, filters=None):
-	if not user:
-		user = frappe.session.user
+@http_cache(max_age=5 * 60, stale_while_revalidate=60 * 60)
+def get_events(
+	start: str | date,
+	end: str | date,
+	user: str | None = None,
+	for_reminder: bool = False,
+	filters: str | list | dict[str, Any] | None = None,
+) -> list[frappe._dict]:
+	start, end = getdate(start), getdate(end)
 
-	if isinstance(filters, string_types):
-		filters = json.loads(filters)
+	caller = frappe.session.user
+	target_user = user or caller
 
-	filter_condition = get_filters_cond('Event', filters, [])
+	if user and user != caller:
+		frappe.only_for("System Manager")
+	type EventLikeDict = Event | frappe._dict
+	resolved_events: list[EventLikeDict] = []
+
+	filters = frappe.parse_json(filters)
+
+	filter_condition = get_filters_cond("Event", filters, [])
 
 	tables = ["`tabEvent`"]
 	if "`tabEvent Participants`" in filter_condition:
 		tables.append("`tabEvent Participants`")
 
-	events = frappe.db.sql("""
+	event_candidates: list[EventLikeDict] = frappe.db.sql(
+		"""
 		SELECT `tabEvent`.name,
 				`tabEvent`.subject,
 				`tabEvent`.description,
@@ -225,130 +415,147 @@ def get_events(start, end, user=None, for_reminder=False, filters=None):
 						AND `tabDocShare`.share_name=`tabEvent`.name
 						AND `tabDocShare`.user=%(user)s
 				)
+				OR EXISTS(
+					SELECT ep.name
+					FROM `tabEvent Participants` ep
+					WHERE ep.parent=`tabEvent`.name
+						AND ep.email=%(user)s
+				)
 			)
 		AND `tabEvent`.status='Open'
 		ORDER BY `tabEvent`.starts_on""".format(
 			tables=", ".join(tables),
 			filter_condition=filter_condition,
-			reminder_condition="AND coalesce(`tabEvent`.send_reminder, 0)=1" if for_reminder else ""
-		), {
+			reminder_condition="AND `tabEvent`.send_reminder = 1" if for_reminder else "",
+		),
+		{
 			"start": start,
 			"end": end,
-			"user": user,
-		}, as_dict=1)
+			"user": target_user,
+		},
+		as_dict=True,
+	)
 
-	# process recurring events
-	start = start.split(" ")[0]
-	end = end.split(" ")[0]
-	add_events = []
-	remove_events = []
+	def resolve_event(e: EventLikeDict, target_date: "date", repeat_till: "date"):
+		"""Record the event if it falls within the date range and is not excluded by the weekday."""
+		if e.repeat_on == "Weekly" and not e[weekdays[target_date.weekday()]]:
+			return
 
-	def add_event(e, date):
+		if not (
+			e.starts_on.date() <= target_date
+			and target_date >= start
+			and target_date <= end
+			and target_date <= repeat_till
+		):
+			return
+
+		ends_on_date = add_days(target_date, (e.ends_on - e.starts_on).days) if e.ends_on else None
+
+		if ends_on_date and e.repeat_till and ((ends_on_date > e.repeat_till) or (ends_on_date < start)):
+			return
+
 		new_event = e.copy()
 
-		enddate = add_days(date,int(date_diff(e.ends_on.split(" ")[0], e.starts_on.split(" ")[0]))) \
-			if (e.starts_on and e.ends_on) else date
+		new_event.original_starts_on = new_event.starts_on
+		new_event.original_ends_on = new_event.ends_on
 
-		new_event.starts_on = date + " " + e.starts_on.split(" ")[1]
-		new_event.ends_on = new_event.ends_on = enddate + " " + e.ends_on.split(" ")[1] if e.ends_on else None
+		new_event.starts_on = datetime.combine(target_date, e.starts_on.time())
+		new_event.ends_on = datetime.combine(ends_on_date, e.ends_on.time()) if ends_on_date else None
 
-		add_events.append(new_event)
+		resolved_events.append(new_event)
 
-	for e in events:
-		if e.repeat_this_event:
-			e.starts_on = get_datetime_str(e.starts_on)
-			e.ends_on = get_datetime_str(e.ends_on) if e.ends_on else None
+	for e in event_candidates:
+		if not e.repeat_this_event:
+			resolved_events.append(e)
+			continue
 
-			event_start, time_str = get_datetime_str(e.starts_on).split(" ")
+		if e.repeat_till and e.repeat_till < start:
+			continue
 
-			repeat = "3000-01-01" if cstr(e.repeat_till) == "" else e.repeat_till
+		repeat_till = getdate(e.repeat_till or "3000-01-01")
 
-			if e.repeat_on == "Yearly":
-				start_year = cint(start.split("-")[0])
-				end_year = cint(end.split("-")[0])
+		if e.repeat_on == "Daily":
+			target_date = start
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_days(target_date, 1)
 
-				# creates a string with date (27) and month (07) eg: 07-27
-				event_start = "-".join(event_start.split("-")[1:])
+		elif e.repeat_on == "Weekly":
+			target_date = start
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_days(target_date, 1)  # Increment by 1 to capture multiple days in the week
 
-				# repeat for all years in period
-				for year in range(start_year, end_year+1):
-					date = str(year) + "-" + event_start
-					if getdate(date) >= getdate(start) and getdate(date) <= getdate(end) and getdate(date) <= getdate(repeat):
-						add_event(e, date)
+		elif e.repeat_on == "Monthly":
+			first_occurence_in_range = e.starts_on.date()
+			jump_ahead = month_diff(start, first_occurence_in_range) - 1
+			target_date = add_months(first_occurence_in_range, jump_ahead)
 
-				remove_events.append(e)
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_months(target_date, 1)
 
-			if e.repeat_on == "Monthly":
-				# creates a string with date (27) and month (07) and year (2019) eg: 2019-07-27
-				date = start.split("-")[0] + "-" + start.split("-")[1] + "-" + event_start.split("-")[2]
+		elif e.repeat_on == "Quarterly":
+			first_occurence_in_range = e.starts_on.date()
+			jump_ahead = month_diff(start, first_occurence_in_range) // 3
+			target_date = add_months(first_occurence_in_range, 3 * jump_ahead)
 
-				# last day of month issue, start from prev month!
-				try:
-					getdate(date)
-				except ValueError:
-					date = date.split("-")
-					date = date[0] + "-" + str(cint(date[1]) - 1) + "-" + date[2]
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_months(target_date, 3)
 
-				start_from = date
-				for i in range(int(date_diff(end, start) / 30) + 3):
-					if getdate(date) >= getdate(start) and getdate(date) <= getdate(end) \
-						and getdate(date) <= getdate(repeat) and getdate(date) >= getdate(event_start):
-						add_event(e, date)
+		elif e.repeat_on == "Yearly":
+			first_occurence_in_range = e.starts_on.date()
+			jump_ahead = month_diff(start, first_occurence_in_range) // 12
+			target_date = add_years(first_occurence_in_range, jump_ahead)
 
-					date = add_months(start_from, i+1)
-				remove_events.append(e)
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_years(target_date, 1)
 
-			if e.repeat_on == "Weekly":
-				for cnt in range(date_diff(end, start) + 1):
-					date = add_days(start, cnt)
-					if getdate(date) >= getdate(start) and getdate(date) <= getdate(end) \
-						and getdate(date) <= getdate(repeat) and getdate(date) >= getdate(event_start) \
-						and e[weekdays[getdate(date).weekday()]]:
-						add_event(e, date)
+		elif e.repeat_on == "Half Yearly":
+			first_occurence_in_range = e.starts_on.date()
+			jump_ahead = month_diff(start, first_occurence_in_range) // 6
+			target_date = add_months(first_occurence_in_range, 6 * jump_ahead)
 
-				remove_events.append(e)
+			while target_date <= end:
+				resolve_event(e, target_date=target_date, repeat_till=repeat_till)
+				target_date = add_months(target_date, 6)
 
-			if e.repeat_on == "Daily":
-				for cnt in range(date_diff(end, start) + 1):
-					date = add_days(start, cnt)
-					if getdate(date) >= getdate(event_start) and getdate(date) <= getdate(end) and getdate(date) <= getdate(repeat):
-						add_event(e, date)
+	# Remove events that are not in the range and boolean weekdays fields
+	for event in resolved_events:
+		for fieldname in weekdays:
+			event.pop(fieldname, None)
 
-				remove_events.append(e)
+	return resolved_events
 
-	for e in remove_events:
-		events.remove(e)
-
-	events = events + add_events
-
-	for e in events:
-		# remove weekday properties (to reduce message size)
-		for w in weekdays:
-			del e[w]
-
-	return events
 
 def delete_events(ref_type, ref_name, delete_event=False):
-	participations = frappe.get_all("Event Participants", filters={"reference_doctype": ref_type, "reference_docname": ref_name,
-		"parenttype": "Event"}, fields=["parent", "name"])
+	participations = frappe.get_all(
+		"Event Participants",
+		filters={"reference_doctype": ref_type, "reference_docname": ref_name, "parenttype": "Event"},
+		fields=["parent", "name"],
+	)
 
 	if participations:
 		for participation in participations:
 			if delete_event:
 				frappe.delete_doc("Event", participation.parent, for_reload=True)
 			else:
-				total_participants = frappe.get_all("Event Participants", filters={"parenttype": "Event", "parent": participation.parent})
+				total_participants = frappe.get_all(
+					"Event Participants", filters={"parenttype": "Event", "parent": participation.parent}
+				)
 
 				if len(total_participants) <= 1:
-					frappe.db.sql("DELETE FROM `tabEvent` WHERE `name` = %(name)s", {'name': participation.parent})
+					frappe.db.delete("Event", {"name": participation.parent})
+					frappe.db.delete("Event Participants", {"name": participation.name})
 
-				frappe.db.sql("DELETE FROM `tabEvent Participants ` WHERE `name` = %(name)s", {'name': participation.name})
 
 # Close events if ends_on or repeat_till is less than now_datetime
 def set_status_of_events():
 	events = frappe.get_list("Event", filters={"status": "Open"}, fields=["name", "ends_on", "repeat_till"])
 	for event in events:
-		if (event.ends_on and getdate(event.ends_on) < getdate(nowdate())) \
-			or (event.repeat_till and getdate(event.repeat_till) < getdate(nowdate())):
-
+		if (event.ends_on and getdate(event.ends_on) < getdate(nowdate())) or (
+			event.repeat_till and getdate(event.repeat_till) < getdate(nowdate())
+		):
 			frappe.db.set_value("Event", event.name, "status", "Closed")

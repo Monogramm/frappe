@@ -7,27 +7,38 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "is_system_generated",
   "label_and_type",
   "label",
   "fieldtype",
   "fieldname",
   "non_negative",
+  "min_value",
+  "max_value",
   "reqd",
   "unique",
+  "is_virtual",
   "in_list_view",
   "in_standard_filter",
   "in_global_search",
   "in_preview",
   "bold",
+  "no_copy",
+  "set_only_once",
+  "ignore_versioning",
   "allow_in_quick_entry",
   "translatable",
+  "mask",
+  "link_filters",
   "column_break_7",
   "default",
   "precision",
   "length",
   "options",
+  "sort_options",
   "fetch_from",
   "fetch_if_empty",
+  "show_dashboard",
   "permissions",
   "depends_on",
   "permlevel",
@@ -35,26 +46,32 @@
   "read_only",
   "collapsible",
   "allow_bulk_edit",
+  "make_attachment_public",
   "collapsible_depends_on",
   "column_break_14",
   "ignore_user_permissions",
   "allow_on_submit",
   "report_hide",
+  "in_import_template",
   "remember_last_selected_value",
   "hide_border",
+  "ignore_xss_filter",
   "property_depends_on_section",
   "mandatory_depends_on",
   "column_break_33",
   "read_only_depends_on",
   "display",
+  "button_color",
   "in_filter",
   "hide_seconds",
   "hide_days",
   "column_break_21",
   "description",
+  "placeholder",
   "print_hide",
   "print_hide_if_no_value",
   "print_width",
+  "alignment",
   "columns",
   "width",
   "is_custom_field"
@@ -70,6 +87,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Label",
+   "length": 255,
    "oldfieldname": "label",
    "oldfieldtype": "Data",
    "search_index": 1
@@ -82,9 +100,10 @@
    "label": "Type",
    "oldfieldname": "fieldtype",
    "oldfieldtype": "Select",
-   "options": "Attach\nAttach Image\nBarcode\nButton\nCheck\nCode\nColor\nColumn Break\nCurrency\nData\nDate\nDatetime\nDuration\nDynamic Link\nFloat\nFold\nGeolocation\nHeading\nHTML\nHTML Editor\nImage\nInt\nLink\nLong Text\nMarkdown Editor\nPassword\nPercent\nRating\nRead Only\nSection Break\nSelect\nSignature\nSmall Text\nTable\nTable MultiSelect\nText\nText Editor\nTime",
+   "options": "Autocomplete\nAttach\nAttach Image\nAttachment Gallery\nBarcode\nButton\nCheck\nCode\nColor\nColumn Break\nCurrency\nData\nDate\nDatetime\nDuration\nDynamic Link\nFloat\nFold\nGeolocation\nHeading\nHTML\nHTML Editor\nIcon\nImage\nInt\nJSON\nLink\nLong Text\nMarkdown Editor\nPassword\nPercent\nPhone\nRating\nRead Only\nSection Break\nSelect\nSignature\nSmall Text\nTab Break\nTable\nTable MultiSelect\nText\nText Editor\nTime\nVue Component",
    "reqd": 1,
-   "search_index": 1
+   "search_index": 1,
+   "sort_options": 1
   },
   {
    "fieldname": "fieldname",
@@ -98,7 +117,7 @@
   },
   {
    "default": "0",
-   "depends_on": "eval:!in_list([\"Section Break\", \"Column Break\", \"Button\", \"HTML\"], doc.fieldtype)",
+   "depends_on": "eval:!['Section Break', 'Column Break', 'Button', 'HTML', 'Attachment Gallery'].includes(doc.fieldtype)",
    "fieldname": "reqd",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -110,18 +129,28 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!frappe.model.no_value_type.includes(doc.fieldtype)",
    "fieldname": "unique",
    "fieldtype": "Check",
    "label": "Unique"
   },
   {
    "default": "0",
+   "depends_on": "eval:!['Link', 'Attachment Gallery'].includes(doc.fieldtype)",
+   "fieldname": "is_virtual",
+   "fieldtype": "Check",
+   "label": "Is Virtual"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery' && (!doc.is_virtual)",
    "fieldname": "in_list_view",
    "fieldtype": "Check",
    "label": "In List View"
   },
   {
    "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "in_standard_filter",
    "fieldtype": "Check",
    "label": "In Standard Filter"
@@ -135,6 +164,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "bold",
    "fieldtype": "Check",
    "label": "Bold"
@@ -165,7 +195,7 @@
    "label": "Length"
   },
   {
-   "description": "For Links, enter the DocType as range.\nFor Select, enter list of Options, each on a new line.",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "options",
    "fieldtype": "Small Text",
    "in_list_view": 1,
@@ -180,10 +210,10 @@
   },
   {
    "default": "0",
-   "description": "If checked, this field will be not overwritten based on Fetch From if a value already exists.",
+   "description": "If unchecked, the value will always be re-fetched on save.",
    "fieldname": "fetch_if_empty",
    "fieldtype": "Check",
-   "label": "Fetch If Empty"
+   "label": "Fetch on Save if Empty"
   },
   {
    "fieldname": "permissions",
@@ -191,7 +221,7 @@
    "label": "Permissions"
   },
   {
-   "description": "This field will appear only if the fieldname defined here has value OR the rules are true (examples): \nmyfield\neval:doc.myfield=='My Value'\neval:doc.age&gt;18",
+   "description": "This field will appear only if the fieldname defined here has value OR the rules are true (examples):\nmyfield\neval:doc.myfield=='My Value'\neval:doc.age&gt;18",
    "fieldname": "depends_on",
    "fieldtype": "Code",
    "label": "Depends On",
@@ -201,6 +231,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!in_list(['Section Break', 'Column Break', 'Tab Break'], doc.fieldtype)",
    "fieldname": "permlevel",
    "fieldtype": "Int",
    "in_list_view": 1,
@@ -239,6 +270,13 @@
    "label": "Allow Bulk Edit"
   },
   {
+   "default": "0",
+   "depends_on": "eval:['Attach', 'Attach Image', 'Attachment Gallery'].includes(doc.fieldtype)",
+   "fieldname": "make_attachment_public",
+   "fieldtype": "Check",
+   "label": "Make Attachment Public (by default)"
+  },
+  {
    "depends_on": "eval:doc.fieldtype==\"Section Break\"",
    "fieldname": "collapsible_depends_on",
    "fieldtype": "Code",
@@ -265,11 +303,20 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "report_hide",
    "fieldtype": "Check",
    "label": "Report Hide",
    "oldfieldname": "report_hide",
    "oldfieldtype": "Check"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
+   "description": "Enable this option to include the field in the data import template",
+   "fieldname": "in_import_template",
+   "fieldtype": "Check",
+   "label": "Include in Import Template"
   },
   {
    "default": "0",
@@ -284,6 +331,7 @@
    "label": "Display"
   },
   {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "default",
    "fieldtype": "Small Text",
    "label": "Default",
@@ -292,6 +340,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "in_filter",
    "fieldtype": "Check",
    "label": "In Filter",
@@ -315,6 +364,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "print_hide",
    "fieldtype": "Check",
    "label": "Print Hide",
@@ -329,6 +379,7 @@
    "label": "Print Hide If No Value"
   },
   {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "description": "Print Width of the field, if the field is a column in a table",
    "fieldname": "print_width",
    "fieldtype": "Data",
@@ -337,13 +388,21 @@
    "width": "50px"
   },
   {
-   "depends_on": "eval:cur_frm.doc.istable",
+   "depends_on": "eval:in_list(['Data', 'Int', 'Float', 'Currency', 'Percent'], doc.fieldtype)",
+   "fieldname": "alignment",
+   "fieldtype": "Select",
+   "label": "Alignment",
+   "options": "\nLeft\nCenter\nRight"
+  },
+  {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery' && (parent.istable)",
    "description": "Number of columns for a field in a Grid (Total Columns in a grid should be less than 11)",
    "fieldname": "columns",
    "fieldtype": "Int",
    "label": "Columns"
   },
   {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "width",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -363,6 +422,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!['Tab Break', 'Table', 'Attachment Gallery'].includes(doc.fieldtype)",
    "fieldname": "allow_in_quick_entry",
    "fieldtype": "Check",
    "label": "Allow in Quick Entry"
@@ -373,6 +433,7 @@
    "label": "Property Depends On"
   },
   {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
    "fieldname": "mandatory_depends_on",
    "fieldtype": "Code",
    "label": "Mandatory Depends On",
@@ -390,7 +451,7 @@
   },
   {
    "default": "0",
-   "depends_on": "eval:!in_list(['Table', 'Table MultiSelect'], doc.fieldtype);",
+   "depends_on": "eval:!['Table', 'Table MultiSelect', 'Attachment Gallery'].includes(doc.fieldtype)",
    "fieldname": "in_preview",
    "fieldtype": "Check",
    "label": "In Preview"
@@ -422,18 +483,112 @@
    "fieldname": "non_negative",
    "fieldtype": "Check",
    "label": "Non Negative"
+  },
+  {
+   "depends_on": "eval:in_list([\"Int\", \"Float\", \"Currency\", \"Percent\"], doc.fieldtype)",
+   "fieldname": "min_value",
+   "fieldtype": "Float",
+   "label": "Min Value"
+  },
+  {
+   "depends_on": "eval:in_list([\"Int\", \"Float\", \"Currency\", \"Percent\"], doc.fieldtype)",
+   "fieldname": "max_value",
+   "fieldtype": "Float",
+   "label": "Max Value"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype=='Tab Break'",
+   "fieldname": "show_dashboard",
+   "fieldtype": "Check",
+   "label": "Show Dashboard"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
+   "fieldname": "no_copy",
+   "fieldtype": "Check",
+   "label": "No Copy"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: (parent.track_changes || parent.istable) && !doc.is_virtual",
+   "fieldname": "ignore_versioning",
+   "fieldtype": "Check",
+   "label": "Ignore Versioning"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_system_generated",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Is System Generated",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
+   "description": "Don't encode HTML tags like &lt;script&gt; or just characters like &lt; or &gt;, as they could be intentionally used in this field",
+   "fieldname": "ignore_xss_filter",
+   "fieldtype": "Check",
+   "label": "Ignore XSS Filter"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.fieldtype === 'Select'",
+   "fieldname": "sort_options",
+   "fieldtype": "Check",
+   "label": "Sort Options"
+  },
+  {
+   "depends_on": "eval:['Attachment Gallery', 'Link'].includes(doc.fieldtype)",
+   "description": "Filters applied to Link queries and Attachment Gallery files.",
+   "fieldname": "link_filters",
+   "fieldtype": "JSON",
+   "label": "Filters"
+  },
+  {
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
+   "fieldname": "placeholder",
+   "fieldtype": "Data",
+   "label": "Placeholder"
+  },
+  {
+   "depends_on": "eval:doc.fieldtype===\"Button\"",
+   "fieldname": "button_color",
+   "fieldtype": "Select",
+   "label": "Button Color",
+   "options": "\nDefault\nPrimary\nInfo\nSuccess\nWarning\nDanger"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:[\"Select\", \"Read Only\", \"Phone\", \"Percent\", \"Password\", \"Link\", \"Int\", \"Float\", \"Dynamic Link\", \"Duration\", \"Datetime\", \"Currency\", \"Data\", \"Date\"].includes(doc.fieldtype)",
+   "fieldname": "mask",
+   "fieldtype": "Check",
+   "label": "Mask"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.fieldtype !== 'Attachment Gallery'",
+   "fieldname": "set_only_once",
+   "fieldtype": "Check",
+   "label": "Set only once"
   }
  ],
+ "grid_page_length": 50,
  "idx": 1,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2020-10-29 06:11:57.661039",
+ "modified": "2026-10-23 16:52:20.730244",
  "modified_by": "Administrator",
  "module": "Custom",
  "name": "Customize Form Field",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [],
- "sort_field": "modified",
- "sort_order": "ASC"
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

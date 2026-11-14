@@ -1,26 +1,50 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 
-from __future__ import unicode_literals
+from unittest.mock import patch
 
-import unittest, frappe
+import frappe
+from frappe.tests import IntegrationTestCase
+from frappe.tests.utils import whitelist_for_tests
+from frappe.tests.utils.test_capabilities import TestService, requires_test_service
+from frappe.utils import get_site_url
 
-class TestClient(unittest.TestCase):
+
+@whitelist_for_tests(methods=["GET"])
+def _get_only_marker():
+	return "executed"
+
+
+class TestClient(IntegrationTestCase):
 	def test_set_value(self):
-		todo = frappe.get_doc(dict(doctype='ToDo', description='test')).insert()
-		frappe.set_value('ToDo', todo.name, 'description', 'test 1')
-		self.assertEqual(frappe.get_value('ToDo', todo.name, 'description'), 'test 1')
+		todo = frappe.get_doc(doctype="ToDo", description="test").insert()
+		frappe.set_value("ToDo", todo.name, "description", "test 1")
+		self.assertEqual(frappe.get_value("ToDo", todo.name, "description"), "test 1")
 
-		frappe.set_value('ToDo', todo.name, {'description': 'test 2'})
-		self.assertEqual(frappe.get_value('ToDo', todo.name, 'description'), 'test 2')
+		frappe.set_value("ToDo", todo.name, {"description": "test 2"})
+		self.assertEqual(frappe.get_value("ToDo", todo.name, "description"), "test 2")
 
 	def test_delete(self):
 		from frappe.client import delete
+		from frappe.desk.doctype.note.note import Note
 
-		todo = frappe.get_doc(dict(doctype='ToDo', description='description')).insert()
-		delete("ToDo", todo.name)
+		note = frappe.get_doc(
+			doctype="Note",
+			title=frappe.generate_hash(length=8),
+			content="test",
+			seen_by=[{"user": "Administrator"}],
+		).insert()
 
-		self.assertFalse(frappe.db.exists("ToDo", todo.name))
-		self.assertRaises(frappe.DoesNotExistError, delete, "ToDo", todo.name)
+		child_row_name = note.seen_by[0].name
+
+		with patch.object(Note, "save") as save:
+			delete("Note Seen By", child_row_name)
+			save.assert_called()
+
+		delete("Note", note.name)
+
+		self.assertFalse(frappe.db.exists("Note", note.name))
+		self.assertRaises(frappe.DoesNotExistError, delete, "Note", note.name)
+		self.assertRaises(frappe.DoesNotExistError, delete, "Note Seen By", child_row_name)
 
 	def test_http_valid_method_access(self):
 		from frappe.client import delete
@@ -29,15 +53,14 @@ class TestClient(unittest.TestCase):
 		frappe.set_user("Administrator")
 
 		frappe.local.request = frappe._dict()
-		frappe.local.request.method = 'POST'
+		frappe.local.request.method = "POST"
 
-		frappe.local.form_dict = frappe._dict({
-			'doc': dict(doctype='ToDo', description='Valid http method'),
-			'cmd': 'frappe.client.save'
-		})
-		todo = execute_cmd('frappe.client.save')
+		frappe.local.form_dict = frappe._dict(
+			{"doc": dict(doctype="ToDo", description="Valid http method"), "cmd": "frappe.client.save"}
+		)
+		todo = execute_cmd("frappe.client.save")
 
-		self.assertEqual(todo.get('description'), 'Valid http method')
+		self.assertEqual(todo.get("description"), "Valid http method")
 
 		delete("ToDo", todo.name)
 
@@ -47,11 +70,349 @@ class TestClient(unittest.TestCase):
 		frappe.set_user("Administrator")
 
 		frappe.local.request = frappe._dict()
-		frappe.local.request.method = 'GET'
+		frappe.local.request.method = "GET"
 
-		frappe.local.form_dict = frappe._dict({
-			'doc': dict(doctype='ToDo', description='Invalid http method'),
-			'cmd': 'frappe.client.save'
-		})
+		frappe.local.form_dict = frappe._dict(
+			{"doc": dict(doctype="ToDo", description="Invalid http method"), "cmd": "frappe.client.save"}
+		)
 
-		self.assertRaises(frappe.PermissionError, execute_cmd, 'frappe.client.save')
+		self.assertRaises(frappe.PermissionError, execute_cmd, "frappe.client.save")
+
+	def test_upload_file_respects_method_http_restriction(self):
+		"""`upload_file`'s `method` param must respect the target's HTTP method policy."""
+		from frappe.handler import upload_file
+
+		frappe.set_user("Administrator")
+
+		frappe.local.request = frappe._dict(method="POST", files={})
+		frappe.local.form_dict = frappe._dict(method="frappe.tests.test_client._get_only_marker")
+
+		self.assertRaises(frappe.PermissionError, upload_file)
+
+	def test_run_doc_method(self):
+		from frappe.handler import execute_cmd
+
+		report = frappe.get_doc(
+			{
+				"doctype": "Report",
+				"ref_doctype": "User",
+				"report_name": frappe.generate_hash(),
+				"report_type": "Query Report",
+				"is_standard": "No",
+				"roles": [{"role": "System Manager"}],
+			}
+		).insert()
+
+		frappe.local.request = frappe._dict()
+		frappe.local.request.method = "GET"
+
+		# Whitelisted, works as expected
+		frappe.local.form_dict = frappe._dict(
+			{
+				"dt": report.doctype,
+				"dn": report.name,
+				"method": "toggle_disable",
+				"cmd": "run_doc_method",
+				"args": 0,
+			}
+		)
+
+		execute_cmd(frappe.local.form_dict.cmd)
+
+		# Not whitelisted, throws permission error
+		frappe.local.form_dict = frappe._dict(
+			{
+				"dt": report.doctype,
+				"dn": report.name,
+				"method": "create_report_py",
+				"cmd": "run_doc_method",
+				"args": 0,
+			}
+		)
+
+		self.assertRaises(frappe.PermissionError, execute_cmd, frappe.local.form_dict.cmd)
+
+	@requires_test_service(TestService.WEB_SERVER)
+	def test_array_values_in_request_args(self):
+		import requests
+
+		from frappe.auth import CookieManager, LoginManager
+
+		frappe.utils.set_request(path="/")
+		frappe.local.cookie_manager = CookieManager()
+		frappe.local.login_manager = LoginManager()
+		frappe.local.login_manager.login_as("Administrator")
+		params = {
+			"doctype": "DocType",
+			"fields": ["name", "modified"],
+			"sid": frappe.session.sid,
+		}
+		headers = {
+			"accept": "application/json",
+			"content-type": "application/json",
+		}
+		url = get_site_url(frappe.local.site)
+		url += "/api/method/frappe.client.get_list"
+
+		res = requests.post(url, json=params, headers=headers)
+		self.assertEqual(res.status_code, 200)
+		data = res.json()
+		first_item = data["message"][0]
+		self.assertTrue("name" in first_item)
+		self.assertTrue("modified" in first_item)
+
+	def test_client_get(self):
+		from frappe.client import get
+
+		todo = frappe.get_doc(doctype="ToDo", description="test").insert()
+		filters = {"name": todo.name}
+		filters_json = frappe.as_json(filters)
+
+		self.assertEqual(get("ToDo", filters=filters).description, "test")
+		self.assertEqual(get("ToDo", filters=filters_json).description, "test")
+		self.assertEqual(get("System Settings", "", "").doctype, "System Settings")
+		self.assertEqual(get("ToDo", filters={}), get("ToDo", filters="{}"))
+		todo.delete()
+
+	def test_client_validate_link_and_fetch(self):
+		from frappe.client import validate_link_and_fetch
+
+		# Use Role doctype (no custom query like User has)
+		# Basic test
+		self.assertTrue(validate_link_and_fetch("Role", "System Manager"))
+
+		# fixes capitalization
+		if frappe.db.db_type == "mariadb":
+			self.assertEqual(validate_link_and_fetch("Role", "system manager"), {"name": "System Manager"})
+
+		# Fetch
+		result = validate_link_and_fetch("Role", "System Manager", fields_to_fetch=["desk_access"])
+		self.assertEqual(result.get("name"), "System Manager")
+		self.assertIn("desk_access", result)
+
+		# Non-existent document returns empty
+		result = validate_link_and_fetch("Role", "Non Existent Role")
+		self.assertEqual(result, {})
+
+		# Filters - Role exists but filter excludes it
+		result = validate_link_and_fetch("Role", "System Manager", filters={"desk_access": 0})
+		self.assertEqual(result, {})
+
+		# Filters - Role exists and filter matches
+		result = validate_link_and_fetch("Role", "System Manager", filters={"desk_access": 1})
+		self.assertEqual(result.get("name"), "System Manager")
+
+		# Permissions
+		with self.set_user("Guest"), self.assertRaises(frappe.PermissionError):
+			validate_link_and_fetch("Role", "System Manager")
+
+	def test_validate_link_and_fetch_for_child_table(self):
+		"""
+		Test validate_link_and_fetch works for child table doctypes with field fetch.
+		"""
+		from frappe.client import validate_link_and_fetch
+
+		self.addCleanup(frappe.db.rollback)
+
+		user = frappe.get_doc("User", "Administrator")
+		user.append("block_modules", {"module": "Core"})
+		user.save()
+
+		child_row = user.block_modules[-1]
+
+		result = validate_link_and_fetch("Block Module", child_row.name, fields_to_fetch=["module"])
+		self.assertEqual(result.get("name"), child_row.name)
+		self.assertEqual(result.get("module"), "Core")
+
+	def test_client_insert(self):
+		from frappe.client import insert
+
+		def get_random_title():
+			return f"test-{frappe.generate_hash()}"
+
+		# test insert dict
+		doc = {"doctype": "Note", "title": get_random_title(), "content": "test"}
+		note1 = insert(doc)
+		self.assertTrue(note1)
+
+		# test insert json
+		doc["title"] = get_random_title()
+		json_doc = frappe.as_json(doc)
+		note2 = insert(json_doc)
+		self.assertTrue(note2)
+
+		# test insert child doc without parent fields
+		child_doc = {"doctype": "Note Seen By", "user": "Administrator"}
+		with self.assertRaises(frappe.ValidationError):
+			insert(child_doc)
+
+		# test insert child doc with parent fields
+		child_doc = {
+			"doctype": "Note Seen By",
+			"user": "Administrator",
+			"parenttype": "Note",
+			"parent": note1.name,
+			"parentfield": "seen_by",
+		}
+		note3 = insert(child_doc)
+		self.assertTrue(note3)
+
+		# cleanup
+		frappe.delete_doc("Note", note1.name)
+		frappe.delete_doc("Note", note2.name)
+
+	def test_client_insert_many(self):
+		from frappe.client import insert, insert_many
+
+		def get_random_title():
+			return f"test-{frappe.generate_hash(length=5)}"
+
+		# insert a (parent) doc
+		note1 = {"doctype": "Note", "title": get_random_title(), "content": "test"}
+		note1 = insert(note1)
+
+		doc_list = [
+			{
+				"doctype": "Note Seen By",
+				"user": "Administrator",
+				"parenttype": "Note",
+				"parent": note1.name,
+				"parentfield": "seen_by",
+			},
+			{
+				"doctype": "Note Seen By",
+				"user": "Administrator",
+				"parenttype": "Note",
+				"parent": note1.name,
+				"parentfield": "seen_by",
+			},
+			{
+				"doctype": "Note Seen By",
+				"user": "Administrator",
+				"parenttype": "Note",
+				"parent": note1.name,
+				"parentfield": "seen_by",
+			},
+			{"doctype": "Note", "title": "not-a-random-title", "content": "test"},
+			{"doctype": "Note", "title": get_random_title(), "content": "test"},
+			{"doctype": "Note", "title": get_random_title(), "content": "test"},
+			{"doctype": "Note", "title": "another-note-title", "content": "test"},
+		]
+
+		# insert all docs
+		docs = insert_many(doc_list)
+
+		self.assertEqual(len(docs), 7)
+		self.assertEqual(frappe.db.get_value("Note", docs[3], "title"), "not-a-random-title")
+		self.assertEqual(frappe.db.get_value("Note", docs[6], "title"), "another-note-title")
+		self.assertIn(note1.name, docs)
+
+		# cleanup
+		for doc in docs:
+			frappe.delete_doc("Note", doc)
+
+	def test_client_crud_accepts_native_dict(self):
+		import frappe.client as client
+
+		# save (frappe.parse_json passthrough) accepts a native dict, not a JSON string
+		doc = client.insert({"doctype": "ToDo", "description": "json-body insert"})
+		self.assertEqual(doc["doctype"], "ToDo")
+
+		doc["description"] = "edited"
+		saved = client.save(doc)
+		self.assertEqual(saved["description"], "edited")
+
+		# insert_many with a native list of dicts
+		names = client.insert_many([{"doctype": "ToDo", "description": "native insert_many"}])
+		self.assertTrue(names)
+
+		frappe.delete_doc("ToDo", doc["name"])
+		for name in names:
+			frappe.delete_doc("ToDo", name)
+
+	def test_bulk_update_accepts_native_list(self):
+		from frappe.client import bulk_update
+
+		todo = frappe.get_doc(doctype="ToDo", description="bulk").insert()
+		# bulk_update with a native list of dicts (frappe.parse_json passthrough)
+		result = bulk_update([{"doctype": "ToDo", "docname": todo.name, "description": "updated"}])
+		self.assertEqual(result["failed_docs"], [])
+		self.assertEqual(frappe.db.get_value("ToDo", todo.name, "description"), "updated")
+		todo.delete()
+
+	def test_get_value_scientific_notation_docname(self):
+		from frappe.client import get_value
+
+		tag = frappe.get_doc({"doctype": "Tag", "name": "3E002"}).insert(ignore_if_duplicate=True)
+		try:
+			self.assertEqual(get_value("Tag", ["name"], "3E002"), {"name": "3E002"})
+		finally:
+			tag.delete()
+
+
+class TestMethodLookupErrors(IntegrationTestCase):
+	"""A method path that cannot be resolved gives the same error whatever the reason."""
+
+	NOT_FOUND = "Method not found"
+	UNRESOLVABLE = (
+		"no_such_app.module.fn",
+		"frappe.no_such_module.fn",
+		"frappe.utils.no_such_fn",
+	)
+
+	def setUp(self):
+		frappe.local.request = frappe._dict(method="GET", files={})
+		frappe.local.form_dict = frappe._dict()
+		patcher = patch.object(frappe, "_dev_server", 0)
+		patcher.start()
+		self.addCleanup(patcher.stop)
+
+	def test_unresolvable_method_gives_one_error(self):
+		from frappe.api.v2 import handle_rpc_call
+		from frappe.desk.treeview import get_all_nodes
+		from frappe.handler import execute_cmd, upload_file
+		from frappe.model.mapper import make_mapped_doc, map_docs
+
+		def upload(path):
+			frappe.local.form_dict = frappe._dict(method=path)
+			upload_file()
+
+		entry_points = {
+			"execute_cmd": execute_cmd,
+			"handle_rpc_call": handle_rpc_call,
+			"upload_file": upload,
+			"get_all_nodes": lambda path: get_all_nodes("ToDo", "ToDo", "", path),
+			"make_mapped_doc": lambda path: make_mapped_doc(path, "x"),
+			"map_docs": lambda path: map_docs(path, "[]", "{}"),
+		}
+		with self.change_settings(
+			"System Settings", allow_guests_to_upload_files=1, allowed_doctypes_for_guest_uploads=""
+		):
+			for name, call in entry_points.items():
+				with self.subTest(name), self.set_user("Guest"):
+					errors = {self.error_of(call, path) for path in self.UNRESOLVABLE}
+
+				self.assertEqual(errors, {(frappe.ValidationError, self.NOT_FOUND, (self.NOT_FOUND,))}, name)
+
+	def test_user_who_can_see_tracebacks_gets_the_reason(self):
+		from frappe.handler import execute_cmd
+
+		with (
+			self.set_user("test@example.com"),
+			self.change_settings("System Settings", allow_error_traceback=1),
+		):
+			with self.assertRaises(frappe.ValidationError) as missing_app:
+				execute_cmd("no_such_app.module.fn")
+			with self.assertRaises(frappe.ValidationError) as missing_module:
+				execute_cmd("frappe.no_such_module.fn")
+
+		self.assertIn("not installed", str(missing_app.exception))
+		self.assertIn("No module named", str(missing_module.exception))
+
+	def error_of(self, call, path):
+		frappe.local.message_log = []
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			call(path)
+
+		shown = tuple(m["message"] for m in frappe.local.message_log)
+		return type(ctx.exception), str(ctx.exception), shown

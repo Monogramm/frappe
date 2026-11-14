@@ -1,39 +1,145 @@
-frappe.ui.form.on("File", "refresh", function(frm) {
-	if(!frm.doc.is_folder) {
-		frm.add_custom_button(__('Download'), function() {
-			var file_url = frm.doc.file_url;
-			if (frm.doc.file_name) {
-				file_url = file_url.replace(/#/g, '%23');
-			}
-			window.open(file_url);
-		}, "fa fa-download");
-	}
-
-	var wrapper = frm.get_field("preview_html").$wrapper;
-	var is_viewable = frappe.utils.is_image_file(frm.doc.file_url);
-
-	frm.toggle_display("preview", is_viewable);
-	frm.toggle_display("preview_html", is_viewable);
-
-	if(is_viewable){
-		wrapper.html('<div class="img_preview">\
-			<img class="img-responsive" src="'+frm.doc.file_url+'"></img>\
-			</div>');
-	} else {
-		wrapper.empty();
-	}
-
-	if(frm.doc.file_name && frm.doc.file_name.split('.').splice(-1)[0]==='zip') {
-		frm.add_custom_button(__('Unzip'), function() {
-			frappe.call({
-				method: "frappe.core.doctype.file.file.unzip_file",
-				args: {
-					name: frm.doc.name,
-				},
-				callback: function() {
-					frappe.set_route('List', 'File');
+frappe.ui.form.on("File", {
+	refresh: function (frm) {
+		if (frm.doc.file_url) {
+			frm.add_custom_button(__("View File"), () => {
+				if (!frappe.utils.is_url(frm.doc.file_url)) {
+					window.open(
+						window.location.origin + frm.doc.file_url + "?fid=" + frm.doc.name
+					);
+				} else {
+					window.open(frm.doc.file_url);
 				}
 			});
+		}
+
+		if (!frm.doc.is_folder) {
+			// add download button
+			frm.add_custom_button(__("Download"), () => frm.trigger("download"));
+		}
+
+		if (!frm.doc.is_private) {
+			frm.dashboard.set_headline(
+				__("This file is public. It can be accessed without authentication."),
+				"orange"
+			);
+		}
+
+		frm.toggle_display("preview", false);
+
+		// preview different file types
+		frm.trigger("preview_file");
+
+		let is_optimizable_file_type = /\.(gif|jpg|jpeg|tiff|png|pdf)$/i.test(frm.doc.file_name);
+		let is_optimizable =
+			!frm.doc.is_folder && is_optimizable_file_type && frm.doc.file_size > 0;
+
+		// add optimize button
+		is_optimizable && frm.add_custom_button(__("Optimize"), () => frm.trigger("optimize"));
+
+		// add unzip button
+		if (frm.doc.file_name && frm.doc.file_name.split(".").splice(-1)[0] === "zip") {
+			frm.add_custom_button(__("Unzip"), () => frm.trigger("unzip"));
+		}
+
+		if (!frappe.utils.can_upload_public_files() && frm.doc.is_private) {
+			frm.set_df_property("is_private", "read_only", 1);
+		}
+
+		if (frm.doc.attached_to_name) {
+			const field = frm.get_field("attached_to_name");
+			field.$input_wrapper
+				.find(".control-value")
+				.html(
+					`${frappe.utils.get_form_link(
+						frm.doc.attached_to_doctype,
+						frm.doc.attached_to_name,
+						true
+					)}`
+				);
+		}
+	},
+
+	preview_file: function (frm) {
+		let $preview = "";
+		let file_extension = frm.doc.file_type.toLowerCase();
+		const full_file_url = frm.doc.file_url + "?fid=" + frm.doc.name;
+		const src_url = frappe.utils.escape_html(full_file_url);
+
+		if (frappe.utils.is_image_file(full_file_url)) {
+			$preview = $(`<div class="img_preview">
+				<img
+					class="img-responsive"
+					style="max-width: 500px";
+					src="${src_url}"
+					onerror="${frm.toggle_display("preview", false)}"
+				/>
+			</div>`);
+		} else if (frappe.utils.is_video_file(full_file_url)) {
+			$preview = $(`<div class="img_preview">
+				<video width="480" height="320" controls>
+					<source src="${src_url}">
+					${__("Your browser does not support the video element.")}
+				</video>
+			</div>`);
+		} else if (file_extension === "pdf") {
+			$preview = $(`<div class="img_preview">
+				<object style="background:#323639;" width="100%">
+					<embed
+						style="background:#323639;"
+						width="100%"
+						height="1190"
+						src="${src_url}" type="application/pdf"
+					>
+				</object>
+			</div>`);
+		} else if (file_extension === "mp3") {
+			$preview = $(`<div class="img_preview">
+				<audio width="480" height="60" controls>
+					<source src="${src_url}" type="audio/mpeg">
+					${__("Your browser does not support the audio element.")}
+				</audio >
+			</div>`);
+		}
+
+		if ($preview) {
+			frm.toggle_display("preview", true);
+			frm.get_field("preview_html").$wrapper.html($preview);
+		}
+	},
+
+	download: function (frm) {
+		let file_url = frm.doc.file_url + "?fid=" + frm.doc.name;
+		if (frm.doc.file_name) {
+			file_url = file_url.replace(/#/g, "%23");
+		}
+
+		// create temporary link element to simulate a download click
+		var link = document.createElement("a");
+		link.href = file_url;
+		link.download = frm.doc.file_name;
+		link.style.display = "none";
+
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
+	},
+
+	optimize: function (frm) {
+		frappe.show_alert(__("Optimizing file..."));
+		frm.call("optimize_file").then(() => {
+			frappe.show_alert(__("File optimized"));
 		});
-	}
+	},
+
+	unzip: function (frm) {
+		frappe.call({
+			method: "frappe.core.api.file.unzip_file",
+			args: {
+				name: frm.doc.name,
+			},
+			callback: function () {
+				frappe.set_route("List", "File");
+			},
+		});
+	},
 });

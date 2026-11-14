@@ -1,32 +1,70 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
 import frappe
-from frappe.model.document import Document
-from frappe.utils.data import evaluate_filters
 from frappe import _
+from frappe.model.document import Document
+from frappe.model.naming import getseries, parse_naming_series
+from frappe.utils.data import evaluate_filters
+
 
 class DocumentNamingRule(Document):
+	_DOCTYPE_NAME = "Document Naming Rule"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.core.doctype.document_naming_rule_condition.document_naming_rule_condition import (
+			DocumentNamingRuleCondition,
+		)
+		from frappe.types import DF
+
+		conditions: DF.Table[DocumentNamingRuleCondition]
+		counter: DF.Int
+		disabled: DF.Check
+		document_type: DF.Link
+		prefix: DF.Data
+		prefix_digits: DF.Int
+		priority: DF.Int
+	# end: auto-generated types
+
 	def validate(self):
 		self.validate_fields_in_conditions()
 
+	def clear_doctype_map(self):
+		frappe.cache_manager.clear_doctype_map(self.doctype, self.document_type)
+
+	def on_update(self):
+		self.clear_doctype_map()
+
+	def on_trash(self):
+		self.clear_doctype_map()
+
 	def validate_fields_in_conditions(self):
-		if self.has_value_changed("document_type"):
-			docfields = [x.fieldname for x in frappe.get_meta(self.document_type).fields]
-			for condition in self.conditions:
-				if condition.field not in docfields:
-					frappe.throw(_("{0} is not a field of doctype {1}").format(frappe.bold(condition.field), frappe.bold(self.document_type)))
+		meta = frappe.get_meta(self.document_type)
+		for condition in self.conditions:
+			if not meta.has_field(condition.field):
+				frappe.throw(
+					_("{0} is not a field of doctype {1}").format(
+						frappe.bold(condition.field), frappe.bold(self.document_type)
+					)
+				)
 
 	def apply(self, doc):
-		'''
+		"""
 		Apply naming rules for the given document. Will set `name` if the rule is matched.
-		'''
-		if self.conditions:
-			if not evaluate_filters(doc, [(self.document_type, d.field, d.condition, d.value) for d in self.conditions]):
-				return
 
-		counter = frappe.db.get_value(self.doctype, self.name, 'counter', for_update=True) or 0
-		doc.name = self.prefix + ('%0'+str(self.prefix_digits)+'d') % (counter + 1)
-		frappe.db.set_value(self.doctype, self.name, 'counter', counter + 1)
+		Conditions are evaluated one at a time: Filters.optimize collapses repeated equalities on a
+		field into an `in`, which would read the rows as alternatives rather than requirements.
+		"""
+		if not all(
+			evaluate_filters(doc, [(self.document_type, d.field, d.condition, d.value)])
+			for d in self.conditions
+		):
+			return
+
+		prefix = parse_naming_series(self.prefix, doc=doc)
+		doc.name = prefix + getseries(prefix, self.prefix_digits)

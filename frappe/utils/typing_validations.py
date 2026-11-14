@@ -1,0 +1,228 @@
+import inspect
+import sys
+from collections.abc import Callable
+from functools import lru_cache, wraps
+from inspect import _empty, isclass
+from types import EllipsisType
+from typing import TYPE_CHECKING, ForwardRef, Literal, TypeVar, Union, get_origin, get_type_hints
+
+from annotationlib import Format
+
+import frappe
+from frappe.exceptions import FrappeTypeError
+
+if TYPE_CHECKING:
+	from pydantic import ConfigDict
+
+SLACK_DICT = {
+	bool: (int, bool, float),
+}
+T = TypeVar("T")
+ForwardRefOrStr = ForwardRef | str
+
+
+# ConfigDict is a TypedDict, so at runtime it's just a plain dict and TypeAdapter accepts
+# this literal. Calling ConfigDict() would drag pydantic (~6MB) into `import frappe`.
+FrappePydanticConfig: "ConfigDict" = {"arbitrary_types_allowed": True}
+
+
+def is_mock(value) -> bool:
+	mock = sys.modules.get("unittest.mock")
+	return mock is not None and isinstance(value, mock.Mock)
+
+
+def validate_argument_types(
+	func: Callable,
+	apply_condition: Callable | None = None,
+	force_types: bool | None = None,
+):
+	app = func.__module__.split(".")[0]
+
+	@wraps(func)
+	def wrapper(*args, **kwargs):
+		"""Validate argument types of whitelisted functions.
+
+		:param args: Function arguments.
+		:param kwargs: Function keyword arguments."""
+
+		nonlocal force_types
+
+		# Resolve it only once
+		if force_types is None:
+			force_types = any(frappe.get_hooks("require_type_annotated_api_methods", app_name=app))
+
+		if apply_condition is None or apply_condition():
+			args, kwargs = transform_parameter_types(func, args, kwargs, force_types)
+
+		return func(*args, **kwargs)
+
+	return wrapper
+
+
+def qualified_name(obj) -> str:
+	"""
+	Return the qualified name (e.g. package.module.Type) for the given object.
+
+	Builtins and types from the :mod:typing package get special treatment by having the module
+	name stripped from the generated name.
+
+	"""
+	discovered_type = obj if isclass(obj) else type(obj)
+	module, qualname = discovered_type.__module__, discovered_type.__qualname__
+
+	if module in {"typing", "types"}:
+		return obj
+	elif module in {"builtins"}:
+		return qualname
+	else:
+		return f"{module}.{qualname}"
+
+
+def raise_type_error(
+	func: callable,
+	arg_name: str,
+	arg_type: type,
+	arg_value: object,
+	current_exception: Exception | None = None,
+):
+	"""
+	Raise a TypeError with a message that includes the name of the argument, the expected type
+	and the actual type of the value passed.
+
+	"""
+	module, qualname = func.__module__, func.__qualname__
+	raise FrappeTypeError(
+		f"Argument '{arg_name}' in '{module}.{qualname}' should be of type '{qualified_name(arg_type)}' but got "
+		f"'{qualified_name(arg_value)}' instead."
+	) from current_exception
+
+
+@lru_cache(maxsize=2048)
+def TypeAdapter(type_):
+	from pydantic import PydanticUserError
+	from pydantic import TypeAdapter as PydanticTypeAdapter
+
+	try:
+		return PydanticTypeAdapter(type_, config=FrappePydanticConfig)
+	except PydanticUserError as e:
+		# Cannot set config for types BaseModel, TypedDict and dataclass
+		if e.code == "type-adapter-config-unused":
+			return PydanticTypeAdapter(type_)
+
+		raise e
+
+
+@lru_cache(maxsize=2048)
+def get_resolved_annotations(func: Callable) -> dict:
+	"""Evaluate string annotations; unresolvable ones are kept as `ForwardRef`."""
+	try:
+		return get_type_hints(func, include_extras=True, format=Format.FORWARDREF)
+	except SyntaxError:
+		# a string annotation that isn't an expression, e.g. `x: "free text"`, is skipped
+		return func.__annotations__
+
+
+def has_forward_ref(annotation) -> bool:
+	"""Whether an unresolved forward ref appears anywhere in the annotation."""
+	if isinstance(annotation, ForwardRefOrStr):
+		return True
+	# `Literal` args are values, not forward refs
+	if get_origin(annotation) is Literal:
+		return False
+	return any(has_forward_ref(arg) for arg in getattr(annotation, "__args__", ()))
+
+
+def transform_parameter_types(func: Callable, args: tuple, kwargs: dict, force_types=False):
+	"""
+	Validate the types of the arguments passed to a function with the type annotations
+	defined on the function.
+	"""
+
+	annotations = get_resolved_annotations(func)
+	func_params = frappe._get_cached_signature_params(func)[0]
+
+	if force_types:
+		for idx, (param_name, parameter) in enumerate(func_params.items()):
+			if idx == 0 and param_name in ("self", "cls"):
+				continue
+			if parameter.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
+				continue
+			if param_name not in annotations:
+				module, qualname = func.__module__, func.__qualname__
+				raise FrappeTypeError(
+					f"Argument '{param_name}' in '{module}.{qualname}' is missing type annotation. "
+					f"All arguments must have type annotations when type checking is enforced."
+				)
+
+	if (
+		not (args or kwargs)
+		or not annotations
+		# No input validations to perform
+		or (len(annotations) == 1 and "return" in annotations)
+	):
+		return args, kwargs
+
+	from pydantic import ValidationError as PydanticValidationError
+
+	new_args, new_kwargs = list(args), kwargs
+
+	if args:
+		# generate kwargs dict from args
+		arg_names = func.__code__.co_varnames[: func.__code__.co_argcount]
+		prepared_args = dict(zip(arg_names, args, strict=False))
+
+		if kwargs:
+			# update prepared_args with kwargs
+			prepared_args.update(kwargs)
+
+	else:
+		prepared_args = kwargs
+
+	# check if the argument types are correct
+	for current_arg, current_arg_type in annotations.items():
+		if current_arg not in prepared_args:
+			continue
+
+		current_arg_value = prepared_args[current_arg]
+
+		# types that can't be resolved (e.g. imported only for type checking) aren't validated
+		if has_forward_ref(current_arg_type):
+			continue
+		# ignore unittest.mock objects
+		elif is_mock(current_arg_value):
+			continue
+
+		# allow slack for Frappe types
+		if current_arg_type in SLACK_DICT:
+			current_arg_type = SLACK_DICT[current_arg_type]
+
+		param_def = func_params.get(current_arg)
+
+		# add default value's type in acceptable types
+		if param_def.default is not _empty:
+			if isinstance(current_arg_type, tuple):
+				if type(param_def.default) not in current_arg_type:
+					current_arg_type += (type(param_def.default),)
+				current_arg_type = Union[current_arg_type]  # noqa: UP007
+
+			elif param_def.default != current_arg_type:
+				current_arg_type = Union[current_arg_type, type(param_def.default)]  # noqa: UP007
+		elif isinstance(current_arg_type, tuple):
+			current_arg_type = Union[current_arg_type]  # noqa: UP007
+
+		# validate the type set using pydantic - raise a TypeError if Validation is raised or Ellipsis is returned
+		try:
+			current_arg_value_after = TypeAdapter(current_arg_type).validate_python(current_arg_value)
+		except (TypeError, PydanticValidationError) as e:
+			raise_type_error(func, current_arg, current_arg_type, current_arg_value, current_exception=e)
+
+		if isinstance(current_arg_value_after, EllipsisType):
+			raise_type_error(func, current_arg, current_arg_type, current_arg_value)
+
+		# update the args and kwargs with possibly casted value
+		if current_arg in kwargs:
+			new_kwargs[current_arg] = current_arg_value_after
+		else:
+			new_args[arg_names.index(current_arg)] = current_arg_value_after
+
+	return new_args, new_kwargs

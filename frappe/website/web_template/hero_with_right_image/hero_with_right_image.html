@@ -1,23 +1,25 @@
 <div class="hero-with-right-image">
 	<div class="hero-content">
 		<div>
+			{%- if title -%}
 			<h1 class="hero-title">
-				{{ title }}
+				{{ _(title) }}
 			</h1>
+			{%- endif -%}
 			{%- if subtitle -%}
 			<p class="hero-subtitle">
-				{{ subtitle }}
+				{{ _(subtitle) }}
 			</p>
 			{%- endif -%}
 			<div>
 				{%- if primary_action -%}
 				<a class="btn btn-lg btn-primary" href="{{ primary_action }}">
-					{{ primary_action_label }}
+					{{ _(primary_action_label) }}
 				</a>
 				{%- endif -%}
 				{%- if secondary_action -%}
 				<a class="btn btn-lg btn-primary-light" href="{{ secondary_action }}">
-					{{ secondary_action_label }}
+					{{ _(secondary_action_label) }}
 				</a>
 				{%- endif -%}
 			</div>

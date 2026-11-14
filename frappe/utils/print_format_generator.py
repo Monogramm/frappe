@@ -1,0 +1,1461 @@
+# Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
+# MIT License. See LICENSE
+
+import base64
+import copy
+import re
+from typing import ClassVar
+from urllib.parse import quote
+
+from bs4 import BeautifulSoup
+
+import frappe
+from frappe import _
+from frappe.printing.fieldtypes import CONTENT_FIELDTYPES
+from frappe.printing.layout import iter_fields, iter_layout_columns, iter_zones
+from frappe.utils.data import cint, cstr, flt
+from frappe.utils.jinja_globals import is_rtl
+
+
+@frappe.whitelist()
+def render_jinja_template(
+	template: str, doctype: str, docname: str, global_variables: str | None = None
+) -> str:
+	"""Render a raw Jinja2 template string with doc context (used by the print format builder preview)."""
+	frappe.only_for("System Manager")
+	doc = frappe.get_doc(doctype, docname)
+	doc.check_permission("print")
+	# template is rendered inside frappe's SandboxedEnvironment (Jinja2 sandbox).
+	# The caller must hold the "print" permission on the document before reaching this line.
+	try:
+		context = {
+			**global_variables_context(global_variables, doc),
+			"doc": doc,
+			"get_qr_code": get_qr_code,
+			"get_barcode": get_barcode,
+		}
+		return frappe.render_template(  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti
+			template, context
+		)
+	except Exception as e:
+		# fail with 417 instead of 500 so the canvas can degrade inline
+		# rather than the client popping the error-report dialog
+		frappe.clear_last_message()
+		frappe.throw(_("Failed to render template: {0}").format(str(e)), frappe.ValidationError)
+
+
+def global_variables_context(template: str | None, doc) -> dict:
+	"""The global variables a format sets, rendered once for all of its HTML blocks."""
+	if not template:
+		return {}
+	from frappe.utils.jinja import get_jenv, safe_render_flags
+
+	if ".__" in template:
+		frappe.throw(_("Illegal template"))
+	try:
+		with safe_render_flags():
+			module = get_jenv().from_string(template).make_module({"doc": doc})
+	except Exception as e:
+		frappe.throw(
+			_("The global variables of this print format could not be set: {0}").format(str(e)),
+			title=_("Print Format Error"),
+		)
+	return {key: value for key, value in vars(module).items() if not key.startswith("_")}
+
+
+@frappe.whitelist()
+@frappe.concurrent_limit()
+def download_pdf(
+	doctype: str,
+	name: str | int,
+	print_format: str | None = None,
+	letterhead: str | None = None,
+	settings: str | dict | None = None,
+	style: str | None = None,
+):
+	from frappe.core.doctype.access_log.access_log import make_access_log
+	from frappe.utils.print_utils import _run_print_pdf_hooks
+	from frappe.www.printview import resolve_print_format, validate_print
+
+	doc = frappe.get_doc(doctype, name)
+	validate_print(doc)
+	print_format, is_beta = resolve_print_format(print_format, doc.meta)
+	if not is_beta:
+		# jinja formats have no layout for the generator — hand off to the
+		# legacy pipeline, which reads the format's template
+		from frappe.utils.print_format import download_pdf as download_jinja_pdf
+
+		return download_jinja_pdf(doctype, cstr(name), format=print_format.name, letterhead=letterhead)
+	_run_print_pdf_hooks(doctype, name, print_format.name)
+	generator = PrintFormatGenerator(
+		print_format, doc, letterhead, style=style, settings=frappe.parse_json(settings)
+	)
+	pdf = generator.render_pdf()
+	make_access_log(
+		doctype=doc.doctype,
+		document=doc.name,
+		file_type="PDF",
+		method="Print",
+		page=f"Print Format: {print_format.name}",
+	)
+
+	frappe.local.response.filename = "{name}.pdf".format(name=cstr(name).replace(" ", "-").replace("/", "-"))
+	frappe.local.response.filecontent = pdf
+	frappe.local.response.type = "pdf"
+
+
+def render_html_pdf(print_format, html, options, pdf_generator):
+	from frappe.utils.pdf import get_chrome_pdf, get_plutoprint_pdf
+
+	render = get_plutoprint_pdf if pdf_generator == "PlutoPrint" else get_chrome_pdf
+	return render(
+		print_format=print_format, html=html, options=options, output=None, pdf_generator=pdf_generator
+	)
+
+
+def get_typst_pdf(print_format, html, options, output, pdf_generator=None):
+	"""`pdf_generator` hook: claims builder formats whose renderer is Typst."""
+	if pdf_generator != "Typst":
+		return
+	generator = getattr(frappe.local, "print_format_generator", None)
+	if generator is None:
+		from frappe.model.document import Document
+		from frappe.utils.print_utils import _print_format_doc_or_none
+
+		fd = frappe.form_dict
+		if not fd.get("doctype") or not fd.get("name"):
+			return
+		pf = _print_format_doc_or_none(print_format, fd.doctype)
+		if not pf or not pf.get("print_format_builder_beta"):
+			return
+		doc = fd.get("doc")
+		if not isinstance(doc, Document):
+			doc = frappe.get_doc(fd.doctype, fd.name)
+		generator = PrintFormatGenerator(
+			pf,
+			doc,
+			fd.get("letterhead"),
+			settings=frappe.parse_json(fd.get("settings")) if fd.get("settings") else None,
+			no_letterhead=fd.get("no_letterhead"),
+		)
+	return generator.render_typst_pdf(password=(options or {}).get("password"))
+
+
+def is_qr_barcode_options(options: str | None) -> bool:
+	"""Whether a Barcode docfield's options ask for a QR code — either the bare
+	string "qrcode"/"qr" or JsBarcode-style JSON like {"format": "qrcode"}."""
+	import json
+
+	options = (options or "").strip()
+	if options.lower() in ("qr", "qrcode"):
+		return True
+	try:
+		return json.loads(options).get("format", "").lower() in ("qr", "qrcode")
+	except Exception:
+		return False
+
+
+@frappe.whitelist()
+def get_qr_code(value: str) -> str | None:
+	"""Return a QR code for `value` as an SVG data URI (used by Barcode print elements)."""
+	import io
+
+	if not isinstance(value, str) or len(value) > 2000:
+		frappe.throw(_("Barcode value must be text under 2000 characters"), frappe.ValidationError)
+
+	from pyqrcode import create as qrcreate
+
+	stream = io.BytesIO()
+	try:
+		qrcreate(value).svg(stream, scale=5, quiet_zone=1, omithw=True)
+	except ValueError:
+		return None
+	return "data:image/svg+xml;base64," + base64.b64encode(stream.getvalue()).decode()
+
+
+LINEAR_BARCODE_FORMATS = {"CODE128": ("code128", {}), "CODE39": ("code39", {"add_checksum": False})}
+
+
+@frappe.whitelist()
+def get_barcode(value: str, barcode_format: str = "CODE128", show_text: bool = True) -> str | None:
+	"""Return `value` as a barcode SVG data URI, or None when the format cannot encode it."""
+	from html import escape
+
+	import barcode
+	from barcode.errors import BarcodeError
+
+	from frappe.utils.typst_emitter import _CONTROL_CHARS
+
+	if isinstance(value, str) and value.startswith("<svg"):
+		svg = _CONTROL_CHARS.sub("", value)
+		return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+	if barcode_format == "QR":
+		return get_qr_code(value)
+	if not isinstance(value, str) or len(value) > 2000:
+		frappe.throw(_("Barcode value must be text under 2000 characters"), frappe.ValidationError)
+	if barcode_format not in LINEAR_BARCODE_FORMATS or not value:
+		return None
+
+	name, options = LINEAR_BARCODE_FORMATS[barcode_format]
+	try:
+		modules = "".join(barcode.get(name, value, options=options).build())
+	except BarcodeError:
+		return None
+
+	bars = "".join(
+		f"M{3 * match.start()} 0h{3 * len(match.group())}v40h-{3 * len(match.group())}z"
+		for match in re.finditer("1+", modules)
+	)
+	width, height = 3 * len(modules), 60 if frappe.utils.sbool(show_text) else 40
+	text = (
+		f'<text x="{width / 2}" y="56" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="16">{escape(_CONTROL_CHARS.sub("", value))}</text>'
+		if height == 60
+		else ""
+	)
+	svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><path d="{bars}"/>{text}</svg>'
+	return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+DATE_FIELDTYPES = ("Date", "Datetime")
+
+
+def format_field_value(doc, df) -> str:
+	"""The value a field prints: a Date or Datetime with its own `date_format` is
+	formatted with it, everything else the way `get_formatted` does."""
+	from frappe.utils.data import format_datetime, formatdate, get_user_time_format
+
+	fieldname = df.get("fieldname")
+	date_format = df.get("date_format")
+	value = doc.get(fieldname)
+	if date_format and value and df.get("fieldtype") in DATE_FIELDTYPES:
+		if df.get("fieldtype") == "Datetime":
+			return format_datetime(value, f"{date_format.replace('mm', 'MM')} {get_user_time_format()}")
+		return formatdate(value, date_format)
+	return doc.get_formatted(fieldname)
+
+
+@frappe.whitelist()
+def get_formatted_field_values(doctype: str, name: str) -> dict:
+	"""Return the same formatted value each field prints (`doc.get_formatted`) so the
+	builder canvas shows the server's output instead of re-formatting client-side.
+
+	`values` holds parent fields; `child` maps each table field to a per-row list
+	of its cells' formatted values (row order matches the document)."""
+	from frappe.model import table_fields
+	from frappe.www.printview import set_link_titles
+
+	doc = frappe.get_doc(doctype, name)
+	doc.check_permission("read")
+	set_link_titles(doc)
+
+	def has_access(d, df):
+		return not (df.permlevel or 0) or d.has_permlevel_access_to(df.fieldname, df)
+
+	def formatted_fields(d):
+		out = {}
+		for df in d.meta.fields:
+			if df.fieldtype in table_fields or not has_access(d, df):
+				continue
+			try:
+				out[df.fieldname] = d.get_formatted(df.fieldname)
+			except Exception:
+				continue
+		return out
+
+	values = {}
+	child = {}
+	for df in doc.meta.fields:
+		if df.fieldtype in table_fields:
+			child[df.fieldname] = [formatted_fields(row) for row in doc.get(df.fieldname) or []]
+			if df.fieldtype == "Table MultiSelect" and has_access(doc, df):
+				try:
+					values[df.fieldname] = doc.get_formatted(df.fieldname)
+				except Exception:
+					pass
+		elif has_access(doc, df):
+			try:
+				values[df.fieldname] = doc.get_formatted(df.fieldname)
+			except Exception:
+				continue
+	return {"values": values, "child": child}
+
+
+def _builder_preview_generator(
+	print_format: str | dict,
+	doctype: str,
+	name: str | None = None,
+	letterhead: str | None = None,
+	settings: str | dict | None = None,
+) -> "PrintFormatGenerator | None":
+	"""Permission gate and generator for the builder's unsaved-format previews.
+
+	Shared by the HTML and PDF entry points so the checks below have one home.
+	Returns None when the document type has nothing printable to sample.
+	"""
+	from frappe.printing.doctype.print_format.print_format import printable_sample
+	from frappe.www.printview import validate_print
+
+	frappe.has_permission("Print Format", "write", throw=True)
+
+	pf = frappe.get_doc(frappe.parse_json(print_format))
+	if pf.doctype != "Print Format":
+		frappe.throw(_("Expected an unsaved Print Format document"))
+
+	name = name or printable_sample(doctype)
+	if not name:
+		return None
+
+	doc = frappe.get_doc(doctype, name)
+	validate_print(doc)
+
+	return PrintFormatGenerator(pf, doc, letterhead, settings=frappe.parse_json(settings))
+
+
+@frappe.whitelist()
+def render_builder_preview(
+	print_format: str | dict,
+	doctype: str,
+	name: str | None = None,
+	letterhead: str | None = None,
+	settings: str | dict | None = None,
+) -> str:
+	"""Render print HTML for an UNSAVED builder format.
+
+	The print format builder holds the format in memory; this lets its preview
+	reflect edits before they are saved, using the same renderer the PDF uses so
+	the preview cannot drift from the printed output. ``print_format`` is the
+	in-memory Print Format document (dict/JSON), not a saved name.
+	"""
+	generator = _builder_preview_generator(print_format, doctype, name, letterhead, settings)
+	return generator.get_html_preview() if generator else ""
+
+
+@frappe.whitelist()
+def download_builder_preview_pdf(
+	print_format: str | dict,
+	doctype: str,
+	name: str | None = None,
+	letterhead: str | None = None,
+	settings: str | dict | None = None,
+):
+	"""Render a PDF for an UNSAVED builder format.
+
+	Same contract as :func:`render_builder_preview`, but through the PDF renderer.
+	Paginating HTML in the browser can only ever approximate where Chromium breaks
+	a page, so the builder's paged preview asks Chromium instead of guessing.
+	"""
+	generator = _builder_preview_generator(print_format, doctype, name, letterhead, settings)
+	if not generator:
+		frappe.throw(_("No document available to preview"))
+
+	frappe.local.response.filename = "preview.pdf"
+	frappe.local.response.filecontent = generator.render_pdf()
+	frappe.local.response.type = "pdf"
+
+
+def get_html(
+	doctype,
+	name,
+	print_format,
+	letterhead=None,
+	action_banner=None,
+	style=None,
+	trigger_print=False,
+	settings=None,
+	no_letterhead=None,
+	doc=None,
+):
+	from frappe.www.printview import validate_print
+
+	# an unsaved document (e.g. a preview built in memory) can only be rendered
+	# from the doc the caller already holds — there is nothing to fetch by name
+	doc = doc or frappe.get_doc(doctype, name)
+	validate_print(doc)
+	generator = PrintFormatGenerator(
+		print_format, doc, letterhead, style=style, settings=settings, no_letterhead=no_letterhead
+	)
+	return generator.get_html_preview(action_banner=action_banner, trigger_print=trigger_print)
+
+
+def page_size_mm(print_settings) -> tuple[float, float]:
+	"""Paper size in mm from Print Settings, the same table Chromium and Typst use."""
+	from frappe.utils.data import flt
+	from frappe.utils.pdf_generator.browser import PageSize
+
+	size = print_settings.get("pdf_page_size")
+	if size == "Custom":
+		return (
+			flt(print_settings.get("pdf_page_width")) or 210,
+			flt(print_settings.get("pdf_page_height")) or 297,
+		)
+	known = PageSize.page_sizes.get(size)
+	return tuple(known) if known else (210, 297)
+
+
+BACKGROUND_IMAGE_URL = re.compile(r"(/|https?://)[^\r\n]+|data:image/[\w.+-]+;base64,[A-Za-z0-9+/=]+")
+
+
+PAGE_NUMBER_ALIGN = {
+	"top_left": "left",
+	"top_center": "center",
+	"top_right": "right",
+	"bottom_left": "left",
+	"bottom_center": "center",
+	"bottom_right": "right",
+}
+
+
+def page_number_html(position: str) -> str:
+	"""Page X of Y markup that the Chrome and PlutoPrint renderers fill in per page."""
+	align = PAGE_NUMBER_ALIGN.get(position, "center")
+	return (
+		f'<div style="text-align:{align};font-size:10px;padding:2px 0;">'
+		'<span class="page"></span>'
+		f" {_('of')} "
+		'<span class="topage"></span>'
+		"</div>"
+	)
+
+
+MIN_PAGE_MM, MAX_PAGE_MM = 10, 5000
+
+
+def layout_page_settings(layout: dict | list | None) -> dict:
+	"""The paper size and orientation a builder layout saves, as Print Settings keys."""
+	page = layout.get("page") if isinstance(layout, dict) else None
+	if not isinstance(page, dict):
+		return {}
+	settings = {}
+	sizes = frappe.get_meta("Print Settings").get_field("pdf_page_size").options.split("\n")
+	if page.get("size") == "Custom":
+		width, height = (flt(page.get(key)) for key in ("width", "height"))
+		if all(MIN_PAGE_MM <= value <= MAX_PAGE_MM for value in (width, height)):
+			settings.update(pdf_page_size="Custom", pdf_page_width=width, pdf_page_height=height)
+	elif page.get("size") in sizes:
+		settings["pdf_page_size"] = page["size"]
+	if page.get("orientation") in ("Portrait", "Landscape"):
+		settings["page_orientation"] = page["orientation"]
+	return settings
+
+
+@frappe.whitelist()
+def get_page_size_mm(page: dict | str | None = None) -> tuple[float, float]:
+	"""Paper size the builder canvas should draw, in mm."""
+	settings = frappe.get_cached_doc("Print Settings").as_dict()
+	settings.update(layout_page_settings({"page": frappe.parse_json(page) if page else None}))
+	width, height = page_size_mm(settings)
+	return (height, width) if settings.get("page_orientation") == "Landscape" else (width, height)
+
+
+STATIC_TEXT_FIELD = re.compile(r"\{([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\}")
+
+MAX_CONDITIONS = 200
+
+
+@frappe.whitelist()
+def check_conditions(doctype: str, name: str, conditions: list[str] | str):
+	"""Evaluate visibility conditions against a document the way the print does.
+	Returns {condition: {"visible": bool} | {"error": str}}; at most MAX_CONDITIONS
+	distinct expressions are evaluated per call."""
+	frappe.has_permission("Print Format", "write", throw=True)
+	conditions = frappe.parse_json(conditions) if isinstance(conditions, str) else conditions
+	if not all(isinstance(v, str) for v in (doctype, name)) or not isinstance(conditions, list):
+		frappe.throw(_("Invalid arguments"), frappe.ValidationError)
+	conditions = list(dict.fromkeys(c for c in conditions if c.strip() and len(c) <= 2000))[:MAX_CONDITIONS]
+	doc = frappe.get_doc(doctype, name)
+	doc.check_permission("read")
+	eval_locals = condition_locals(doc, frappe.get_cached_doc("Print Settings"))
+	out = {}
+	for condition in conditions:
+		try:
+			out[condition] = {"visible": bool(frappe.safe_eval(condition, None, eval_locals))}
+		except Exception:
+			out[condition] = {"error": _("This condition could not be evaluated")}
+	return out
+
+
+def condition_locals(doc, print_settings) -> dict:
+	return {"doc": doc.as_dict(), "print_settings": print_settings.as_dict()}
+
+
+class PrintFormatGenerator:
+	"""Generate a PDF of a Document using Chromium-based rendering."""
+
+	_TOP_POSITIONS: ClassVar[set[str]] = {"top_left", "top_center", "top_right"}
+	_BOTTOM_POSITIONS: ClassVar[set[str]] = {"bottom_left", "bottom_center", "bottom_right"}
+	_FIELD_RENDERERS: ClassVar[dict[str, str]] = {
+		"HTML Editor": "HTML",
+		"Markdown Editor": "Markdown",
+		"JSON": "Code",
+	}
+	JUSTIFY_MODES: ClassVar[frozenset[str]] = frozenset(
+		{"space-between", "space-evenly", "center", "right-end"}
+	)
+
+	def __init__(self, print_format, doc, letterhead=None, style=None, settings=None, no_letterhead=None):
+		self.print_format = (
+			print_format
+			if not isinstance(print_format, str)
+			else frappe.get_doc("Print Format", print_format)
+		)
+		self.doc = doc
+		self.style = style
+		self.settings_override = settings or {}
+		self._header_absorbs_top_margin = False
+		self._logged_conditions = set()
+		self._linked_docs = {}
+		self.letterhead = None
+		self.apply_classic_margin_defaults()
+
+		self.build_context()
+		self.layout = self.get_layout(self.print_format)
+		self.context.layout = self.layout
+		self.letterhead = self.get_letterhead(letterhead, no_letterhead)
+		self.context.letterhead = self.letterhead
+
+	def get_letterhead(self, letterhead, no_letterhead):
+		"""Resolve the letter head to print, most specific choice first.
+
+		Mirrors ``printview.get_letter_head`` so a builder format prints the same
+		letter head a template one would, and adds the format's own choice: a layout
+		that names a letter head outranks the document's field. ``no_letterhead``
+		left unset falls back to the Print Settings toggle, as templates do.
+		"""
+		if no_letterhead is None:
+			no_letterhead = not cint(self.print_settings.with_letterhead)
+		if cint(no_letterhead) or letterhead == _("No Letterhead"):
+			return None
+
+		name = letterhead
+		if not name:
+			layout = self.layout or {}
+			if "letter_head" in layout:
+				# an empty value is an explicit removal, not an unset field
+				name = layout.get("letter_head")
+				if not name:
+					return None
+			else:
+				name = self.doc.get("letter_head") or frappe.db.get_value(
+					"Letter Head", {"is_default": 1, "letter_head_for": "DocType"}, "name"
+				)
+		# a stale link shouldn't fail the render — templates degrade to no letter head too
+		if not name or not frappe.db.exists("Letter Head", name):
+			return None
+		return frappe.get_cached_doc("Letter Head", name)
+
+	def format_page_settings(self) -> dict:
+		try:
+			layout = frappe.parse_json(self.print_format.format_data)
+		except ValueError:
+			return {}
+		if isinstance(layout, list):
+			from frappe.utils.pdf_generator.browser import RECEIPT_WIDTHS
+			from frappe.utils.print_utils import parse_float_and_unit
+
+			pf = self.print_format
+			if pf.paper_size == "Custom" and pf.paper_width and pf.paper_height:
+				return {
+					"pdf_page_size": "Custom",
+					"pdf_page_width": pf.paper_width,
+					"pdf_page_height": pf.paper_height,
+				}
+			if receipt_width := RECEIPT_WIDTHS.get(pf.paper_size):
+				return {
+					"pdf_page_size": "Custom",
+					"pdf_page_width": parse_float_and_unit(receipt_width)["value"],
+					"pdf_page_height": 297,
+				}
+			return layout_page_settings({"page": {"size": pf.paper_size}})
+		return layout_page_settings(layout)
+
+	def apply_page_overrides(self):
+		settings = self.print_settings
+		if settings.get("page_orientation") == "Landscape":
+			width, height = page_size_mm(settings)
+			settings.pdf_page_size = "Custom"
+			settings.pdf_page_width, settings.pdf_page_height = height, width
+		if settings.get("print_font"):
+			self.print_format.font = settings.get("print_font")
+
+	def apply_classic_margin_defaults(self):
+		from frappe.printing.doctype.print_format.classic_converter import (
+			MARGIN_FIELDS,
+			is_classic_layout,
+			missing_numeric_defaults,
+		)
+
+		if not is_classic_layout(self.print_format.format_data):
+			return
+		defaults = missing_numeric_defaults(self.print_format)
+		self.print_format.update({field: defaults[field] for field in MARGIN_FIELDS if field in defaults})
+
+	def build_context(self):
+		self.print_settings = frappe.get_doc("Print Settings")
+		self.print_settings.update(self.format_page_settings())
+		if self.settings_override:
+			from frappe.www.printview import get_allowed_print_settings_override
+
+			self.print_settings.update(get_allowed_print_settings_override(self.doc, self.settings_override))
+		self.apply_page_overrides()
+
+		from frappe.www.printview import run_before_print
+
+		run_before_print(self.doc, self.print_settings.as_dict())
+		self.doc.flags.absolute_value = self.print_format.absolute_value
+
+		page_width, page_height = page_size_mm(self.print_settings)
+		body_width = page_width - self.print_format.margin_left - self.print_format.margin_right
+		style_name = self.style or self.print_settings.print_style
+		print_style = (
+			frappe.get_cached_doc("Print Style", style_name)
+			if style_name and frappe.db.exists("Print Style", {"name": style_name, "disabled": 0})
+			else None
+		)
+		self.style_name = print_style.name if print_style else None
+		self.context = frappe._dict(
+			{
+				"doc": self.doc,
+				"print_format": self.print_format,
+				"print_settings": self.print_settings,
+				"print_style": print_style,
+				"letterhead": self.letterhead,
+				"page_width": page_width,
+				"page_height": page_height,
+				"body_width": body_width,
+				"lang": frappe.local.lang,
+				"layout_direction": "rtl" if is_rtl() else "ltr",
+				"content_fieldtypes": CONTENT_FIELDTYPES,
+				"is_default_layout": bool(self.print_format.flags.is_default_layout),
+			}
+		)
+
+	# ----- HTML preview (browser printview) ------------------------------
+
+	def get_html_preview(self, action_banner=None, trigger_print=False):
+		repeat = self.print_settings.repeat_header_footer
+		frame_header = self._render_overlay("header", with_page_no=False) if repeat else None
+		frame_footer = self._render_overlay("footer", with_page_no=False) if repeat else None
+		if repeat and (frame_header or frame_footer):
+			self.context.repeat_frame = True
+			self.context.frame_header = frame_header or ""
+			self.context.frame_footer = frame_footer or ""
+			self.context.header = ""
+			self.context.footer = ""
+		else:
+			self.context.repeat_frame = False
+			header_html, footer_html = self.get_header_footer_html()
+			self.context.header = header_html
+			self.context.footer = footer_html
+		self.context.action_banner = action_banner
+		if trigger_print:
+			from frappe.www.printview import trigger_print_script
+
+			self.context.trigger_print_script = trigger_print_script
+		return self.get_main_html()
+
+	def get_main_html(self):
+		self.context.css = frappe.render_template("templates/print_format/print_format.css", self.context)
+		return frappe.render_template("templates/print_format/print_format.html", self.context)
+
+	def get_header_footer_html(self):
+		header_html = footer_html = None
+		if self.letterhead:
+			header_html = frappe.render_template("templates/print_format/print_header.html", self.context)
+			footer_html = frappe.render_template("templates/print_format/print_footer.html", self.context)
+		return header_html, footer_html
+
+	# ----- PDF (Chrome) --------------------------------------------------
+
+	def render_pdf(self, password=None, pdf_generator=None):
+		"""Return PDF bytes using the format's renderer.
+
+		Renderers other than the built-in Chromium are resolved through the
+		`pdf_generator` hook, so an app can register its own the same way the
+		Typst renderer is."""
+		from frappe.utils.print_utils import HTML_PDF_GENERATORS, resolve_pdf_generator
+
+		pf = self.print_format
+		generator_name = resolve_pdf_generator(pf, pdf_generator)
+		if generator_name not in HTML_PDF_GENERATORS:
+			previous = getattr(frappe.local, "print_format_generator", None)
+			frappe.local.print_format_generator = self
+			try:
+				for hook in frappe.get_hooks("pdf_generator"):
+					# hook targets come from installed apps' hooks.py, never from request data
+					# nosemgrep: frappe-semgrep-rules.rules.security.frappe-codeinjection-eval
+					pdf = frappe.call(
+						hook,
+						print_format=pf.name,
+						html=None,
+						options={"password": password} if password else {},
+						output=None,
+						pdf_generator=generator_name,
+					)
+					if pdf:
+						return pdf
+			finally:
+				frappe.local.print_format_generator = previous
+		from frappe.utils.typst_emitter import has_typst_blocks
+
+		if has_typst_blocks(self.layout):
+			frappe.throw(
+				_(
+					"This format uses a Typst block, which only the Typst renderer can print. Set the PDF Renderer to Typst or remove the block."
+				),
+				title=_("Chromium renderer unavailable"),
+			)
+		html = self._build_html_for_chrome()
+		options = {
+			"margin-top": f"{pf.margin_top}mm",
+			"margin-bottom": f"{pf.margin_bottom}mm",
+			"margin-left": f"{pf.margin_left}mm",
+			"margin-right": f"{pf.margin_right}mm",
+		}
+		if self._header_absorbs_top_margin:
+			options["header-includes-top-margin"] = True
+		if password:
+			options["password"] = password
+		options.update(self.page_options())
+		background = self.layout.get("background")
+		if background:
+			options.pop("password", None)
+		pdf = render_html_pdf(pf.name, html, options, generator_name)
+		return self.underlay_background(pdf, background, password, generator_name) if background else pdf
+
+	def underlay_background(
+		self, pdf: bytes, background: dict, password: str | None = None, pdf_generator: str = "chrome"
+	) -> bytes:
+		"""Draw the page background under every page of ``pdf``, edge to edge."""
+		from io import BytesIO
+
+		from pypdf import PdfReader, PdfWriter
+
+		width, height = page_size_mm(self.print_settings)
+		html = (
+			"<!DOCTYPE html><html><head><style>@page{margin:0}html,body{margin:0}</style></head><body>"
+			f'<div style="width:{width}mm;height:{height}mm;opacity:{background["opacity"] / 100};'
+			f"background:url('{background['url']}') center/100% 100% no-repeat\"></div></body></html>"
+		)
+		options = {"margin-top": "0mm", "margin-bottom": "0mm", "margin-left": "0mm", "margin-right": "0mm"}
+		options.update(self.page_options())
+		background_pdf = render_html_pdf(self.print_format.name, html, options, pdf_generator)
+		background_page = PdfReader(BytesIO(background_pdf)).pages[0]
+		writer = PdfWriter(clone_from=BytesIO(pdf))
+		for page in writer.pages:
+			page.merge_page(background_page, over=False)
+		if password:
+			writer.encrypt(password)
+		out = BytesIO()
+		writer.write(out)
+		return out.getvalue()
+
+	def page_options(self) -> dict:
+		"""The page size as the Chrome renderer takes it, from the settings this
+		generator laid the page out for."""
+		from frappe.printing.doctype.print_format.classic_converter import is_classic_layout
+		from frappe.utils.pdf_generator.browser import RECEIPT_WIDTHS
+		from frappe.utils.print_utils import convert_uom
+
+		size = self.print_settings.get("pdf_page_size")
+		if not size:
+			return {}
+		options = {"page-size": size}
+		if size == "Custom":
+			# Print Settings holds mm; the renderer takes px
+			for option, setting in (("page-height", "pdf_page_height"), ("page-width", "pdf_page_width")):
+				value = self.print_settings.get(setting)
+				if value:
+					options[option] = convert_uom(value, "mm", "px", only_number=True)
+			if self.print_format.paper_size in RECEIPT_WIDTHS and is_classic_layout(
+				self.print_format.format_data
+			):
+				options["fit-height"] = True
+		return options
+
+	def render_typst_pdf(self, password=None):
+		"""Compile the resolved layout through Typst — ~10-15x faster than Chromium.
+
+		Refuses (rather than silently falling back) when the format uses features
+		Typst cannot express, so the renderer a user chose is the one that runs."""
+		import os
+		import tempfile
+
+		import typst
+
+		from frappe.utils.pdf import encrypt_pdf
+		from frappe.utils.typst_emitter import (
+			TypstEmitter,
+			ensure_typst_fonts,
+			letterhead_blockers,
+			typst_blockers,
+			typst_fonts,
+		)
+
+		blockers = typst_blockers(self.print_format, self.layout)
+		if self.letterhead:
+			# the letter head actually printing may differ from the layout's
+			blockers = list(dict.fromkeys(blockers + letterhead_blockers(self.letterhead.as_dict())))
+		if blockers:
+			frappe.throw(
+				_("This format can no longer render through Typst: {0}").format(", ".join(blockers)),
+				title=_("Typst renderer unavailable"),
+			)
+
+		ensure_typst_fonts(self.print_format.get("font"))
+		emitter = TypstEmitter(self)
+		emitter.prepare()
+		repeat = cint(self.print_settings.get("repeat_header_footer"))
+
+		with tempfile.TemporaryDirectory() as tmp:
+
+			def write(name, content, mode="w"):
+				# names are emitter-generated constants inside a fresh tempdir
+				path = os.path.join(tmp, name)
+				# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal
+				with open(path, mode) as f:
+					f.write(content)
+				return path
+
+			import json
+
+			written = set()
+
+			def write_assets(assets):
+				for name, data in assets.items():
+					if name not in written:
+						written.add(name)
+						write(name, data, "wb")
+
+			heights = {"pfhdr": 0.0, "pfftr": 0.0}
+			if repeat and (emitter.header_src or emitter.footer_src):
+				write_assets(emitter.assets)
+				measure_path = write("measure.typ", emitter.measure_source())
+				for label in list(heights):
+					found = json.loads(
+						typst.query(measure_path, f"<{label}>", root=tmp, font_paths=typst_fonts())
+					)
+					if found:
+						heights[label] = float(found[0].get("value") or 0)
+
+			source, assets = emitter.emit(
+				repeat_header_footer=repeat,
+				header_height_pt=heights["pfhdr"],
+				footer_height_pt=heights["pfftr"],
+			)
+			path = write("main.typ", source)
+			write_assets(assets)
+			# root pins file access to the tempdir — matters once formats can
+			# carry raw Typst markup (Typst blocks)
+			pdf = typst.compile(path, root=tmp, font_paths=typst_fonts())
+		if password:
+			pdf = encrypt_pdf(pdf, password)
+		return pdf
+
+	def _build_html_for_chrome(self):
+		"""Build the body HTML for the Chrome PDF pipeline.
+
+		When ``repeat_header_footer`` is enabled (default), letterhead and
+		layout header/footer are placed in ``#header-html`` / ``#footer-html``
+		overlay divs so they repeat on every PDF page.
+
+		When ``repeat_header_footer`` is disabled:
+		  - Letterhead + layout header/footer → rendered inline in the body
+		    (appear on page 1 / last page only via ``chrome_layout_header/footer``).
+		  - Page numbers → still placed in a minimal ``#header-html`` / ``#footer-html``
+		    overlay so they continue to repeat on every page if the user enabled them.
+		"""
+		self.context.for_chrome = True
+		self._header_absorbs_top_margin = False
+		self.context.repeat_frame = False
+		self.context.header_height = 0
+		self.context.footer_height = 0
+
+		repeat = self.print_settings.repeat_header_footer
+
+		if repeat:
+			header = self._render_overlay("header")
+			footer = self._render_overlay("footer")
+			self.context.header = f'<div id="header-html">{header}</div>' if header else ""
+			self.context.footer = f'<div id="footer-html">{footer}</div>' if footer else ""
+			self.context.chrome_layout_header = ""
+			self.context.chrome_layout_footer = ""
+		else:
+			# Letterhead + layout content → inline (once only, no repeat).
+			self.context.chrome_layout_header = self._render_overlay("header", with_page_no=False) or ""
+			footer_once = self._render_overlay("footer", with_page_no=False)
+			self.context.chrome_layout_footer = (
+				f'<div class="print-footer-once">{footer_once}</div>' if footer_once else ""
+			)
+			# Page numbers → minimal overlay so they still repeat on every page.
+			page_no_header = self._render_page_no_overlay("header")
+			page_no_footer = self._render_page_no_overlay("footer")
+			self.context.header = f'<div id="header-html">{page_no_header}</div>' if page_no_header else ""
+			self.context.footer = f'<div id="footer-html">{page_no_footer}</div>' if page_no_footer else ""
+
+		return self.get_main_html()
+
+	def _reserve_top_margin(self, html: str) -> str:
+		"""Reserve the page's top margin *below* the page number.
+
+		browser.py then drops the header page's own ``marginTop`` (via the
+		``header-includes-top-margin`` option), so the number sits flush to the
+		paper edge while everything after it keeps the configured margin.
+		"""
+		top_margin = float(self.print_format.margin_top or 0)
+		if not top_margin:
+			return html
+		self._header_absorbs_top_margin = True
+		return f'<div style="padding-top:{top_margin}mm">{html}</div>'
+
+	def _render_page_no_overlay(self, kind: str) -> str | None:
+		"""Return only the page-number HTML for kind ('header'/'footer'), or None."""
+		is_header = kind == "header"
+		page_pos = (self.print_format.page_number or "").lower().replace(" ", "_")
+		valid_positions = self._TOP_POSITIONS if is_header else self._BOTTOM_POSITIONS
+		if page_pos not in valid_positions:
+			return None
+		page_no_html = self._page_number_html(page_pos)
+		if not is_header:
+			return page_no_html
+		return page_no_html + self._reserve_top_margin("")
+
+	def _render_overlay(self, kind: str, with_page_no: bool = True) -> str | None:
+		"""Render letterhead, layout.header/footer, and page number for the Chrome overlay.
+
+		All three are included so they repeat on every PDF page.  Height measurement
+		is reliable because ``chrome_pdf_header_footer.html`` applies ``overflow: hidden``
+		to ``.wrapper``, creating a BFC that contains floated letterhead children.
+		"""
+		is_header = kind == "header"
+		page_pos = (self.print_format.page_number or "").lower().replace(" ", "_")
+		valid_positions = self._TOP_POSITIONS if is_header else self._BOTTOM_POSITIONS
+		wants_page_no = with_page_no and page_pos in valid_positions
+
+		if is_header:
+			letterhead_html = self.letterhead and self.letterhead.content
+			layout_template = self.layout.get("header") if self.layout else None
+		else:
+			letterhead_html = self.letterhead and self.letterhead.footer
+			layout_template = self.layout.get("footer") if self.layout else None
+
+		if not (letterhead_html or wants_page_no or layout_template):
+			return None
+
+		page_no_html = self._page_number_html(page_pos) if wants_page_no else None
+		ctx = {"doc": self.context.doc}
+
+		parts = []
+		body_parts = []
+		if is_header and page_no_html:
+			parts.append(page_no_html)
+		if letterhead_html:
+			body_parts.append(
+				'<div class="letter-head">' + frappe.render_template(letterhead_html, ctx) + "</div>"
+			)
+		if layout_template:
+			zone_class = "document-header-content" if is_header else "document-footer-content"
+			if isinstance(layout_template, str):
+				# layout_template is persisted header/footer HTML from the stored Print Format document.
+				zone_html = frappe.render_template(
+					layout_template, ctx
+				)  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti
+				if zone_html:
+					zone_html = f'<div class="{zone_class}">{zone_html}</div>'
+			else:
+				# Section object — same markup the HTML page emits, wrapper class included
+				zone_html = self._render_zone_section(layout_template, ctx["doc"], zone_class)
+			if zone_html:
+				body_parts.append(zone_html)
+		if not is_header and page_no_html:
+			body_parts.append(page_no_html)
+
+		if is_header and page_no_html:
+			body_parts = [self._reserve_top_margin("\n".join(body_parts))]
+		parts.extend(body_parts)
+
+		from bs4 import BeautifulSoup
+
+		# Jinja branches can leave a tag open; unbalanced, the PDF parser folds the body into the overlay.
+		return str(BeautifulSoup("\n".join(parts), "html.parser")) or None
+
+	_ZONE_SECTION_TEMPLATE = (
+		'{%- import "templates/print_format/macros.html" as macros -%}'
+		"{{ macros.render_zone(section, doc, zone_class) }}"
+	)
+
+	def _render_zone_section(self, section: dict, doc, zone_class: str = "") -> str:
+		"""Render a header/footer zone section dict to HTML for the Chrome overlay."""
+		eval_locals = condition_locals(doc, self.print_settings)
+		for column in section.get("columns", []):
+			for df in column.get("fields", []):
+				if "renderer" not in df:
+					self._prepare_field(df, section, eval_locals)
+		# _ZONE_SECTION_TEMPLATE is a hardcoded class-level string constant, not user input.
+		html = frappe.render_template(  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti
+			self._ZONE_SECTION_TEMPLATE, {"section": section, "doc": doc, "zone_class": zone_class}
+		)
+		return html.strip()
+
+	def _page_number_html(self, position: str) -> str:
+		return page_number_html(position)
+
+	EMPTY_LAYOUT: ClassVar[dict] = {
+		"sections": [],
+		"header": {"columns": []},
+		"footer": {"columns": []},
+	}
+
+	def get_layout(self, print_format):
+		if print_format.flags.is_default_layout:
+			from frappe.printing.doctype.print_format.classic_converter import create_default_layout
+			from frappe.printing.print_style_presets import apply_style_preset
+
+			# before_print may change the meta after format_data was built
+			layout = create_default_layout(self.doc.meta)
+			return self.get_processed_layout(apply_style_preset(layout, self.style_name))
+		if not print_format.format_data:
+			# a format created without a layout (the New dialog inserts a bare row)
+			# prints the default layout instead of a blank page until its first save
+			from frappe.printing.doctype.print_format.classic_converter import create_default_layout
+
+			return self.get_processed_layout(create_default_layout(frappe.get_meta(print_format.doc_type)))
+		try:
+			layout = frappe.parse_json(print_format.format_data) or copy.deepcopy(self.EMPTY_LAYOUT)
+		except Exception:
+			frappe.log_error(title=f"Unreadable print format layout: {print_format.name}")
+			layout = copy.deepcopy(self.EMPTY_LAYOUT)
+		if isinstance(layout, list) and layout:
+			from frappe.printing.doctype.print_format.classic_converter import convert_classic_to_beta
+
+			layout, _dropped = convert_classic_to_beta(
+				layout, frappe.get_meta(print_format.doc_type), print_format
+			)
+			if not print_format.page_number or print_format.page_number == "Hide":
+				print_format.page_number = "Bottom Center"
+		return self.get_processed_layout(layout)
+
+	def get_processed_layout(self, layout):
+		layout = self.normalise_layout(layout)
+		layout = self.apply_permlevel_access(layout)
+		layout = self.apply_print_hide(layout)
+		layout = self.set_field_renderers(layout)
+		layout = self.prune_table_columns(layout)
+		layout = self.process_margin_texts(layout)
+		return layout
+
+	def normalise_layout(self, layout):
+		"""Drop anything the builder could not have produced, rather than crashing."""
+		if not isinstance(layout, dict):
+			return copy.deepcopy(self.EMPTY_LAYOUT)
+
+		def clean_zone(zone):
+			if not isinstance(zone, dict):
+				return {"columns": []}
+			columns = [
+				{**col, "fields": [clean_field(f) for f in col.get("fields") or [] if isinstance(f, dict)]}
+				for col in zone.get("columns") or []
+				if isinstance(col, dict)
+			]
+			cleaned = {**zone, "columns": columns}
+			# justify names a CSS class, so only the modes we ship may reach the markup
+			if cleaned.get("justify") not in self.JUSTIFY_MODES:
+				cleaned.pop("justify", None)
+			return cleaned
+
+		def clean_field(df):
+			if "table_columns" not in df:
+				return df
+			table_columns = df["table_columns"]
+			if not isinstance(table_columns, list):
+				table_columns = []
+			return {**df, "table_columns": [c for c in table_columns if isinstance(c, dict)]}
+
+		sections = layout.get("sections")
+		layout["sections"] = (
+			[clean_zone(s) for s in sections if isinstance(s, dict)] if isinstance(sections, list) else []
+		)
+		for zone in ("header", "footer"):
+			layout[zone] = clean_zone(layout.get(zone))
+		layout["background"] = self.clean_background(layout.get("background"))
+		return layout
+
+	@staticmethod
+	def clean_background(background):
+		if not isinstance(background, dict):
+			return None
+		image = background.get("image")
+		if not isinstance(image, str) or not BACKGROUND_IMAGE_URL.fullmatch(image):
+			return None
+		opacity = background.get("opacity")
+		return {
+			"image": image,
+			"url": image if image.startswith("data:") else quote(image, safe=":/?&=%#"),
+			"opacity": 100 if opacity in (None, "") else max(0, min(100, cint(opacity))),
+		}
+
+	@staticmethod
+	def has_field_access(doc, meta, fieldname, source_fieldname=None) -> bool:
+		fieldname = source_fieldname or fieldname
+		if not fieldname:
+			return True
+		df = meta.get_field(fieldname)
+		if not df or not (df.permlevel or 0):
+			return True
+		return doc.has_permlevel_access_to(fieldname, df)
+
+	def apply_permlevel_access(self, layout):
+		"""Drop fields the user has no permlevel read access to.
+
+		The layout is authored against the doctype, not the reader, so a format may
+		reference permlevel-restricted fields that this user must not see."""
+		meta = self.doc.meta
+		for column in iter_layout_columns(layout):
+			fields = [
+				df
+				for df in column.get("fields", [])
+				if self.has_field_access(
+					self.doc,
+					meta,
+					df.get("fieldname"),
+					df.get("source_fieldname")
+					or (df.get("fieldtype") == "Repeater" and df.get("source"))
+					or (df.get("custom") and df.get("barcode_field")),
+				)
+			]
+			column["fields"] = fields
+			for df in fields:
+				if df.get("fieldtype") == "Repeater":
+					rows = self.doc.get(df.get("source")) or []
+					if not rows:
+						continue
+					child, child_meta = rows[0], rows[0].meta
+					for col in df.get("repeater_columns") or []:
+						col["template"] = [
+							tok
+							for tok in col.get("template") or []
+							if not (
+								isinstance(tok, dict)
+								and tok.get("t") == "f"
+								and not self.has_field_access(child, child_meta, tok.get("v"))
+							)
+						]
+					continue
+				if df.get("fieldtype") != "Table" or not df.get("table_columns"):
+					continue
+				rows = self.doc.get(df.get("fieldname")) or []
+				if not rows:
+					continue
+				child, child_meta = rows[0], rows[0].meta
+				df["table_columns"] = [
+					col
+					for col in df["table_columns"]
+					if self.has_field_access(child, child_meta, col.get("fieldname"))
+				]
+				for col in df["table_columns"]:
+					if col.get("merged_fields"):
+						col["merged_fields"] = [
+							mf
+							for mf in col["merged_fields"]
+							if self.has_field_access(child, child_meta, mf.get("fieldname"))
+						]
+		return layout
+
+	def apply_print_hide(self, layout):
+		"""Drop fields the document hides from this print, by the rules
+		`Document.is_print_hide` applies to a field placed in a format."""
+
+		def is_hidden(doc, fieldname):
+			return bool(fieldname and doc.is_print_hide(fieldname, frappe._dict(print_hide=0)))
+
+		for column in iter_layout_columns(layout):
+			fields = [
+				df
+				for df in column.get("fields", [])
+				if not is_hidden(
+					self.doc, df.get("source_fieldname") or df.get("source") or df.get("fieldname")
+				)
+			]
+			column["fields"] = fields
+			for df in fields:
+				if df.get("fieldtype") == "Repeater":
+					rows = self.doc.get(df.get("source")) or []
+					if not rows:
+						continue
+					for col in df.get("repeater_columns") or []:
+						col["template"] = [
+							tok
+							for tok in col.get("template") or []
+							if not (
+								isinstance(tok, dict)
+								and tok.get("t") == "f"
+								and is_hidden(rows[0], tok.get("v"))
+							)
+						]
+					continue
+				if df.get("fieldtype") != "Table" or not df.get("table_columns"):
+					continue
+				rows = self.doc.get(df.get("fieldname")) or []
+				if not rows:
+					continue
+				df["table_columns"] = [
+					col for col in df["table_columns"] if not is_hidden(rows[0], col.get("fieldname"))
+				]
+				for col in df["table_columns"]:
+					if col.get("merged_fields"):
+						col["merged_fields"] = [
+							mf for mf in col["merged_fields"] if not is_hidden(rows[0], mf.get("fieldname"))
+						]
+		return layout
+
+	def prune_table_columns(self, layout):
+		"""Drop table columns that fail their column_condition (doc-scoped) or that are
+		empty across all rows, then renormalize widths. A bad condition fails open."""
+		from frappe.www.printview import column_has_value
+
+		eval_locals = condition_locals(self.doc, self.print_settings)
+		for column in iter_layout_columns(layout):
+			for df in column.get("fields", []):
+				if df.get("fieldtype") != "Table" or not df.get("table_columns"):
+					continue
+				rows = df.get("_rows") if df.get("_rows") is not None else self.doc.get(df.get("fieldname"))
+				rows = rows or []
+				kept = []
+				for col in df["table_columns"]:
+					if not self.column_condition_met(col, eval_locals):
+						continue
+					if (
+						rows
+						and col.get("fieldname") != "idx"
+						and col.get("fieldtype") != "Blank"
+						and not column_has_value(
+							rows,
+							col.get("fieldname"),
+							rows[0].meta.get_field(col.get("fieldname")) or frappe._dict(col),
+						)
+					):
+						continue
+					kept.append(col)
+				total = sum(col.get("width") or 0 for col in kept)
+				if total:
+					for col in kept:
+						if col.get("width"):
+							col["width"] = round(col["width"] / total * 100, 2)
+				df["table_columns"] = kept
+		return layout
+
+	def eval_condition(self, condition, eval_locals, where):
+		"""Evaluate a visibility condition. A broken expression keeps the thing
+		visible, logged once per expression so a row condition cannot write one log
+		row per child row."""
+		if not isinstance(condition, str):
+			return True
+		try:
+			return bool(frappe.safe_eval(condition, None, eval_locals))
+		except Exception:
+			if condition not in self._logged_conditions:
+				self._logged_conditions.add(condition)
+				frappe.log_error(
+					title=f"Print format condition failed: {self.print_format.name}",
+					message=f"{where}: {condition}",
+				)
+			return True
+
+	def column_condition_met(self, col, eval_locals):
+		condition = col.get("column_condition")
+		if not condition:
+			return True
+		return self.eval_condition(
+			condition, eval_locals, f"column {col.get('label') or col.get('fieldname')}"
+		)
+
+	def _prepare_field(self, df, section, eval_locals):
+		if df.get("visible_if"):
+			df["_hidden"] = not self.eval_condition(
+				df["visible_if"], eval_locals, f"field {df.get('label') or df.get('fieldname')}"
+			)
+		fieldtype = df.get("fieldtype", "Data")
+		df["renderer"] = self._FIELD_RENDERERS.get(fieldtype) or fieldtype.replace(" ", "")
+		df["section"] = section
+		self.prepare_html(df)
+		self.prepare_barcode(df)
+		self.prepare_linked_field(df)
+		self.prepare_static_text(df)
+		self.prepare_date_format(df)
+		self.filter_conditional_rows(df)
+
+	def set_field_renderers(self, layout):
+		eval_locals = condition_locals(self.doc, self.print_settings)
+		self.jinja_context = {
+			**global_variables_context(layout.get("global_variables"), self.doc),
+			"doc": self.doc,
+			"get_qr_code": get_qr_code,
+			"get_barcode": get_barcode,
+		}
+		for section in layout["sections"]:
+			if section.get("visible_if"):
+				section["_hidden"] = not self.eval_condition(
+					section["visible_if"], eval_locals, f"section {section.get('label') or ''}"
+				)
+		for _where, zone in iter_zones(layout):
+			for df in iter_fields(zone):
+				self._prepare_field(df, zone, eval_locals)
+		return layout
+
+	def filter_conditional_rows(self, df):
+		"""Drop repeater/table rows whose row_condition is falsy; a bad expression fails
+		open (keeps the row) so a typo never silently blanks the table."""
+		fieldtype = df.get("fieldtype")
+		if fieldtype == "Repeater":
+			source = df.get("source")
+		elif fieldtype == "Table":
+			source = df.get("fieldname")
+		else:
+			return
+		if not df.get("row_condition") or not source:
+			return
+		condition = df["row_condition"]
+		eval_locals = condition_locals(self.doc, self.print_settings)
+		kept = []
+		for row in self.doc.get(source) or []:
+			if self.eval_condition(condition, {**eval_locals, "row": row.as_dict()}, f"rows of {source}"):
+				kept.append(row)
+		df["_rows"] = kept
+
+	def prepare_html(self, df):
+		if df.get("renderer") == "HTML" and not df.get("_hidden"):
+			rendered = frappe.render_template(  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti
+				df.get("html") or "", self.jinja_context
+			)
+			df["_html"] = BeautifulSoup(f"<body>{rendered}</body>", "html5lib").body.decode_contents()
+
+	def prepare_barcode(self, df):
+		"""Draw Barcode layout elements on the server, so every renderer prints them."""
+		if df.get("fieldtype") != "Barcode":
+			return
+		if df.get("custom"):
+			source = df.get("barcode_field")
+			value = cstr(self.doc.get(source) if source else df.get("barcode_value"))
+		else:
+			value = cstr(self.doc.get(df.get("fieldname")))
+		if value.startswith("<svg"):
+			df["_barcode_data_uri"] = get_barcode(value)
+			return
+		if not value:
+			return
+		if df.get("custom"):
+			df["_barcode_data_uri"] = get_barcode(
+				value, df.get("barcode_format") or "CODE128", df.get("show_text", True)
+			)
+			return
+		# a dragged Barcode docfield whose options ask for a qr code prints its value as one
+		meta_df = frappe.get_meta(self.doc.doctype).get_field(df.get("fieldname"))
+		if meta_df and is_qr_barcode_options(meta_df.options):
+			df["barcode_format"] = "QR"
+		df["_barcode_data_uri"] = get_barcode(value, df.get("barcode_format") or "CODE128")
+
+	def prepare_linked_field(self, df):
+		"""Resolve a Linked Field's one-hop path (link_field.target_field) to a
+		formatted value from the linked document."""
+		if df.get("fieldtype") != "Linked Field" or not df.get("link_path"):
+			return
+		resolved = self.resolve_linked_path(df["link_path"])
+		if resolved is None:
+			return
+		value, target_df = resolved
+		if target_df.fieldtype == "Attach Image":
+			df["renderer"] = "AttachImage"
+			df["_value"] = value
+			return
+		if target_df.fieldtype in ("Code", "JSON"):
+			df["renderer"] = "Code"
+			df["_value"] = value
+			return
+		df["_value"] = frappe.format_value(value, df=target_df, doc=self.doc)
+
+	def resolve_linked_path(self, path):
+		"""The raw value and docfield behind link_field.target_field, or None when the
+		reader may not see it."""
+		if "." not in path:
+			return None
+		link_fieldname, target_fieldname = path.split(".", 1)
+		link_df = self.doc.meta.get_field(link_fieldname)
+		if not link_df or link_df.fieldtype != "Link" or not link_df.options:
+			return None
+		if not self.has_field_access(self.doc, self.doc.meta, link_fieldname):
+			return None
+		name = self.doc.get(link_fieldname)
+		if not name:
+			return None
+		if (link_df.options, name) not in self._linked_docs:
+			linked_doc = frappe.get_lazy_doc(link_df.options, name)
+			self._linked_docs[link_df.options, name] = (
+				linked_doc if frappe.has_permission(link_df.options, "read", doc=linked_doc) else None
+			)
+		linked_doc = self._linked_docs[link_df.options, name]
+		if not linked_doc:
+			return None
+		target_meta = frappe.get_meta(link_df.options)
+		target_df = target_meta.get_field(target_fieldname)
+		if not target_df:
+			return None
+		if target_df.permlevel and not linked_doc.has_permlevel_access_to(target_fieldname, target_df):
+			return None
+		value = linked_doc.get(target_fieldname)
+		if value is None:
+			return None
+		return value, target_df
+
+	def prepare_static_text(self, df):
+		"""Fill the {field} and {link_field.field} placeholders of a Static Text block."""
+		text = df.get("text") or ""
+		if df.get("fieldtype") != "Static Text" or "{" not in text:
+			return
+		lines = [STATIC_TEXT_FIELD.sub(self.static_text_value, _(line)) for line in text.split("\n")]
+		df["_text"] = "\n".join(lines)
+
+	def static_text_value(self, match) -> str:
+		from html import unescape
+
+		from frappe.utils import strip_html
+
+		path = match.group(1)
+		if "." in path:
+			link_fieldname, target_fieldname = path.split(".", 1)
+			link_df = self.doc.meta.get_field(link_fieldname)
+			if not link_df or link_df.fieldtype != "Link" or not link_df.options:
+				return match.group(0)
+			target_df = frappe.get_meta(link_df.options).get_field(target_fieldname)
+			if not target_df or target_df.fieldtype == "Table":
+				return match.group(0)
+			resolved = self.resolve_linked_path(path)
+			if not resolved:
+				return ""
+			value = frappe.format_value(resolved[0], df=resolved[1], doc=self.doc)
+			fieldtype = target_df.fieldtype
+		else:
+			field = self.doc.meta.get_field(path)
+			if (not field and path != "name") or (field and field.fieldtype == "Table"):
+				return match.group(0)
+			if field and not self.has_field_access(self.doc, self.doc.meta, path):
+				return ""
+			value = self.doc.get_formatted(path) if field else self.doc.name
+			fieldtype = field.fieldtype if field else "Data"
+		value = re.sub(r"<br\s*/?>|</(?:p|div|li)>", " ", cstr(value), flags=re.IGNORECASE)
+		if fieldtype in ("Text Editor", "HTML Editor", "Markdown Editor"):
+			value = unescape(strip_html(value))
+		return " ".join(value.split())
+
+	def prepare_date_format(self, df):
+		if (
+			df.get("date_format")
+			and df.get("fieldtype") in DATE_FIELDTYPES
+			and self.doc.get(df.get("fieldname"))
+		):
+			df["_value"] = format_field_value(self.doc, df)
+
+	def process_margin_texts(self, layout):
+		for key in (*self._TOP_POSITIONS, *self._BOTTOM_POSITIONS):
+			text = layout.get("text_" + key)
+			if text and "{{" in text:
+				layout["text_" + key] = frappe.render_template(text, self.context)
+		return layout

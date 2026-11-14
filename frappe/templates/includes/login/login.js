@@ -2,6 +2,7 @@
 // don't remove this line (used in test)
 
 window.disable_signup = {{ disable_signup and "true" or "false" }};
+window.show_footer_on_login = {{ show_footer_on_login and "true" or "false" }};
 
 window.login = {};
 
@@ -12,20 +13,28 @@ login.bind_events = function () {
 		login.route();
 	});
 
-
 	$(".form-login").on("submit", function (event) {
 		event.preventDefault();
 		var args = {};
-		args.cmd = "login";
-		args.usr = frappe.utils.xss_sanitise(($("#login_email").val() || "").trim());
+		args.usr = ($("#login_email").val() || "").trim();
 		args.pwd = $("#login_password").val();
-		args.device = "desktop";
-		if (!args.usr || !args.pwd) {
-			frappe.msgprint('{{ _("Both login and password required") }}');
-			return false;
+		let hasError = false;
+		if (!args.usr) {
+			login.show_field_error("login_email", {{ _("Email is required.") | tojson }});
+			hasError = true;
 		}
-		login.call(args);
+		if (!args.pwd) {
+			login.show_field_error("login_password", {{ _("Password is required.") | tojson }});
+			hasError = true;
+		}
+		if (hasError) return false;
+		login.call(args, null, "/api/method/login");
 		return false;
+	});
+
+	$(".page-card-body input").on("input", function () {
+		$(this).closest(".form-group").removeClass("invalid").find(".field-error").text("");
+		$(this).closest(".page-card-body").removeClass("invalid").find(".login-error-banner, .login-success-banner").addClass("hidden");
 	});
 
 	$(".form-signup").on("submit", function (event) {
@@ -35,8 +44,12 @@ login.bind_events = function () {
 		args.email = ($("#signup_email").val() || "").trim();
 		args.redirect_to = frappe.utils.sanitise_redirect(frappe.utils.get_url_arg("redirect-to"));
 		args.full_name = frappe.utils.xss_sanitise(($("#signup_fullname").val() || "").trim());
-		if (!args.email || !validate_email(args.email) || !args.full_name) {
-			login.set_status('{{ _("Valid email and name required") }}', 'red');
+		if (!args.email || !validate_email(args.email)) {
+			login.show_field_error("signup_email", {{ _("Please enter a valid email.") | tojson }});
+			return false;
+		}
+		if (!args.full_name) {
+			login.show_field_error("signup_fullname", {{ _("Full name is required.") | tojson }});
 			return false;
 		}
 		login.call(args);
@@ -48,37 +61,73 @@ login.bind_events = function () {
 		var args = {};
 		args.cmd = "frappe.core.doctype.user.user.reset_password";
 		args.user = ($("#forgot_email").val() || "").trim();
-		if (!args.user) {
-			login.set_status('{{ _("Valid Login id required.") }}', 'red');
+		if (!args.user || !validate_email(args.user)) {
+			login.show_field_error("forgot_email", {{ _("Invalid Email.") | tojson }});
 			return false;
 		}
 		login.call(args);
 		return false;
 	});
 
+	$("#forgot_email").on("input", function () {
+		$(".btn-forgot").text({{ _("Send Link") | tojson }}).prop("disabled", !$(this).val().trim());
+	});
+
+	$("#login_with_email_link_email").on("input", function () {
+		$(".form-login-with-email-link .btn-login-with-email-link")
+			.text({{ _("Send login link") | tojson }}).prop("disabled", false);
+		$("section.for-login-with-email-link .resend-link").addClass("hidden");
+	});
+
+	$(".form-login-with-email-link").on("submit", function (event) {
+		event.preventDefault();
+		var args = {};
+		args.cmd = "frappe.www.login.send_login_link";
+		args.email = ($("#login_with_email_link_email").val() || "").trim();
+		if (!args.email || !validate_email(args.email)) {
+			login.show_field_error("login_with_email_link_email", {{ _("Invalid Email.") | tojson }});
+			return false;
+		}
+		login.call(args).then(() => {
+			login.show_success_banner({{ _("Please check your email.") | tojson }});
+			$("section:visible .resend-link").removeClass("hidden");
+			login.set_status({{ _("Sent") | tojson }});
+			$("section:visible .btn-login-with-email-link").prop("disabled", true);
+		}).catch(() => {
+			login.set_status({{ _("Send login link") | tojson }}, 'blue');
+		});
+
+		return false;
+	});
+
+	$("#signup_fullname, #signup_email").on("input", function () {
+		var name = $("#signup_fullname").val().trim();
+		var email = $("#signup_email").val().trim();
+		$(".form-signup .btn-signup").text({{ _("Create Account") | tojson }}).prop("disabled", !(name && email));
+	});
+
+	$(".btn-resend-link").on("click", function (e) {
+		e.preventDefault();
+		$(".form-login-with-email-link").trigger("submit");
+	});
+
 	$(".toggle-password").click(function () {
 		var input = $($(this).attr("toggle"));
-		if (input.attr("type") == "password") {
-			input.attr("type", "text");
-			$(this).text('{{ _("Hide") }}')
-		} else {
-			input.attr("type", "password");
-			$(this).text('{{ _("Show") }}')
-		}
+		var isPassword = input.attr("type") == "password";
+		input.attr("type", isPassword ? "text" : "password");
+		$(this).find("use").attr("href", isPassword ? "#icon-eye-off" : "#icon-eye");
 	});
 
 	{% if ldap_settings and ldap_settings.enabled %}
 	$(".btn-ldap-login").on("click", function () {
 		var args = {};
-		args.cmd = "{{ ldap_settings.method }}";
 		args.usr = ($("#login_email").val() || "").trim();
 		args.pwd = $("#login_password").val();
-		args.device = "desktop";
 		if (!args.usr || !args.pwd) {
-			login.set_status('{{ _("Both login and password required") }}', 'red');
+			login.set_status({{ _("Both login and password required") | tojson }}, 'red');
 			return false;
 		}
-		login.call(args);
+		login.call(args, null, "/api/method/{{ ldap_settings.method }}");
 		return false;
 	});
 	{% endif %}
@@ -88,6 +137,7 @@ login.bind_events = function () {
 login.route = function () {
 	var route = window.location.hash.slice(1);
 	if (!route) route = "login";
+	route = route.replaceAll("-", "_");
 	login[route]();
 }
 
@@ -96,7 +146,19 @@ login.reset_sections = function (hide) {
 		$("section.for-login").toggle(false);
 		$("section.for-email-login").toggle(false);
 		$("section.for-forgot").toggle(false);
+		$("section.for-login-with-email-link").toggle(false);
 		$("section.for-signup").toggle(false);
+		var $forms = $(".form-forgot, .form-signup, .form-login-with-email-link");
+		$forms.find("input:not([type='submit'])").val("");
+		$forms.find(".page-card-body").removeClass("invalid");
+		$forms.find(".form-group").removeClass("invalid").find(".field-error").text("");
+		$forms.find(".login-error-banner, .login-success-banner").addClass("hidden");
+		$(".es-button[aria-busy]").removeAttr("aria-busy");
+		$(".form-forgot .btn-forgot").prop("disabled", true).text({{ _("Send Link") | tojson }});
+		$(".form-signup .btn-signup").prop("disabled", true).text({{ _("Create Account") | tojson }});
+		$(".form-login-with-email-link .btn-login-with-email-link").prop("disabled", false).text({{ _("Send login link") | tojson }});
+		$(".btn-login-option.btn-login-with-email-link").prop("disabled", false);
+		$("section.for-login-with-email-link .resend-link").addClass("hidden");
 	}
 	$('section:not(.signup-disabled) .indicator').each(function () {
 		$(this).removeClass().addClass('indicator').addClass('blue')
@@ -123,8 +185,21 @@ login.steptwo = function () {
 
 login.forgot = function () {
 	login.reset_sections();
+	if ($("#login_email").val()) {
+		$("#forgot_email").val($("#login_email").val());
+		$(".btn-forgot").prop("disabled", false);
+	}
 	$(".for-forgot").toggle(true);
 	$("#forgot_email").focus();
+}
+
+login.login_with_email_link = function () {
+	login.reset_sections();
+	if ($("#login_email").val()) {
+		$("#login_with_email_link_email").val($("#login_email").val());
+	}
+	$(".for-login-with-email-link").toggle(true);
+	$("#login_with_email_link_email").focus();
 }
 
 login.signup = function () {
@@ -135,31 +210,90 @@ login.signup = function () {
 
 
 // Login
-login.call = function (args, callback) {
-	login.set_status('{{ _("Verifying...") }}', 'blue');
+login.call = function (args, callback, url="/") {
+	login.show_loading();
 
 	return frappe.call({
 		type: "POST",
+		url: url,
 		args: args,
 		callback: callback,
 		freeze: true,
+		silent: true,
 		statusCode: login.login_handlers
 	});
 }
 
+login.show_loading = function () {
+	var $btn = $(document.activeElement).filter('section:visible .es-button[data-variant="solid"]');
+	if (!$btn.length) {
+		$btn = $('section:visible .es-button[data-variant="solid"]').first();
+	}
+	$btn.not("[aria-busy]").each(function () {
+		$(this)
+			.data("label", $(this).text().trim())
+			.attr("aria-busy", "true")
+			.html('<span class="es-spinner" aria-hidden="true"></span>');
+	});
+};
+
+login.hide_loading = function () {
+	$('.es-button[aria-busy="true"]').each(function () {
+		$(this).removeAttr("aria-busy").text($(this).data("label") || "");
+	});
+};
+
 login.set_status = function (message, color) {
-	$('section:visible .btn-primary').text(message)
+	var $btn = $('section:visible .es-button[aria-busy="true"]');
+	if (!$btn.length) {
+		$btn = $('section:visible .es-button[data-variant="solid"]').first();
+	}
+	$btn.removeAttr("aria-busy").text(message);
 	if (color == "red") {
 		$('section:visible .page-card-body').addClass("invalid");
 	}
 }
+
+login.show_field_error = function (input_id, message) {
+	var $formGroup = $("#" + input_id).closest(".form-group");
+	$formGroup.addClass("invalid").find(".field-error").text(message);
+};
+
+login.show_error_banner = function (message) {
+	$("section:visible .login-success-banner").addClass("hidden");
+	$("section:visible .login-error-banner").removeClass("hidden").find(".es-alert__title").text(message);
+};
+
+/**
+ * @param {string|object} message - text to show, or a response object to read server messages from
+ */
+login.show_success_banner = function (message) {
+	if (typeof message === "object") message = get_server_message(message);
+	$("section:visible .login-error-banner").addClass("hidden");
+	$("section:visible .login-success-banner").removeClass("hidden").find(".es-alert__title").text(message);
+};
 
 login.set_invalid = function (message) {
 	$(".login-content.page-card").addClass('invalid-login');
 	setTimeout(() => {
 		$(".login-content.page-card").removeClass('invalid-login');
 	}, 500)
-	login.set_status(message, 'red');
+	if ($("section.for-forgot").is(":visible")) {
+		login.hide_loading();
+		login.show_error_banner(message);
+		return;
+	}
+	if ($("section.for-login-with-email-link").is(":visible")) {
+		login.show_error_banner(message);
+		return;
+	}
+	login.hide_loading();
+	$("section:visible .page-card-body").addClass("invalid");
+	if ($("section:visible .login-error-banner").length) {
+		login.show_error_banner(message);
+	} else {
+		login.set_status(message, 'red');
+	}
 	$("#login_password").focus();
 }
 
@@ -170,36 +304,24 @@ login.login_handlers = (function () {
 				data = xhr.responseJSON;
 			}
 
-			var message = default_message;
-			if (data._server_messages) {
-				message = ($.map(JSON.parse(data._server_messages || '[]'), function (v) {
-					// temp fix for messages sent as dict
-					try {
-						return JSON.parse(v).message;
-					} catch (e) {
-						return v;
-					}
-				}) || []).join('<br>') || default_message;
-			}
-
-			if (message === default_message) {
-				login.set_invalid(message);
-			} else {
+			var message = get_server_message(data, true) || default_message;
+			login.set_invalid(message);
+			if (message !== default_message) {
 				login.reset_sections(false);
 			}
-
 		};
 	}
 
 	var login_handlers = {
 		200: function (data) {
 			if (data.message == 'Logged In') {
-				login.set_status('{{ _("Success") }}', 'green');
+				login.set_status({{ _("Success") | tojson }}, 'green');
+				document.body.innerHTML = `{% include "templates/includes/splash_screen.html" %}`;
 				window.location.href = frappe.utils.sanitise_redirect(frappe.utils.get_url_arg("redirect-to")) || data.home_page;
 			} else if (data.message == 'Password Reset') {
-				window.location.href = frappe.utils.sanitise_redirect(data.redirect_to);
+				login.set_status({{ _("Reset link emailed") | tojson }}, 'green');
 			} else if (data.message == "No App") {
-				login.set_status("{{ _('Success') }}", 'green');
+				login.set_status({{ _("Success") | tojson }}, 'green');
 				if (localStorage) {
 					var last_visited =
 						localStorage.getItem("last_visited")
@@ -217,35 +339,28 @@ login.login_handlers = (function () {
 					window.location.href = data.home_page;
 				}
 			} else if (window.location.hash === '#forgot') {
-				if (data.message === 'not found') {
-					login.set_status('{{ _("Not a valid user") }}', 'red');
-				} else if (data.message == 'not allowed') {
-					login.set_status('{{ _("Not Allowed") }}', 'red');
-				} else if (data.message == 'disabled') {
-					login.set_status('{{ _("Not Allowed: Disabled User") }}', 'red');
-				} else {
-					login.set_status('{{ _("Instructions Emailed") }}', 'green');
-				}
-
-
+				// Always show the same message regardless of whether the account
+				// exists or not, to prevent username enumeration (CWE-204).
+				login.set_status({{ _("Sent") | tojson }}, 'green');
+				login.show_success_banner(data);
 			} else if (window.location.hash === '#signup') {
 				if (cint(data.message[0]) == 0) {
-					login.set_status(data.message[1], 'red');
+					login.hide_loading();
+					login.show_error_banner(data.message[1]);
 				} else {
-					login.set_status('{{ _("Success") }}', 'green');
-					frappe.msgprint(data.message[1])
+					login.set_status({{ _("Success") | tojson }}, 'green');
+					login.show_success_banner(data.message[1]);
 				}
-				//login.set_status(__(data.message), 'green');
 			}
 
 			//OTP verification
 			if (data.verification && data.message != 'Logged In') {
-				login.set_status('{{ _("Success") }}', 'green');
+				login.set_status({{ _("Success") | tojson }}, 'green');
 
 				document.cookie = "tmp_id=" + data.tmp_id;
 
 				if (data.verification.method == 'OTP App') {
-					continue_otp_app(data.verification.setup, data.verification.qrcode);
+					continue_otp_app(data.verification.setup, data.verification.qrcode, data.verification.otp_secret);
 				} else if (data.verification.method == 'SMS') {
 					continue_sms(data.verification.setup, data.verification.prompt);
 				} else if (data.verification.method == 'Email') {
@@ -253,8 +368,10 @@ login.login_handlers = (function () {
 				}
 			}
 		},
-		401: get_error_handler('{{ _("Invalid Login. Try again.") }}'),
-		417: get_error_handler('{{ _("Oops! Something went wrong") }}')
+		401: get_error_handler({{ _("Invalid credentials, try again.") | tojson }}),
+		417: get_error_handler({{ _("Oops! Something went wrong.") | tojson }}),
+		429: get_error_handler({{ _("Too many requests. Please try again later.") | tojson }}),
+		500: get_error_handler({{ _("Something went wrong.") | tojson }}),
 	};
 
 	return login_handlers;
@@ -263,14 +380,11 @@ login.login_handlers = (function () {
 frappe.ready(function () {
 
 	login.bind_events();
-
-	if (!window.location.hash) {
-		window.location.hash = "#login";
-	} else {
-		$(window).trigger("hashchange");
+	if (window.show_footer_on_login) {
+		$("body .web-footer").show();
 	}
 
-	$(".form-signup, .form-forgot").removeClass("hide");
+	$(".form-signup, .form-forgot, .form-login-with-email-link").removeClass("hide");
 	$(document).trigger('login_rendered');
 });
 
@@ -278,42 +392,65 @@ var verify_token = function (event) {
 	$(".form-verify").on("submit", function (eventx) {
 		eventx.preventDefault();
 		var args = {};
-		args.cmd = "login";
 		args.otp = $("#login_token").val();
 		args.tmp_id = frappe.get_cookie('tmp_id');
 		if (!args.otp) {
-			frappe.msgprint('{{ _("Login token required") }}');
+			{# striptags is used to remove newlines, e is used for escaping #}
+			frappe.msgprint("{{ _('Login token required') | striptags | e }}");
 			return false;
 		}
-		login.call(args);
+		login.call(args, null, "/api/method/login");
 		return false;
 	});
 }
 
 var request_otp = function (r) {
-	$('.login-content').empty().append($('<div>').attr({ 'id': 'twofactor_div' }).html(
-		'<form class="form-verify">\
-			<div class="page-card-head">\
-				<span class="indicator blue" data-text="Verification">{{ _("Verification") }}</span>\
-			</div>\
-			<div id="otp_div"></div>\
-			<input type="text" id="login_token" autocomplete="off" class="form-control" placeholder={{ _("Verification Code") }} required="" autofocus="">\
-			<button class="btn btn-sm btn-primary btn-block" id="verify_token">{{ _("Verify") }}</button>\
-		</form>'));
+	$('.login-content').empty();
+	$('.login-content:visible').append(
+		`<div id="twofactor_div">
+			<form class="form-verify flex flex-col gap-8">
+				<div class="page-card-body flex flex-col gap-4">
+					<div class="page-card-head p-0">
+						<span class="indicator blue" data-text="Verification">{{ _("Verification") | e }}</span>
+					</div>
+					<div id="otp_div" class="flex flex-col gap-4 text-p-base text-ink-gray-6"></div>
+					<div class="form-group flex flex-col items-start gap-1.5 mb-0">
+						<label class="text-base text-ink-gray-5 w-full mb-0" for="login_token">{{ _("Verification Code") | e }}</label>
+						<input type="text" id="login_token" autocomplete="one-time-code" inputmode="numeric" class="form-control" placeholder="123456" required="">
+					</div>
+				</div>
+				<button class="es-button w-full" data-variant="solid" id="verify_token">{{ _("Verify") | e }}</button>
+			</form>
+		</div>`
+	);
 	// add event handler for submit button
 	verify_token();
+	$("#login_token").get(0)?.focus();
 }
 
-var continue_otp_app = function (setup, qrcode) {
+var continue_otp_app = function (setup, qrcode, otp_secret) {
 	request_otp();
-	var qrcode_div = $('<div class="text-muted" style="padding-bottom: 15px;"></div>');
+	var qrcode_div = $('<div></div>');
 
-	if (setup) {
-		direction = $('<div>').attr('id', 'qr_info').text('{{ _("Enter Code displayed in OTP App.") }}');
+	if (qrcode) {
+		qrcode_div.addClass('flex flex-col gap-4').append(
+			$('<div>').attr('id', 'qr_info').text({{ _("Scan the QR Code and enter the resulting code displayed.") | tojson }}),
+			$('<img class="otp-qr-code">').attr({
+				src: "data:image/svg+xml;base64," + qrcode,
+				alt: {{ _("QR code to scan with your authenticator app") | tojson }},
+			}),
+			$('<div class="flex flex-col gap-1.5">').append(
+				$('<div>').text({{ _("Can't scan the code?") | tojson }} + " " + {{ _("Enter this setup key manually:") | tojson }}),
+				$('<code class="otp-setup-key" dir="ltr">').append(otp_secret.match(/.{1,4}/g).map((chunk) => $('<span>').text(chunk)))
+			)
+		);
+		$('#otp_div').prepend(qrcode_div);
+	} else if (setup) {
+		direction = $('<div>').attr('id', 'qr_info').text({{ _("Enter Code displayed in OTP App.") | tojson }});
 		qrcode_div.append(direction);
 		$('#otp_div').prepend(qrcode_div);
 	} else {
-		direction = $('<div>').attr('id', 'qr_info').text('{{ _("OTP setup using OTP App was not completed. Please contact Administrator.") }}');
+		direction = $('<div>').attr('id', 'qr_info').text({{ _("OTP setup using OTP App was not completed. Please contact Administrator.") | tojson }});
 		qrcode_div.append(direction);
 		$('#otp_div').prepend(qrcode_div);
 	}
@@ -321,13 +458,13 @@ var continue_otp_app = function (setup, qrcode) {
 
 var continue_sms = function (setup, prompt) {
 	request_otp();
-	var sms_div = $('<div class="text-muted" style="padding-bottom: 15px;"></div>');
+	var sms_div = $('<div></div>');
 
 	if (setup) {
 		sms_div.append(prompt)
 		$('#otp_div').prepend(sms_div);
 	} else {
-		direction = $('<div>').attr('id', 'qr_info').text(prompt || '{{ _("SMS was not sent. Please contact Administrator.") }}');
+		direction = $('<div>').attr('id', 'qr_info').html(prompt || {{ _("SMS was not sent. Please contact Administrator.") | tojson }});
 		sms_div.append(direction);
 		$('#otp_div').prepend(sms_div)
 	}
@@ -335,14 +472,24 @@ var continue_sms = function (setup, prompt) {
 
 var continue_email = function (setup, prompt) {
 	request_otp();
-	var email_div = $('<div class="text-muted" style="padding-bottom: 15px;"></div>');
+	var email_div = $('<div></div>');
 
 	if (setup) {
 		email_div.append(prompt)
 		$('#otp_div').prepend(email_div);
 	} else {
-		var direction = $('<div>').attr('id', 'qr_info').text(prompt || '{{ _("Verification code email not sent. Please contact Administrator.") }}');
+		var direction = $('<div>').attr('id', 'qr_info').html(prompt || {{ _("Verification code email not sent. Please contact Administrator.") | tojson }});
 		email_div.append(direction);
 		$('#otp_div').prepend(email_div);
 	}
 }
+
+function get_server_message(data, is_error = false) {
+	return JSON.parse(data?._server_messages || "[]")
+		.map((m) => JSON.parse(m))
+		.filter((m) => !!m.raise_exception === is_error)
+		.map((m) => m.message)
+		.join("<br>");
+}
+
+login.route();

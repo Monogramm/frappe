@@ -1,9 +1,9 @@
-import os
 import frappe
+from frappe import _
 
 
 class DbManager:
-	def __init__(self, db):
+	def __init__(self, db: frappe.database.database.Database | None = None):
 		"""
 		Pass root_conn here for access to all databases.
 		"""
@@ -11,82 +11,111 @@ class DbManager:
 			self.db = db
 
 	def get_current_host(self):
-		return self.db.sql("select user()")[0][0].split('@')[1]
+		return self.db.sql("select user()")[0][0].split("@")[1]
 
 	def create_user(self, user, password, host=None):
-		# Create user if it doesn't exist.
-		if not host:
-			host = self.get_current_host()
-
-		if password:
-			self.db.sql("CREATE USER '%s'@'%s' IDENTIFIED BY '%s';" % (user, host, password))
-		else:
-			self.db.sql("CREATE USER '%s'@'%s';" % (user, host))
+		host = host or self.get_current_host()
+		password_predicate = f" IDENTIFIED BY '{password}'" if password else ""
+		self.db.sql(f"CREATE USER IF NOT EXISTS '{user}'@'{host}'{password_predicate}")
 
 	def delete_user(self, target, host=None):
-		if not host:
-			host = self.get_current_host()
-		try:
-			self.db.sql("DROP USER '%s'@'%s';" % (target, host))
-		except Exception as e:
-			if e.args[0] == 1396:
-				pass
-			else:
-				raise
+		host = host or self.get_current_host()
+		self.db.sql(f"DROP USER IF EXISTS '{target}'@'{host}'")
 
 	def create_database(self, target):
 		if target in self.get_database_list():
 			self.drop_database(target)
-
-		self.db.sql("CREATE DATABASE `%s` ;" % target)
+		self.db.sql(f"CREATE DATABASE `{target}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 
 	def drop_database(self, target):
-		self.db.sql("DROP DATABASE IF EXISTS `%s`;" % target)
+		self.db.sql_ddl(f"DROP DATABASE IF EXISTS `{target}`")
 
 	def grant_all_privileges(self, target, user, host=None):
-		if not host:
-			host = self.get_current_host()
-
-		if frappe.conf.get('rds_db', 0) == 1:
-			self.db.sql("GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER, CREATE TEMPORARY TABLES, CREATE VIEW, EVENT, TRIGGER, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, EXECUTE, LOCK TABLES ON `%s`.* TO '%s'@'%s';" % (target, user, host))
-		else:
-			self.db.sql("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s';" % (target, user, host))
+		host = host or self.get_current_host()
+		permissions = (
+			(
+				"SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER, "
+				"CREATE TEMPORARY TABLES, CREATE VIEW, EVENT, TRIGGER, SHOW VIEW, "
+				"CREATE ROUTINE, ALTER ROUTINE, EXECUTE, LOCK TABLES"
+			)
+			if frappe.conf.rds_db
+			else "ALL PRIVILEGES"
+		)
+		self.db.sql(f"GRANT {permissions} ON `{target}`.* TO '{user}'@'{host}'")
 
 	def flush_privileges(self):
 		self.db.sql("FLUSH PRIVILEGES")
 
 	def get_database_list(self):
-		"""get list of databases"""
-		return [d[0] for d in self.db.sql("SHOW DATABASES")]
+		return self.db.sql("SHOW DATABASES", pluck=True)
 
 	@staticmethod
-	def restore_database(target, source, user, password):
-		from frappe.utils import make_esc
-		esc = make_esc('$ ')
+	def restore_database(verbose: bool, target: str, source: str, user: str, password: str) -> None:
+		"""
+		Function to restore the given SQL file to the target database.
+		:param target: The database to restore to.
+		:param source: The SQL dump to restore
+		:param user: The database username
+		:param password: The database password
+		:return: Nothing
+		"""
 
-		from distutils.spawn import find_executable
-		pv = find_executable('pv')
-		if pv:
-			pipe = '{pv} {source} |'.format(
-				pv=pv,
-				source=source
-			)
-			source = ''
+		import os
+		import shlex
+		import sys
+		from shutil import which
+
+		from frappe.database import get_command
+		from frappe.utils import execute_in_shell
+
+		# Ensure that the entire process fails if any part of the pipeline fails
+		command: list[str] = ["set -o pipefail;"]
+
+		# Source stage: `pv` (pipe viewer) shows a live byte-level progress bar
+		# when available. Falls back to plain `cat` when `pv` is not installed,
+		# stderr is not a TTY (avoids \r garbage in CI/nohup logs), or the user
+		# chose --verbose (subprocess output would interleave with pv's line).
+		# `2>/dev/tty` on the pv invocation is required because execute_in_shell
+		# (frappe/utils/__init__.py) captures the subprocess's stderr into a
+		# tempfile — without the /dev/tty redirect the progress bar would land
+		# there instead of reaching the operator's terminal. Both branches
+		# leave the file's bytes on stdout for the next stage.
+		pv = which("pv")
+		if pv and sys.stderr.isatty() and not verbose:
+			command.extend([pv, "-s", str(os.path.getsize(source)), source, "2>/dev/tty", "|"])
 		else:
-			pipe = ''
-			source = '< {source}'.format(source=source)
+			command.extend(["cat", source, "|"])
 
-		if pipe:
-			print('Restoring Database file...')
+		# Decompression stage: if the backup is gzipped, pipe through gunzip.
+		if source.endswith(".gz"):
+			if gzip := which("gzip"):
+				command.extend([gzip, "-cd", "|"])
+			else:
+				raise Exception("`gzip` not installed")
 
-		command = '{pipe} mysql -u {user} -p{password} -h{host} ' + ('-P{port}' if frappe.db.port else '') + ' {target} {source}'
-		command = command.format(
-			pipe=pipe,
-			user=esc(user),
-			password=esc(password),
-			host=esc(frappe.db.host),
-			target=esc(target),
-			source=source,
-			port=frappe.db.port
+		if frappe.conf.db_type == "mariadb":
+			# Newer versions of MariaDB add in a line that'll break on older versions, so remove it
+			command.extend(["sed", r"'/\/\*M\{0,1\}!999999\\- enable the sandbox mode \*\//d'", "|"])
+
+			# Remove view security definers
+			command.extend(["sed", r"'/\/\*![0-9]* DEFINER=[^ ]* SQL SECURITY DEFINER \*\//d'", "|"])
+
+		# Generate the restore command
+		bin, args, bin_name = get_command(
+			socket=frappe.conf.db_socket,
+			host=frappe.conf.db_host,
+			port=frappe.conf.db_port,
+			user=user,
+			password=password,
+			db_name=target,
 		)
-		os.system(command)
+		if not bin:
+			return frappe.throw(
+				_("{} not found in PATH! This is required to restore the database.").format(bin_name),
+				exc=frappe.ExecutableNotFound,
+			)
+		command.append(bin)
+		command.append(shlex.join(args))
+
+		execute_in_shell(" ".join(command), check_exit_code=True, verbose=verbose)
+		frappe.cache.delete_keys("")  # Delete all keys associated with this site.

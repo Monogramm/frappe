@@ -9,12 +9,16 @@
 	background-position: 50% 50%;
 	fill: var(--icon-fill);
 	stroke: var(--icon-stroke);
+	stroke-width: 1.5px;
+	stroke-linecap: round;
+	stroke-linejoin: round;
 }
 
 /* like icon */
 use.like-icon {
+	--icon-stroke: transparent;
 	cursor: pointer;
-	stroke: var(--gray-500);
+	stroke: var(--icon-stroke);
 }
 
 #icon-file-large {
@@ -26,7 +30,7 @@ use.like-icon {
 }
 
 #icon-close {
-	fill: var(--gray-600);
+	fill: var(--invert-neutral);
 }
 
 .icon > .close-alt {
@@ -34,9 +38,10 @@ use.like-icon {
 }
 
 .liked {
-	use.like-icon {
-		stroke: none;
-		fill: var(--red-500);
+	.like-icon,
+	.like-icon use {
+		--icon-stroke: var(--invert-neutral);
+		fill: var(--invert-neutral);
 	}
 }
 
@@ -56,16 +61,56 @@ use.like-icon {
 	height: 20px;
 }
 
+// A module glyph in a rail tile: drawn on a 24 grid, set a step under it so the tile has room.
+.icon-rail {
+	width: 22px;
+	height: 22px;
+}
+
+// Soft module icons (module-icons.svg) draw in their holder's colour. Custom properties reach
+// through <use>, so a holder can tune the stroke, the body tint and the accent.
+.soft-icon {
+	fill: none;
+	stroke: currentColor;
+	stroke-width: var(--soft-stroke, 1.5);
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.soft-body,
+.soft-layer {
+	fill: currentColor;
+	fill-opacity: var(--soft-tint, 0.1);
+}
+
+.soft-layer,
+.soft-accent {
+	stroke: none;
+}
+
+.soft-accent {
+	fill: currentColor;
+	fill-opacity: var(--soft-accent, 0.5);
+}
+
+.soft-accent-line {
+	stroke-opacity: var(--soft-accent, 0.5);
+}
+
 .icon-lg {
 	width: 24px;
 	height: 24px;
 }
 
 .icon-xl {
-	width: 75px;
-	height: 75px;
+	width: 40px;
+	height: 40px;
 }
 
 .no-stroke {
 	stroke: none;
+}
+
+.current-color {
+	stroke: currentColor;
 }

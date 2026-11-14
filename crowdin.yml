@@ -1,0 +1,5 @@
+preserve_hierarchy: true
+
+files:
+  - source: /frappe/locale/main.pot
+    translation: /frappe/locale/%two_letters_code%.po

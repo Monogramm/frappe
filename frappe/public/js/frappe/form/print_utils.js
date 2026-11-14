@@ -1,48 +1,97 @@
-frappe.ui.get_print_settings = function(
+frappe.ui.get_print_settings = function (
 	pdf,
 	callback,
 	letter_head,
-	pick_columns
+	pick_columns,
+	is_query_report = false,
+	title = null,
+	default_print_format = null,
+	can_include_filters = is_query_report
 ) {
 	var print_settings = locals[":Print Settings"]["Print Settings"];
 
-	var default_letter_head =
-		locals[":Company"] && frappe.defaults.get_default("company")
-			? locals[":Company"][frappe.defaults.get_default("company")]["default_letter_head"]
-			: "";
+	var company = frappe.defaults.get_default("company");
+	var default_letter_head = "";
+
+	if (locals[":Company"] && locals[":Company"][company]) {
+		default_letter_head =
+			locals[":Company"][company]["default_letter_head_report"] ||
+			frappe.defaults.get_default("letter_head_report") ||
+			"";
+	}
 
 	var columns = [
-		{
-			fieldtype: "Check",
-			fieldname: "with_letter_head",
-			label: __("With Letter head")
-		},
-		{
-			fieldtype: "Select",
-			fieldname: "letter_head",
-			label: __("Letter Head"),
-			depends_on: "with_letter_head",
-			options: Object.keys(frappe.boot.letter_heads),
-			default: letter_head || default_letter_head
-		},
 		{
 			fieldtype: "Select",
 			fieldname: "orientation",
 			label: __("Orientation"),
 			options: [
 				{ value: "Landscape", label: __("Landscape") },
-				{ value: "Portrait", label: __("Portrait") }
+				{ value: "Portrait", label: __("Portrait") },
 			],
-			default: "Landscape"
-		}
+			default: "Landscape",
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "with_letter_head",
+			label: __("With Letter Head"),
+			default: 1,
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "letter_head",
+			label: __("Letter Head"),
+			depends_on: "with_letter_head",
+			options: "Letter Head",
+			default: letter_head || default_letter_head,
+			get_query: () => {
+				return {
+					filters: {
+						letter_head_for: "Report",
+						disabled: 0,
+					},
+				};
+			},
+		},
 	];
+
+	// Print format only applies to query/script reports.
+	if (is_query_report) {
+		columns.splice(1, 0, {
+			fieldtype: "Link",
+			fieldname: "print_format",
+			label: __("Print Format"),
+			options: "Print Format",
+			default: default_print_format,
+			description: __(
+				"If no Print Format is selected, the default template for this report will be used."
+			),
+			get_query: () => ({
+				filters: {
+					print_format_for: "Report",
+					report: frappe.query_report ? frappe.query_report.report_name : "",
+					disabled: 0,
+				},
+			}),
+		});
+	}
+
+	if (can_include_filters) {
+		columns.push({
+			label: __("Include filters"),
+			fieldtype: "Check",
+			fieldname: "include_filters",
+			default: 1,
+		});
+	}
 
 	if (pick_columns) {
 		columns.push(
 			{
 				label: __("Pick Columns"),
 				fieldtype: "Check",
-				fieldname: "pick_columns"
+				fieldname: "pick_columns",
+				depends_on: "eval: !doc.print_format",
 			},
 			{
 				label: __("Select Columns"),
@@ -50,28 +99,46 @@ frappe.ui.get_print_settings = function(
 				fieldname: "columns",
 				depends_on: "pick_columns",
 				columns: 2,
-				options: pick_columns.map(df => ({
-					label: __(df.label),
-					value: df.fieldname
-				}))
+				select_all: true,
+				options: pick_columns.map((df) => ({
+					label: __(df.label, null, df.parent),
+					value: df.fieldname,
+				})),
 			}
 		);
 	}
 
 	return frappe.prompt(
 		columns,
-		function(data) {
-			data = $.extend(print_settings, data);
-			if (!data.with_letter_head) {
-				data.letter_head = null;
+		function (settings) {
+			settings = $.extend(print_settings, settings);
+
+			if (!settings.with_letter_head) {
+				settings.letter_head = null;
+				settings.letter_head_name = null;
+			} else {
+				const letter_head_name =
+					settings.letter_head ||
+					settings.letter_head_name ||
+					print_settings.letter_head;
+				if (letter_head_name) {
+					settings.letter_head_name = letter_head_name;
+					settings.letter_head = frappe.boot.letter_heads[letter_head_name];
+				}
 			}
-			if (data.letter_head) {
-				data.letter_head =
-					frappe.boot.letter_heads[print_settings.letter_head];
+
+			if (settings.print_format) {
+				settings.pick_columns = 0;
+				settings.columns = null;
 			}
-			callback(data);
+
+			callback(settings);
+			// clean up print format to avoid affecting next print
+			if (settings.print_format) {
+				settings.print_format = null;
+			}
 		},
-		__("Print Settings")
+		title ? __(title) : __("Print Settings")
 	);
 };
 
@@ -81,8 +148,8 @@ frappe.ui.get_print_settings = function(
 //  - if connection fails, catch the reject, fire the mimetype launcher
 //  - after mimetype launcher is fired, try to connect 3 more times
 //  - display success/fail message to user
-frappe.ui.form.qz_connect = function() {
-	return new Promise(function(resolve, reject) {
+frappe.ui.form.qz_connect = function () {
+	return new Promise(function (resolve, reject) {
 		frappe.ui.form.qz_init().then(() => {
 			if (qz.websocket.isActive()) {
 				// if already active, resolve immediately
@@ -92,28 +159,23 @@ frappe.ui.form.qz_connect = function() {
 				// try to connect once before firing the mimetype launcher
 				frappe.show_alert({
 					message: __("Attempting Connection to QZ Tray..."),
-					indicator: "blue"
+					indicator: "blue",
 				});
 				qz.websocket.connect().then(
 					() => {
 						frappe.show_alert({
 							message: __("Connected to QZ Tray!"),
-							indicator: "green"
+							indicator: "green",
 						});
 						resolve();
 					},
 					function retry(err) {
-						if (
-							err.message ===
-							"Unable to establish connection with QZ"
-						) {
+						if (err.message === "Unable to establish connection with QZ") {
 							// if a connect was not successful, launch the mimetype, try 3 more times
 							frappe.show_alert(
 								{
-									message: __(
-										"Attempting to launch QZ Tray..."
-									),
-									indicator: "blue"
+									message: __("Attempting to launch QZ Tray..."),
+									indicator: "blue",
 								},
 								14
 							);
@@ -121,15 +183,13 @@ frappe.ui.form.qz_connect = function() {
 							qz.websocket
 								.connect({
 									retries: 3,
-									delay: 1
+									delay: 1,
 								})
 								.then(
 									() => {
 										frappe.show_alert({
-											message: __(
-												"Connected to QZ Tray!"
-											),
-											indicator: "green"
+											message: __("Connected to QZ Tray!"),
+											indicator: "green",
 										});
 										resolve();
 									},
@@ -146,7 +206,7 @@ frappe.ui.form.qz_connect = function() {
 							frappe.show_alert(
 								{
 									message: "QZ Tray " + err.toString(),
-									indicator: "red"
+									indicator: "red",
 								},
 								14
 							);
@@ -159,22 +219,22 @@ frappe.ui.form.qz_connect = function() {
 	});
 };
 
-frappe.ui.form.qz_init = function() {
+frappe.ui.form.qz_init = function () {
 	// Initializing qz tray library
-	return new Promise(resolve => {
+	return new Promise((resolve) => {
 		if (typeof qz === "object" && typeof qz.version === "string") {
 			// resolve immediately if already Initialized
 			resolve();
 		} else {
 			let qz_required_assets = [
 				"/assets/frappe/node_modules/js-sha256/build/sha256.min.js",
-				"/assets/frappe/node_modules/qz-tray/qz-tray.js"
+				"/assets/frappe/node_modules/qz-tray/qz-tray.js",
 			];
 			frappe.require(qz_required_assets, () => {
 				qz.api.setPromiseType(function promise(resolver) {
 					return new Promise(resolver);
 				});
-				qz.api.setSha256Type(function(data) {
+				qz.api.setSha256Type(function (data) {
 					// Codacy fix
 					/*global sha256*/
 					return sha256(data);
@@ -186,35 +246,35 @@ frappe.ui.form.qz_init = function() {
 	});
 };
 
-frappe.ui.form.qz_get_printer_list = function() {
+frappe.ui.form.qz_get_printer_list = function () {
 	// returns the list of printers that are available to the QZ Tray
 	return frappe.ui.form
 		.qz_connect()
-		.then(function() {
+		.then(function () {
 			return qz.printers.find();
 		})
-		.then(data => {
+		.then((data) => {
 			return data;
 		})
-		.catch(err => {
+		.catch((err) => {
 			frappe.ui.form.qz_fail(err);
 		});
 };
 
-frappe.ui.form.qz_success = function() {
+frappe.ui.form.qz_success = function () {
 	// notify qz successful print
 	frappe.show_alert({
 		message: __("Print Sent to the printer!"),
-		indicator: "green"
+		indicator: "green",
 	});
 };
 
-frappe.ui.form.qz_fail = function(e) {
+frappe.ui.form.qz_fail = function (e) {
 	// notify qz errors
 	frappe.show_alert(
 		{
-			message: __("QZ Tray Failed: ") + e.toString(),
-			indicator: "red"
+			message: __("QZ Tray Failed:") + " " + e.toString(),
+			indicator: "red",
 		},
 		20
 	);

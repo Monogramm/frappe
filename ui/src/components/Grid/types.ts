@@ -1,0 +1,107 @@
+/**
+ * Minimal shape `Grid` needs to render a column's header and key its cells.
+ * Richer column objects (e.g. FormLayout's `FieldMeta`) satisfy this
+ * structurally, so callers pass their own type through `Grid`'s generic and get
+ * it back, fully typed, in the `#cell` slot.
+ */
+export interface GridColumn {
+  fieldname: string;
+  label?: string;
+  reqd?: boolean;
+  /** Rendered as the cell's `data-fieldtype`, a handle for tests and CSS. */
+  fieldtype?: string;
+  /**
+   * Horizontal alignment for this column's cells *and* its header label, so the
+   * two always agree. Defaults to left. Consumers set `"right"` for numeric
+   * columns (e.g. `TableField` for Int/Float/Currency/Percent), matching how
+   * Frappe desk right-aligns numbers in the grid.
+   */
+  align?: "left" | "right" | "center";
+  /**
+   * Initial track width in px, e.g. set from layout/meta. Omit for a flexible
+   * column that shares leftover space (`1fr`) down to 128px, past which the grid
+   * scrolls sideways. Drag-resizing the column's right
+   * edge overrides this at runtime.
+   */
+  width?: number;
+}
+
+/** Validation error shown below the grid: a message string, or an `Error` with `messages[]`. */
+export interface GridError extends Error {
+  messages?: string[];
+}
+
+/** Props for `<Grid>`. The rows array is a separate `v-model`. */
+export interface GridProps {
+  /** Columns to render, in order. */
+  columns: GridColumn[];
+  /** Disable structural actions (add/delete/reorder/select) and render read-only. */
+  disabled?: boolean;
+  /** Hide every way to add a row. Existing rows stay editable. */
+  cannotAddRows?: boolean;
+  /** Hide every way to delete a row. Rows can still be added and edited. */
+  cannotDeleteRows?: boolean;
+  /** Optional heading shown above the grid. */
+  label?: string;
+  /** Helper text rendered below the grid. Hidden while an error is shown. */
+  description?: string;
+  /** Validation error below the grid: one message, several, or an `Error` with `messages[]`. */
+  error?: string | string[] | GridError;
+  /** Renders a `*` next to the label. */
+  required?: boolean;
+  /** A cell's error, drawn as a red ring with the message in a tooltip. */
+  cellError?: (row: Record<string, any>, column: GridColumn) => string | string[] | undefined;
+  /** Seeds a newly added row. The grid sees only the columns, so whoever knows
+   *  the whole child form supplies its docfield defaults. */
+  newRow?: () => Record<string, any>;
+  /** The value a pasted cell commits, or `null` to leave the cell alone.
+   *  Without it a pasted cell commits its text. */
+  parsePaste?: (
+    row: Record<string, any>,
+    column: GridColumn,
+    text: string
+  ) => { value: unknown } | null;
+}
+
+export type GridEmits = {
+  /**
+   * A row was added, deleted, reordered, or a cell committed (via the slot's
+   * `commit`). Carries the new rows array — the intentful "the grid changed"
+   * signal, distinct from the live `v-model` sync (the slot's `update`).
+   */
+  change: [rows: Record<string, any>[]];
+  /**
+   * One cell was committed. Distinct from `change`, which says only that the
+   * rows array moved: this names the row and the column, so a consumer can
+   * dispatch a per-row event without diffing to work out what moved.
+   */
+  commit: [payload: { row: Record<string, any>; column: GridColumn; pasted?: boolean }];
+  /** A row was added, carrying the row so a consumer can address it. */
+  add: [payload: { row: Record<string, any> }];
+  /** Rows were deleted, carrying them as they last were. */
+  remove: [payload: { rows: Record<string, any>[] }];
+  /**
+   * The user picked Edit in a row's menu (the ⋯ button or a right-click). Carries
+   * the row and its index. `Grid` stays oblivious to *how* a row is edited — the
+   * consumer (e.g. `TableField`) opens a dialog and renders the row however it likes.
+   */
+  edit: [payload: { row: Record<string, any>; index: number }];
+};
+
+/** Scoped-slot payload for rendering/editing a single cell. */
+export interface GridCellSlotProps<T extends GridColumn = GridColumn> {
+  row: Record<string, any>;
+  column: T;
+  index: number;
+  /** Current cell value (`row[column.fieldname]`). */
+  value: any;
+  /** Live cell write — keeps the value reactive while editing (no `change`). */
+  update: (value: any) => void;
+  /** Commit the cell — writes the value and emits `change`. */
+  commit: (value: any) => void;
+}
+
+export interface GridSlots<T extends GridColumn = GridColumn> {
+  /** Render/edit one cell. Falls back to plain text when not provided. */
+  cell?: (props: GridCellSlotProps<T>) => any;
+}

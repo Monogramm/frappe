@@ -1,7 +1,9 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_import": 1,
  "creation": "2013-01-29 10:47:14",
+ "default_view": "List",
  "description": "Keeps track of all communications",
  "doctype": "DocType",
  "document_type": "Setup",
@@ -23,13 +25,13 @@
   "status_section",
   "text_content",
   "communication_type",
-  "comment_type",
   "column_break_5",
   "status",
   "sent_or_received",
   "additional_info",
   "communication_date",
   "read_receipt",
+  "send_after",
   "column_break_14",
   "sender_full_name",
   "read_by_recipient",
@@ -51,11 +53,9 @@
   "email_inbox",
   "message_id",
   "uid",
+  "imap_folder",
   "email_status",
-  "has_attachment",
-  "feedback_section",
-  "rating",
-  "feedback_request"
+  "has_attachment"
  ],
  "fields": [
   {
@@ -72,9 +72,10 @@
    "label": "To and CC"
   },
   {
-   "depends_on": "eval:doc.communication_type===\"Communication\"",
    "fieldname": "communication_medium",
    "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Type",
    "options": "\nEmail\nChat\nPhone\nSMS\nEvent\nMeeting\nVisit\nOther"
   },
@@ -123,7 +124,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Delivery Status",
-   "options": "\nSent\nBounced\nOpened\nMarked As Spam\nRejected\nDelayed\nSoft-Bounced\nClicked\nRecipient Unsubscribed\nError\nExpired\nSending\nRead"
+   "options": "\nSent\nBounced\nOpened\nMarked As Spam\nRejected\nDelayed\nSoft-Bounced\nClicked\nRecipient Unsubscribed\nError\nExpired\nSending\nRead\nScheduled"
   },
   {
    "fieldname": "section_break_8",
@@ -151,20 +152,12 @@
    "default": "Communication",
    "fieldname": "communication_type",
    "fieldtype": "Select",
-   "label": "Communication Type",
-   "options": "Communication\nComment\nChat\nBot\nNotification\nFeedback",
-   "read_only": 1,
-   "reqd": 1
-  },
-  {
-   "fieldname": "comment_type",
-   "fieldtype": "Select",
-   "hidden": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Comment Type",
-   "options": "\nComment\nLike\nInfo\nLabel\nWorkflow\nCreated\nSubmitted\nCancelled\nUpdated\nDeleted\nAssigned\nAssignment Completed\nAttachment\nAttachment Removed\nShared\nUnshared\nBot\nRelinked",
-   "read_only": 1
+   "label": "Communication Type",
+   "options": "Communication\nAutomated Message",
+   "read_only": 1,
+   "reqd": 1
   },
   {
    "fieldname": "column_break_5",
@@ -197,7 +190,6 @@
    "label": "More Information"
   },
   {
-   "bold": 0,
    "default": "Now",
    "fieldname": "communication_date",
    "fieldtype": "Datetime",
@@ -317,7 +309,7 @@
   },
   {
    "fieldname": "message_id",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "ignore_xss_filter": 1,
    "label": "Message ID",
    "length": 995,
@@ -345,25 +337,6 @@
    "label": "Has  Attachment"
   },
   {
-   "collapsible": 1,
-   "depends_on": "eval: doc.rating > 0",
-   "fieldname": "feedback_section",
-   "fieldtype": "Section Break",
-   "label": "Feedback"
-  },
-  {
-   "fieldname": "rating",
-   "fieldtype": "Int",
-   "label": "Rating",
-   "read_only": 1
-  },
-  {
-   "fieldname": "feedback_request",
-   "fieldtype": "Data",
-   "label": "Feedback Request",
-   "read_only": 1
-  },
-  {
    "fieldname": "email_template",
    "fieldtype": "Link",
    "label": "Email Template",
@@ -382,12 +355,25 @@
    "label": "Timeline Links",
    "options": "Communication Link",
    "permlevel": 2
+  },
+  {
+   "fieldname": "imap_folder",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "IMAP Folder",
+   "read_only": 1
+  },
+  {
+   "fieldname": "send_after",
+   "fieldtype": "Datetime",
+   "label": "Send After"
   }
  ],
- "icon": "fa fa-comment",
+ "icon": "messages-square",
  "idx": 1,
  "links": [],
- "modified": "2019-12-27 14:44:04.880373",
+ "make_attachments_public": 1,
+ "modified": "2025-12-25 19:19:29.427081",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Communication",
@@ -426,13 +412,13 @@
    "write": 1
   },
   {
-    "create": 1,
-    "delete": 1,
-    "email": 1,
-    "export":1,
-    "print":1,
-    "read": 1,
-    "role": "Inbox User"
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Inbox User"
   },
   {
    "delete": 1,
@@ -442,10 +428,12 @@
    "role": "All"
   }
  ],
+ "row_format": "Compressed",
  "search_fields": "subject",
  "sender_field": "sender",
- "sort_field": "modified",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "subject_field": "subject",
  "title_field": "subject",
  "track_changes": 1,

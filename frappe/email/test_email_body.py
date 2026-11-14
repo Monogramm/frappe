@@ -1,92 +1,99 @@
-# Copyright (c) 2017, Frappe Technologies Pvt. Ltd. and Contributors
-# License: GNU General Public License v3. See license.txt
-from __future__ import unicode_literals
+# Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
+# License: MIT. See LICENSE
 
-import unittest, os, base64
+import base64
+import os
+
+import frappe
 from frappe import safe_decode
-from frappe.email.receive import Email
-from frappe.email.email_body import (replace_filename_with_cid,
-					get_email, inline_style_in_html, get_header)
-from frappe.email.queue import prepare_message, get_email_queue
-from six import PY3
+from frappe.core.doctype.communication.communication import Communication
+from frappe.email.doctype.email_queue.email_queue import QueueBuilder, SendMailContext
+from frappe.email.email_body import (
+	get_email,
+	get_header,
+	inline_style_in_html,
+	replace_filename_with_cid,
+)
+from frappe.email.receive import Email, InboundMail
+from frappe.tests import IntegrationTestCase
 
 
-class TestEmailBody(unittest.TestCase):
+class TestEmailBody(IntegrationTestCase):
 	def setUp(self):
-		email_html = '''
+		email_html = """
 <div>
 	<h3>Hey John Doe!</h3>
 	<p>This is embedded image you asked for</p>
 	<img embed="assets/frappe/images/frappe-favicon.svg" />
 </div>
-'''
-		email_text = '''
+"""
+		email_text = """
 Hey John Doe!
 This is the text version of this email
-'''
+"""
 
-		img_path = os.path.abspath('assets/frappe/images/frappe-favicon.svg')
-		with open(img_path, 'rb') as f:
+		img_path = os.path.abspath("assets/frappe/images/frappe-favicon.svg")
+		with open(img_path, "rb") as f:
 			img_content = f.read()
 			img_base64 = base64.b64encode(img_content).decode()
 
 		# email body keeps 76 characters on one line
 		self.img_base64 = fixed_column_width(img_base64, 76)
 
-		self.email_string = get_email(
-			recipients=['test@example.com'],
-			sender='me@example.com',
-			subject='Test Subject',
-			content=email_html,
-			text_content=email_text
-		).as_string().replace("\r\n", "\n")
+		self.email_string = (
+			get_email(
+				recipients=["test@example.com"],
+				sender="me@example.com",
+				subject="Test Subject",
+				content=email_html,
+				text_content=email_text,
+			)
+			.as_string()
+			.replace("\r\n", "\n")
+		)
 
 	def test_prepare_message_returns_already_encoded_string(self):
+		uni_chr1 = chr(40960)
+		uni_chr2 = chr(1972)
 
-		if PY3:
-			uni_chr1 = chr(40960)
-			uni_chr2 = chr(1972)
-		else:
-			uni_chr1 = unichr(40960)
-			uni_chr2 = unichr(1972)
-
-		email = get_email_queue(
-			recipients=['test@example.com'],
-			sender='me@example.com',
-			subject='Test Subject',
-			content='<h1>' + uni_chr1 + 'abcd' + uni_chr2 + '</h1>',
-			formatted='<h1>' + uni_chr1 + 'abcd' + uni_chr2 + '</h1>',
-			text_content='whatever')
-		result = prepare_message(email=email, recipient='test@test.com', recipients_list=[])
+		QueueBuilder(
+			recipients=["test@example.com"],
+			sender="me@example.com",
+			subject="Test Subject",
+			message=f"<h1>{uni_chr1}abcd{uni_chr2}</h1>",
+			text_content="whatever",
+		).process()
+		queue_doc = frappe.get_last_doc("Email Queue")
+		mail_ctx = SendMailContext(queue_doc=queue_doc)
+		result = mail_ctx.build_message(recipient_email="test@test.com")
 		self.assertTrue(b"<h1>=EA=80=80abcd=DE=B4</h1>" in result)
 
 	def test_prepare_message_returns_cr_lf(self):
-		email = get_email_queue(
-			recipients=['test@example.com'],
-			sender='me@example.com',
-			subject='Test Subject',
-			content='<h1>\n this is a test of newlines\n' + '</h1>',
-			formatted='<h1>\n this is a test of newlines\n' + '</h1>',
-			text_content='whatever')
-		result = safe_decode(prepare_message(email=email,
-						recipient='test@test.com', recipients_list=[]))
-		if PY3:
-			self.assertTrue(result.count('\n') == result.count("\r"))
-		else:
-			self.assertTrue(True)
+		QueueBuilder(
+			recipients=["test@example.com"],
+			sender="me@example.com",
+			subject="Test Subject",
+			message="<h1>\n this is a test of newlines\n" + "</h1>",
+			text_content="whatever",
+		).process()
+		queue_doc = frappe.get_last_doc("Email Queue")
+		mail_ctx = SendMailContext(queue_doc=queue_doc)
+		result = safe_decode(mail_ctx.build_message(recipient_email="test@test.com"))
+
+		self.assertTrue(result.count("\n") == result.count("\r"))
 
 	def test_image(self):
-		img_signature = '''
+		img_signature = """
 Content-Type: image/svg+xml
 MIME-Version: 1.0
 Content-Transfer-Encoding: base64
 Content-Disposition: inline; filename="frappe-favicon.svg"
-'''
+"""
 		self.assertTrue(img_signature in self.email_string)
 		self.assertTrue(self.img_base64 in self.email_string)
 
 	def test_text_content(self):
-		text_content = '''
+		text_content = """
 Content-Type: text/plain; charset="utf-8"
 MIME-Version: 1.0
 Content-Transfer-Encoding: quoted-printable
@@ -94,11 +101,11 @@ Content-Transfer-Encoding: quoted-printable
 
 Hey John Doe!
 This is the text version of this email
-'''
+"""
 		self.assertTrue(text_content in self.email_string)
 
 	def test_email_content(self):
-		html_head = '''
+		html_head = """
 Content-Type: text/html; charset="utf-8"
 MIME-Version: 1.0
 Content-Transfer-Encoding: quoted-printable
@@ -106,84 +113,241 @@ Content-Transfer-Encoding: quoted-printable
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.=
 w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns=3D"http://www.w3.org/1999/xhtml">
-'''
+"""
 
-		html = '''<h3>Hey John Doe!</h3>'''
+		html = """<h3>Hey John Doe!</h3>"""
 
 		self.assertTrue(html_head in self.email_string)
 		self.assertTrue(html in self.email_string)
 
 	def test_replace_filename_with_cid(self):
-		original_message = '''
+		original_message = """
 			<div>
 				<img embed="assets/frappe/images/frappe-favicon.svg" alt="test" />
 				<img embed="notexists.jpg" />
 			</div>
-		'''
+		"""
 		message, inline_images = replace_filename_with_cid(original_message)
 
-		processed_message = '''
+		processed_message = """
 			<div>
-				<img src="cid:{0}" alt="test" />
+				<img src="cid:{}" alt="test" />
 				<img  />
 			</div>
-		'''.format(inline_images[0].get('content_id'))
+		""".format(inline_images[0].get("content_id"))
 		self.assertEqual(message, processed_message)
 
+	def test_sendmail_inline_images_parameter_respected(self):
+		"""
+		Test that inline_images parameter works through sendmail.
+		Earlier this was ignored and the image was read from disk instead of using the provided content.
+		The way to check this is essentially checking if the image is embedded with cid:
+		<img src="cid:content_id" ...> -> Correct behavior
+		If the image is not embedded with cid: -> Incorrect behavior
+		"""
+
+		test_image_content = b"FAKE_PNG_BINARY_CONTENT_FOR_TESTING"
+
+		html_content = '<div><img embed="files/nonexistent_test_image.png" alt="Logo"></div>'
+
+		inline_images = [
+			{
+				"filename": "files/nonexistent_test_image.png",
+				"filecontent": test_image_content,
+			}
+		]
+
+		# use QueueBuilder to send the email (sendmail uses this internally)
+		from frappe.email.doctype.email_queue.email_queue import QueueBuilder
+
+		builder = QueueBuilder(
+			recipients=["test@example.com"],
+			sender="me@example.com",
+			subject="Test Inline Images",
+			message=html_content,
+			inline_images=inline_images,
+		)
+
+		mail = builder.prepare_email_content()
+		email_string = mail.as_string()
+
+		self.assertIn("cid:", email_string)
+		self.assertNotIn('embed="files/nonexistent_test_image.png"', email_string)
+
 	def test_inline_styling(self):
-		html = '''
+		html = """
 <h3>Hi John</h3>
 <p>This is a test email</p>
-'''
-		transformed_html = '''
+"""
+		transformed_html = """
 <h3>Hi John</h3>
-<p style="margin:5px 0 !important">This is a test email</p>
-'''
+<p style="margin:0 0 1em !important">This is a test email</p>
+"""
 		self.assertTrue(transformed_html in inline_style_in_html(html))
 
 	def test_email_header(self):
-		email_html = '''
+		email_html = """
 <h3>Hey John Doe!</h3>
 <p>This is embedded image you asked for</p>
-'''
+"""
 		email_string = get_email(
-			recipients=['test@example.com'],
-			sender='me@example.com',
-			subject='Test Subject',
+			recipients=["test@example.com"],
+			sender="me@example.com",
+			subject="Test Subject\u2028, with line break, \nand Line feed \rand carriage return.",
 			content=email_html,
-			header=['Email Title', 'green']
-		).as_string().replace("\r\n", "\n")
-		# REDESIGN-TODO: Add style for indicators in email
-		self.assertTrue('''<span class=3D"indicator indicator-green"></span>''' in email_string)
-		self.assertTrue('<span>Email Title</span>' in email_string)
+			header=["Email Title", "green"],
+		).as_string()
+		# REDESIGN: Add style for indicators in email
+		self.assertIn("indicator", email_string)
+		self.assertIn("indicator-green", email_string)
+		self.assertTrue("<span>Email Title</span>" in email_string)
+		self.assertIn(
+			"Subject: Test Subject, with line break, and Line feed and carriage return.", email_string
+		)
 
 	def test_get_email_header(self):
-		html = get_header(['This is test', 'orange'])
+		html = get_header(["This is test", "orange"])
 		self.assertTrue('<span class="indicator indicator-orange"></span>' in html)
-		self.assertTrue('<span>This is test</span>' in html)
+		self.assertTrue("<span>This is test</span>" in html)
 
-		html = get_header(['This is another test'])
-		self.assertTrue('<span>This is another test</span>' in html)
+		html = get_header(["This is another test"])
+		self.assertTrue("<span>This is another test</span>" in html)
 
-		html = get_header('This is string')
-		self.assertTrue('<span>This is string</span>' in html)
+		html = get_header("This is string")
+		self.assertTrue("<span>This is string</span>" in html)
 
 	def test_8bit_utf_8_decoding(self):
 		text_content_bytes = b"\xed\x95\x9c\xea\xb8\x80\xe1\xa5\xa1\xe2\x95\xa5\xe0\xba\xaa\xe0\xa4\x8f"
-		text_content = text_content_bytes.decode('utf-8')
+		text_content = text_content_bytes.decode("utf-8")
 
-		content_bytes = b"""MIME-Version: 1.0
+		content_bytes = (
+			b"""MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Disposition: inline
 Content-Transfer-Encoding: 8bit
 From: test1_@erpnext.com
 Reply-To: test2_@erpnext.com
-""" + text_content_bytes
+"""
+			+ text_content_bytes
+		)
 
 		mail = Email(content_bytes)
 		self.assertEqual(mail.text_content, text_content)
 
+	def test_poorly_encoded_messages(self):
+		mail = Email.decode_email(
+			"=?iso-2022-jp?B?VEFLQVlBTUEgS2FvcnUgWxskQnxiOzMbKEIgGyRCNzAbKEJd?=\n\t<user@example.com>"
+		)
+		self.assertIn("user@example.com", mail)
+
+	def test_poorly_encoded_messages2(self):
+		mail = Email.decode_email(" =?UTF-8?B?X\xe0\xe0Y?=  <xy@example.com>")
+		self.assertIn("xy@example.com", mail)
+
+	def test_rejects_encoded_addr_spec_without_raw_at_sign(self):
+		email = Email.decode_email("=?utf-8?Q?admin=40example=2Ecom?=")
+		self.assertIsNone(email)
+
+		content_bytes = b"""MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: inline
+Content-Transfer-Encoding: 8bit
+To: support@example.com
+From: =?utf-8?Q?admin=40example=2Ecom?=
+"""
+
+		mail = Email(content_bytes)
+		self.assertIsNone(mail.from_email)
+
+	def test_allows_encoded_display_name_with_valid_addr_spec(self):
+		email = Email.decode_email("=?utf-8?Q?Jane_Doe?= <jane@example.com>")
+		self.assertIn("jane@example.com", email)
+
+	def test_quotes_in_email_sender(self):
+		content_bytes = rb"""MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: inline
+Content-Transfer-Encoding: 8bit
+To: "\"fail@example.com\" via ABC"  <success@example.com>
+From: "\"fail@example.com\" via DEF"  <success@example.com>
+Reply-To: "\"fail@example.com\" via GHI"  <success@example.com>
+CC: "\"fail@example.com\" via JKL"  <success@example.com>
+"""
+
+		mail = Email(content_bytes)
+		self.assertEqual(mail.from_email, "success@example.com")
+
+		self.assertEqual(mail.from_real_name, "failexamplecom via DEF")
+		# https://github.com/frappe/frappe/pull/3371
+		# self.assertEqual(mail.from_real_name, '"fail@example.com" via DEF')
+
+		email_account = frappe._dict({"email_id": "receive@example.com"})
+		mail = InboundMail(content_bytes, email_account)
+		communication: Communication = mail.process()  # type: ignore
+		self.assertEqual(communication.sender_full_name, "failexamplecom via DEF")
+
+	def test_quotes_in_email_recipients(self):
+		content_bytes = rb"""MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: inline
+Content-Transfer-Encoding: 8bit
+From: "=?utf-8?Q?=F0=9F=98=83?="
+	=?utf-8?Q?=3Ctest=40ex?= =?utf-8?Q?ample=2Eco?= =?utf-8?Q?m=3E?=
+To: =?iso-8859-1?Q?X=E9Y=40example=2Ecom?= <xy@example.com>, "fail@example.com" <success@example.com>
+"""
+
+		# https://ldu2.github.io/rfc2047/
+		email_account = frappe._dict({"email_id": "receive@example.com"})
+		mail = InboundMail(content_bytes, email_account)
+		communication: Communication = mail.process()  # type: ignore
+		self.assertEqual(communication.sender_mailid, "test@example.com")
+		# self.assertEqual(communication.sender_full_name, "😃")
+		# # TODO: Fix get_name_from_email_string to accept non-ASCII chars
+		self.assertEqual(
+			communication.recipients,
+			'XéY@example.com <xy@example.com>, "fail@example.com" <success@example.com>',
+		)
+		frappe.db.rollback()
+
+	def test_plain_text_body_preserves_bare_angle_bracket_address(self):
+		content_bytes = rb"""MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+From: sender@example.com
+To: receive@example.com
+Subject: Plain text body
+
+Please contact John Doe <john.doe@example.com> for details.
+"""
+
+		email_account = frappe._dict({"email_id": "receive@example.com"})
+		mail = InboundMail(content_bytes, email_account)
+		communication: Communication = mail.process()  # type: ignore
+
+		self.assertIn("&lt;john.doe@example.com&gt;", communication.content)
+		self.assertNotIn("<john.doe@example.com>", communication.content)
+		frappe.db.rollback()
+
+	def test_plain_text_body_escapes_rather_than_executes_markup(self):
+		content_bytes = rb"""MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+From: sender@example.com
+To: receive@example.com
+Subject: Plain text body with script
+
+Hello <script>alert(1)</script> world.
+"""
+
+		email_account = frappe._dict({"email_id": "receive@example.com"})
+		mail = InboundMail(content_bytes, email_account)
+		communication: Communication = mail.process()  # type: ignore
+
+		self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", communication.content)
+		self.assertNotIn("<script>", communication.content)
+		frappe.db.rollback()
+
 
 def fixed_column_width(string, chunk_size):
-	parts = [string[0 + i:chunk_size + i] for i in range(0, len(string), chunk_size)]
-	return '\n'.join(parts)
+	parts = [string[0 + i : chunk_size + i] for i in range(0, len(string), chunk_size)]
+	return "\n".join(parts)

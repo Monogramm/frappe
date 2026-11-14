@@ -1,6 +1,9 @@
 {
+ "actions": [],
+ "allow_bulk_edit": 1,
  "creation": "2019-09-03 16:08:21.333698",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/erpnext/awesomebar-global-search",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
@@ -15,7 +18,8 @@
   }
  ],
  "issingle": 1,
- "modified": "2019-10-10 22:05:02.692689",
+ "links": [],
+ "modified": "2026-06-18 19:49:32.063572",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Global Search Settings",
@@ -30,10 +34,16 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Desk User"
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

@@ -1,43 +1,115 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import frappe, json
+import json
+from typing import Any
+
+import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils.jinja import validate_template
-from six import string_types
+
 
 class EmailTemplate(Document):
+	_DOCTYPE_NAME = "Email Template"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		reference_doctype: DF.Link | None
+		response: DF.TextEditor | None
+		response_html: DF.Code | None
+		subject: DF.Data
+		use_html: DF.Check
+	# end: auto-generated types
+
+	@property
+	def response_(self):
+		return self.response_html if self.use_html else self.response
+
 	def validate(self):
-		if self.use_html:
-			validate_template(self.response_html)
-		else:
-			validate_template(self.response)
+		if not self.use_html and not self.response:
+			frappe.throw(
+				_("{0} is required").format(frappe.bold(_(self.meta.get_label("response")))),
+				frappe.MandatoryError,
+			)
+		validate_template(self.subject)
+		validate_template(self.response_)
 
 	def get_formatted_subject(self, doc):
 		return frappe.render_template(self.subject, doc)
 
 	def get_formatted_response(self, doc):
-		if self.use_html:
-			return frappe.render_template(self.response_html, doc)
+		return frappe.render_template(self.response_, doc)
 
-		return frappe.render_template(self.response, doc)
-
-	def get_formatted_email(self, doc):
-		if isinstance(doc, string_types):
+	def get_formatted_email(self, doc, sender=None):
+		if isinstance(doc, str):
 			doc = json.loads(doc)
 
+		if self.use_html:
+			doc = self.inject_email_account(doc, sender)
+
 		return {
-			"subject" : self.get_formatted_subject(doc),
-			"message" : self.get_formatted_response(doc)
+			"subject": self.get_formatted_subject(doc),
+			"message": self.get_formatted_response(doc),
 		}
+
+	def inject_email_account(self, doc, sender=None):
+		from frappe.email.doctype.email_account.email_account import EmailAccount
+		from frappe.email.email_body import get_footer, get_signature
+
+		if sender:
+			kwargs = {"match_by_email": sender}
+		else:
+			kwargs = {"match_by_doctype": doc.get("doctype")}
+
+		if email_account := EmailAccount.find_outgoing(**kwargs):
+			doc.update(
+				{"email_signature": get_signature(email_account), "email_footer": get_footer(email_account)}
+			)
+		return doc
 
 
 @frappe.whitelist()
-def get_email_template(template_name, doc):
-	'''Returns the processed HTML of a email template with the given doc'''
-	if isinstance(doc, string_types):
-		doc = json.loads(doc)
+def get_email_template(template_name: str, doc: str | dict[str, Any], sender: str | None = None):
+	"""Return the processed HTML of a email template with the given doc"""
 
 	email_template = frappe.get_doc("Email Template", template_name)
-	return email_template.get_formatted_email(doc)
+	email_template.check_permission("read")
+	return {**email_template.get_formatted_email(doc, sender=sender), "use_html": email_template.use_html}
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_email_templates(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: dict | str | None = None,
+):
+	"""Search for Email Templates scoped to a DocType or with no DocType assigned."""
+	if isinstance(filters, str):
+		filters = json.loads(filters)
+
+	reference_doctype = (filters or {}).get("reference_doctype", "")
+
+	return frappe.get_list(
+		"Email Template",
+		filters={"name": ("like", f"%{txt}%")},
+		or_filters=[
+			["reference_doctype", "=", reference_doctype],
+			["reference_doctype", "is", "not set"],
+			["reference_doctype", "=", ""],
+		],
+		fields=["name", "reference_doctype"],
+		limit_start=start,
+		limit_page_length=page_len,
+		as_list=True,
+	)

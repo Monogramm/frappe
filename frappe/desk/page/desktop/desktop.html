@@ -1,0 +1,65 @@
+<!-- jinja -->
+<div class="desktop-wrapper">
+    <header class="desktop-navbar navbar-expand navbar-container" role="navigation">
+        <div class="navbar-home">
+            <img
+                id="brand-logo"
+                src="{{ brand_logo |e }}"
+                alt="{{ _("App Logo") |e }}"
+            >
+        </div>
+        <p class="desktop-navbar-title">{{ _("Desktop") }}</p>
+        {% if (show_search_bar) %}
+            <div class="search-widget-wrapper input-group search-bar">
+                <button id="search-widget-button" class="btn-reset search-widget-button"
+                    title="Search">
+                    <span class="search-widget-icon">
+                        <svg class="icon icon-sm">
+                            <use href="#icon-search"></use>
+                        </svg>
+                        {{ _("Search") }}
+                    </span>
+                    <span class="search-widget-shortcut">
+                    </span>
+                </button>
+            </div>
+        {% endif %}
+        <div class="flex" style="gap:16px; align-items: center;">
+            <button
+                class="btn-reset nav-link text-muted desktop-cloud-settings hidden"
+                title="{{ _("Cloud settings") |e }}"
+                aria-label="{{ _("Cloud settings") |e }}"
+            >
+                <svg class="icon icon-md">
+                    <use href="#icon-cloud"></use>
+                </svg>
+            </button>
+            <div class="desktop-notifications">
+                <button class="btn-reset nav-link text-muted desktop-notification-icon" aria-label="{{ _("Notifications") }}">
+                    <svg
+                        class="icon icon-md" aria-hidden="true"
+                    >
+                        <use href="#icon-bell"></use>
+                    </svg>
+                    <span class="notification-count hidden" aria-live="polite"></span>
+                </button>
+            </div>
+            <button class="desktop-avatar btn-reset" aria-label="{{ _('User Menu') }}">
+            </button>
+            </div>
+
+    </header>
+    <div class="desktop-container">
+    </div>
+    <div class="edit-mode-buttons">
+            <button class="discard btn btn-default ellipsis">
+                {{ _("Discard") }}
+            </button>
+            <button class="save btn btn-primary ellipsis">
+                {{ _("Save") }}
+            </button>
+    </div>
+    {% if desktop_layout is defined %}
+        <div class="hidden" id="desktop-layout">{{ desktop_layout |e }}</div>
+    {% endif %}
+</div>

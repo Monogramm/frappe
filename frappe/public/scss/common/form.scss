@@ -1,0 +1,32 @@
+.form-control {
+	border: none;
+	height: var(--input-height);
+	@include get_textstyle("base", "regular");
+	border-radius: var(--radius);
+	padding: var(--input-padding);
+	position: relative;
+}
+
+.form-control.bold {
+	font-weight: var(--weight-medium);
+}
+
+.like-disabled-input {
+	.for-description {
+		@include get_textstyle("sm", "regular");
+	}
+
+	min-height: var(--input-height);
+	border-radius: var(--radius);
+	padding: 4px 8px;
+	line-height: 20px; // 4 + 20 + 4 = --input-height, so a filled box is as tall as an empty one
+	cursor: default;
+	color: var(--disabled-text-color);
+	background-color: var(--disabled-control-bg);
+}
+
+.head-title {
+	font-size: var(--text-xl);
+	font-weight: 700;
+	color: var(--heading-color);
+}

@@ -1,0 +1,5 @@
+{%- if df.get('_barcode_data_uri') -%}
+<div class="field print-barcode{% if df.align %} field-align-{{ df.align }}{% endif %}"{% if df.custom_style %} style="{{ df.custom_style|e }}"{% endif %} {{ field_attributes(df) }}>
+	<img src="{{ df._barcode_data_uri }}" alt="{{ df.barcode_format or 'Barcode' }}" style="{% if df.width %}width: {{ df.width|e }};{% elif df.barcode_format == 'QR' %}width: 35mm;{% endif %}">
+</div>
+{%- endif -%}

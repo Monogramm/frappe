@@ -1,0 +1,7 @@
+{% extends "templates/print_format/macros/Data.html" %}
+
+{%- block value -%}
+<div class="value">
+    {% if value %}<pre{% if _val_style %} style="{{ _val_style|e }}"{% endif %}><code>{{ value|e }}</code></pre>{% endif %}
+</div>
+{%- endblock -%}

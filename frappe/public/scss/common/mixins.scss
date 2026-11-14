@@ -1,9 +1,4 @@
-@mixin flex(
-	$dis: flex,
-	$x: center,
-	$y: center,
-	$dir: row
-) {
+@mixin flex($dis: flex, $x: center, $y: center, $dir: row) {
 	display: $dis;
 	justify-content: $x;
 	align-items: $y;
@@ -11,7 +6,7 @@
 }
 
 @mixin card(
-	$radius: var(--border-radius-md),
+	$radius: var(--radius-md),
 	$shadow: var(--card-shadow),
 	$padding: var(--padding-sm),
 	$background-color: var(--card-bg)
@@ -25,4 +20,25 @@
 @mixin transition($property: all, $duration: 0.2s, $timing-fn: linear) {
 	transition: $property $duration $timing-fn;
 	-webkit-transition: $property $duration $timing-fn;
+}
+
+@mixin img-background() {
+	content: " ";
+	display: block;
+	position: absolute;
+	left: 0;
+	height: calc(100%);
+	width: 100%;
+	background-color: var(--bg-light-gray);
+}
+
+@mixin broken-img(
+	$content: null,
+	$height: 100%,
+	$top: 0,
+	$left: 0,
+	$background-color: var(--bg-color),
+	$border-radius: var(--radius)
+) {
+	// Deprecated: Does not work as expected anymore. Also, this never worked in Safari.
 }

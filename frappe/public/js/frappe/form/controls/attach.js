@@ -1,23 +1,28 @@
-frappe.ui.form.ControlAttach = frappe.ui.form.ControlData.extend({
-	make_input: function() {
-		var me = this;
+frappe.ui.form.ControlAttach = class ControlAttach extends frappe.ui.form.ControlData {
+	make_input() {
+		let me = this;
 		this.$input = $('<button class="btn btn-default btn-sm btn-attach">')
 			.html(__("Attach"))
 			.prependTo(me.input_area)
-			.on("click", function() {
-				me.on_attach_click();
+			.on({
+				click: function () {
+					me.on_attach_click();
+				},
+				attach_doc_image: function () {
+					me.on_attach_doc_image();
+				},
 			});
 		this.$value = $(
 			`<div class="attached-file flex justify-between align-center">
 				<div class="ellipsis">
-					<i class="fa fa-paperclip"></i>
+				${frappe.utils.icon("link", "sm")}
 					<a class="attached-file-link" target="_blank"></a>
 				</div>
-				<div>
-					<a class="btn btn-xs btn-default" data-action="reload_attachment">${__('Reload File')}</a>
-					<a class="btn btn-xs btn-default" data-action="clear_attachment">${__('Clear')}</a>
+				<div class="flex" style="align-items: center">
+					<a class="btn btn-xs btn-default" data-action="clear_attachment">${__("Clear")}</a>
 				</div>
-			</div>`)
+			</div>`
+		)
 			.prependTo(me.input_area)
 			.toggle(false);
 		this.input = this.$input.get(0);
@@ -25,89 +30,145 @@ frappe.ui.form.ControlAttach = frappe.ui.form.ControlData.extend({
 		this.has_input = true;
 
 		frappe.utils.bind_actions_with_object(this.$value, this);
-		this.toggle_reload_button();
-	},
-	clear_attachment: function() {
-		var me = this;
-		if(this.frm) {
-			me.parse_validate_and_set_in_model(null);
-			me.refresh();
-			me.frm.attachments.remove_attachment_by_filename(me.value, function() {
+	}
+	clear_attachment() {
+		let me = this;
+		const message = __("Are you sure you want to delete the attachment?");
+		const dialog = frappe.confirm(message, function () {
+			if (me.frm) {
+				let file_url = me.value || me.get_model_value();
+				me.parse_validate_and_set_in_model(null).then(() => {
+					me.refresh();
+					if (!me.frm.is_new()) {
+						me.save_form(() => {
+							if (!me.frm.is_dirty()) {
+								me.frm.attachments.remove_attachment_by_filename(file_url);
+							}
+						});
+					}
+				});
+			} else {
+				me.dataurl = null;
+				me.fileobj = null;
+				me.set_input(null);
 				me.parse_validate_and_set_in_model(null);
 				me.refresh();
-				me.frm.doc.docstatus == 1 ? me.frm.save('Update') : me.frm.save();
-			});
-		} else {
-			this.dataurl = null;
-			this.fileobj = null;
-			this.set_input(null);
-			this.parse_validate_and_set_in_model(null);
-			this.refresh();
-		}
-	},
-	reload_attachment() {
-		if (this.file_uploader) {
-			this.file_uploader.uploader.upload_files();
-		}
-	},
+			}
+		});
+		dialog.keep_grid_form_open = true;
+	}
 	on_attach_click() {
 		this.set_upload_options();
 		this.file_uploader = new frappe.ui.FileUploader(this.upload_options);
-	},
+	}
+	on_attach_doc_image() {
+		this.set_upload_options();
+		this.upload_options.restrictions.allowed_file_types = [
+			"image/jpeg",
+			"image/png",
+			"image/gif",
+			"image/webp",
+			"image/svg+xml",
+			"image/avif",
+			"image/bmp",
+			"image/x-icon",
+		];
+		this.file_uploader = new frappe.ui.FileUploader(this.upload_options);
+	}
 	set_upload_options() {
 		let options = {
 			allow_multiple: false,
-			on_success: file => {
+			on_success: (file) => {
 				this.on_upload_complete(file);
-				this.toggle_reload_button();
-			}
+			},
+			restrictions: {},
 		};
 
 		if (this.frm) {
 			options.doctype = this.frm.doctype;
 			options.docname = this.frm.docname;
 			options.fieldname = this.df.fieldname;
+			options.field_doctype = this.doctype;
+			options.keep_grid_form_open = true;
+			options.make_attachments_public = this.df.make_attachment_public
+				? 1
+				: this.frm.meta.make_attachments_public;
 		}
 
 		if (this.df.options) {
 			Object.assign(options, this.df.options);
 		}
 		this.upload_options = options;
-	},
+	}
 
-	set_input: function(value, dataurl) {
+	set_input(value, dataurl) {
+		this.last_value = this.value;
 		this.value = value;
-		if(this.value) {
-			this.$input.toggle(false);
-			if(this.value.indexOf(",")!==-1) {
-				var parts = this.value.split(",");
-				var filename = parts[0];
-				dataurl = parts[1];
+		if (this.value) {
+			// value can also be using this format: FILENAME,DATA_URL
+			// Important: We have to be careful because normal filenames may also contain ","
+			let file_url_parts = this.value.match(/^([^:]+),(.+):(.+)$/);
+			let filename;
+			if (file_url_parts) {
+				filename = file_url_parts[1];
+				dataurl = file_url_parts[2] + ":" + file_url_parts[3];
 			}
-			this.$value.toggle(true).find(".attached-file-link")
-				.html(filename || this.value)
-				.attr("href", dataurl || this.value);
+			let href = dataurl || this.value;
+			if (frappe.utils.has_unsafe_url_scheme(href)) href = null;
+			if (this.$input && this.$value) {
+				this.$input.toggle(false);
+				this.$value
+					.toggle(true)
+					.find(".attached-file-link")
+					.text(filename || this.value)
+					.attr("href", href);
+			} else {
+				this.$wrapper.html(`
+					<div class="attached-file flex justify-between align-center">
+						<div class="ellipsis">
+							<a target="_blank"></a>
+						</div>
+					</div>
+				`);
+				this.$wrapper
+					.find("a")
+					.text(filename || this.value)
+					.attr("href", href);
+			}
 		} else {
-			this.$input.toggle(true);
-			this.$value.toggle(false);
+			this.$input?.toggle(true);
+			this.$value?.toggle(false);
 		}
-	},
+	}
 
-	get_value: function() {
+	get_value() {
 		return this.value || null;
-	},
+	}
 
-	on_upload_complete: function(attachment) {
-		if(this.frm) {
-			this.parse_validate_and_set_in_model(attachment.file_url);
+	async on_upload_complete(attachment) {
+		if (this.frm) {
+			await this.parse_validate_and_set_in_model(attachment.file_url);
 			this.frm.attachments.update_attachment(attachment);
-			this.frm.doc.docstatus == 1 ? this.frm.save('Update') : this.frm.save();
+			if (!this.frm.is_new() && this.frm.is_dirty()) {
+				this.save_form();
+			}
 		}
 		this.set_value(attachment.file_url);
-	},
-
-	toggle_reload_button() {
-		this.$value.find('[data-action="reload_attachment"]')
-			.toggle(this.file_uploader && this.file_uploader.uploader.files.length > 0);
 	}
-});
+
+	save_form(callback) {
+		const open_row = this.frm.open_grid_row();
+		const in_open_row = open_row?.doc === this.doc;
+		this.frm.save(this.frm.doc.docstatus == 1 ? "Update" : "Save", (r) => {
+			if (in_open_row && !r.exc) {
+				const { grid, doc } = open_row;
+				// a new row is renamed on save, so fall back to its position
+				const row =
+					grid.get_row(doc.name) ??
+					grid.grid_rows.find((grid_row) => grid_row.doc.idx === doc.idx);
+				row?.toggle_view(true);
+			}
+			callback?.(r);
+		});
+	}
+};

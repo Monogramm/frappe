@@ -1,11 +1,18 @@
 import frappe
 
-@frappe.whitelist()
-def get_print_settings_to_show(doctype, docname):
-	doc = frappe.get_doc(doctype, docname)
-	print_settings = frappe.get_single('Print Settings')
 
-	if hasattr(doc, 'get_print_settings'):
+@frappe.whitelist()
+def get_print_styles():
+	return frappe.get_all("Print Style", filters={"disabled": 0}, pluck="name", order_by="creation asc")
+
+
+@frappe.whitelist()
+def get_print_settings_to_show(doctype: str, docname: str):
+	doc = frappe.get_doc(doctype, docname)
+	doc.check_permission("read")
+	print_settings = frappe.get_single("Print Settings")
+
+	if hasattr(doc, "get_print_settings"):
 		fields = doc.get_print_settings() or []
 	else:
 		return []
@@ -13,6 +20,8 @@ def get_print_settings_to_show(doctype, docname):
 	print_settings_fields = []
 	for fieldname in fields:
 		df = print_settings.meta.get_field(fieldname)
+		if not df:
+			continue
 		df.default = print_settings.get(fieldname)
 		print_settings_fields.append(df)
 

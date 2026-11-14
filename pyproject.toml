@@ -1,0 +1,317 @@
+[project]
+name = "frappe"
+authors = [
+    { name = "Frappe Technologies Pvt Ltd", email = "developers@frappe.io"}
+]
+description = "Metadata driven, full-stack low code web framework"
+requires-python = ">=3.14,<3.15"
+readme = "README.md"
+license = "MIT"
+dynamic = ["version"]
+dependencies = [
+    # core dependencies
+    "Babel~=2.18.0",
+    "Click~=8.5.0",
+    "filelock~=4.2.4",
+    "filetype~=1.2.0",
+    "GitPython~=3.2.0",
+    "Jinja2~=3.1.6",
+    "Pillow~=13.0.0",
+    "plutoprint~=0.22.0; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'darwin' and platform_machine == 'arm64') or sys_platform == 'win32'",
+    "PyJWT~=2.15.1",
+    "duckdb~=1.4.3",
+    "pyarrow~=26.0.0",
+    # We depend on internal attributes,
+    # do NOT add loose requirements on PyMySQL versions.
+    "PyMySQL==1.1.2",
+    "pypdf==6.21.4",
+    "PyPika @ git+https://github.com/frappe/pypika@054ffb18a0a60f3c3f472dcce86116fd86db1188",
+    "mysqlclient==2.3.0",
+    "PyQRCode~=1.2.1",
+    "python-barcode~=0.16.1",
+    "PyYAML~=6.0.3",
+    "RestrictedPython~=8.5",
+    "packaging>=24.2",
+    "Werkzeug==3.1.9",
+    "beautifulsoup4~=4.15.0",
+    "bleach-allowlist~=1.0.3",
+    "chardet~=7.6.0",
+    "croniter~=6.2.4",
+    "cryptography~=50.0.2",
+    "cssutils~=2.15.0",
+    "email-reply-parser~=0.5.12",
+    "Faker~=40.43.0",
+    "gunicorn @ git+https://github.com/frappe/gunicorn@f189de0ec3143581d8826f707343fa36c3fb0184",
+    "html5lib~=1.1",
+    "ipython~=9.17.1",
+    "ldap3~=2.9.1",
+    "markdown2~=2.5.5",
+    "MarkupSafe~=3.0.4",
+    "nh3~=0.3.7",
+    "num2words~=0.5.14",
+    "oauthlib~=4.0.0",
+    "openpyxl~=3.1.5",
+    "xlsxwriter~=3.2.9",
+    "orjson~=3.13.0",
+    "passlib~=1.7.4",
+    "phonenumbers~=9.0.41",
+    "premailer~=3.10.0",
+    "psutil~=7.2.2",
+    "psycopg[binary]~=3.3.6",
+    "pyOpenSSL~=26.4.0",
+    "pydantic~=2.14.1",
+    "pyotp~=2.10.0",
+    "python-dateutil~=2.9.0.post0",
+    "pytz==2026.5",
+    "rauth~=0.7.3",
+    "redis~=7.4.1",
+    "hiredis~=3.4.2",
+    "requests-oauthlib~=2.0.0",
+    "requests~=2.34.2",
+    # We depend on internal attributes of RQ.
+    # Do NOT add loose requirements on RQ versions.
+    # Audit the code changes w.r.t. background_jobs.py before updating.
+    "rq==2.6.1",
+    "rsa~=4.9.1",
+    "semantic-version~=2.10.0",
+    "sentry-sdk~=2.72.0",
+    "sqlglot~=30.22.0",
+    "sqlparse~=0.6.0",
+    "sql_metadata~=3.0.1",
+    "tenacity~=9.2.1",
+    "terminaltables~=3.1.10",
+    "traceback-with-variables~=2.2.1",
+    "typst~=0.15.0",
+    "typing_extensions>=4.15.0,<5",
+    "tzdata~=2026.5",
+    "xlrd~=2.0.2",
+    "zxcvbn~=4.5.0",
+    "markdownify~=1.2.3",
+    # studio
+    "litellm==1.103.2",
+    "json_repair~=0.59",
+    # flow
+    "frappe-flow==0.1.27",
+    "lancedb~=0.33",
+    "onnxruntime~=1.27",
+    "pdfplumber~=0.11",
+    "python-docx~=1.1",
+    "rapidocr~=3.0",
+    # integration dependencies
+    "google-api-python-client~=2.201.0",
+    "google-auth-oauthlib~=1.5.0",
+    "google-auth~=2.62.0",
+    "vobject~=0.9.9",
+    "pycountry~=26.2.16",
+    "websockets~=17.2",
+    # realtime (Python Socket.IO server) — speaks Socket.IO v5 / Engine.IO v4,
+    # wire-compatible with the browser's socket.io-client ^4.7.1.
+    # Pin exact versions after a manual handshake check (polling + websocket upgrade).
+    "python-socketio~=5.17.0",
+    "python-engineio~=4.14.0",
+    # ASGI server for the realtime process.
+    "uvicorn~=0.54.0",
+    "a2wsgi~=1.10.10",
+    # async HTTP client for the realtime connect/auth path.
+    "httpx~=0.28.1",
+]
+
+[project.urls]
+Homepage = "https://frappe.io/framework"
+Repository = "https://github.com/frappe/frappe.git"
+Documentation = "https://docs.frappe.io/framework"
+"Bug Reports" = "https://github.com/frappe/frappe/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pyperf==2.10.0",
+    "pyngrok~=8.1.2",
+    "watchdog~=6.0.0",
+    "responses==0.26.3",
+    # typechecking
+    "basedmypy",
+    "types-PyMySQL",
+    "types-PyYAML",
+    "types-Pygments",
+    "types-beautifulsoup4",
+    "types-cffi",
+    "types-colorama",
+    "types-croniter",
+    "types-decorator",
+    "types-ldap3",
+    "types-oauthlib",
+    "types-openpyxl",
+    "types-passlib",
+    "types-psutil",
+    "types-python-dateutil",
+    "types-pytz",
+    "types-requests",
+    "types-six",
+    "types-vobject",
+    "types-zxcvbn",
+]
+test = [
+    "unittest-xml-reporting~=4.0.0",
+    "coverage~=7.14.1",
+    "hypothesis~=6.155.2",
+    "freezegun~=1.5.1",
+]
+
+[build-system]
+requires = ["flit_core >=3.12,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.frappe.testing.function_type_validation]
+max_module_depth = 0
+skip_namespaces = [
+    "frappe.deprecation_dumpster",
+    "frappe.utils.typing_validations",
+]
+
+[tool.bench.dev-dependencies]
+coverage = "~=7.14.1"
+pyperf = "==2.8.1"
+pyngrok = "~=8.1.2"
+unittest-xml-reporting = "~=4.0.0"
+watchdog = "~=6.0.0"
+hypothesis = "~=6.155.2"
+responses = "==0.23.1"
+freezegun = "~=1.5.5"
+spdx-tools = "~=0.8.5"
+
+# flow: for OpenCV, which rapidocr installs
+[deploy.dependencies.apt]
+packages = ["libgl1", "libglib2.0-0"]
+
+[tool.pilot.processes.flow_server]
+frappe_command = ["flow-server", "serve"]
+env = { FLOW_SERVER_MANAGER = "supervisor" }
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+exclude = [
+    "**/doctype/*/boilerplate/*.py" # boilerplate are template strings, not valid python
+]
+
+[tool.ruff.lint]
+select = [
+    "F",
+    "E",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "RUF",
+]
+ignore = [
+    "B017", # assertRaises(Exception) - should be more specific
+    "B018", # useless expression, not assigned to anything
+    "B023", # function doesn't bind loop variable - will have last iteration's value
+    "B904", # raise inside except without from
+    "E101", # indentation contains mixed spaces and tabs
+    "E402", # module level import not at top of file
+    "E501", # line too long
+    "E741", # ambiguous variable name
+    "F401", # "unused" imports
+    "F403", # can't detect undefined names from * import
+    "F405", # can't detect undefined names from * import
+    "F722", # syntax error in forward type annotation
+    "W191", # indentation contains tabs
+    "UP030", # Use implicit references for positional format fields (translations)
+    "UP031", # Use format specifiers instead of percent format
+    "UP032", # Use f-string instead of `format` call (translations)
+    "UP037", # quoted annotations
+    "UP040", # Use type aliases instead of type annotations
+]
+typing-modules = ["frappe.types.DF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"
+docstring-code-format = true
+
+[tool.frappix]
+# use identifier from https://search.nixos.org/packages
+nixpkgs-deps = [
+    "mariadb",
+    "restic",
+    "which",
+    "gzip",
+    "bash",
+    "redis",
+    "nodejs_20",
+    "python312",
+]
+
+[tool.uv]
+exclude-newer = "7 days"
+exclude-newer-package = { pypdf = false, filelock = false } # drop pypdf after 2026-11-04, filelock after 2026-11-10
+
+[tool.uv.sources]
+# Installs through uv (bench, Pilot) take the harness from this checkout, so it ships with frappe. pip installs and frappe's wheel still take the PyPI pin above.
+frappe-flow = { path = "flow/harness", editable = true }
+
+[tool.mypy]
+strict = false
+pretty = true
+incremental = true
+sqlite_cache = true
+files = [
+    # start small, with a lot of multiplication potential
+    "frappe/types/__init__.py",
+    "frappe/types/DF.py",
+    "frappe/types/frappedict.py",
+    "frappe/types/filter.py",
+]
+exclude = [
+    # permanent excludes
+    "^frappe/patches",
+    '/test_.+\.py$',
+    "^frappe/tests/ui_test_helpers.py",
+    "^frappe/parallel_test_runner.py",
+    "^frappe/deprecation_dumpster.py",
+]
+disable_error_code = [
+]
+
+[[tool.mypy.overrides]]
+module = "frappe"
+# Too many for a start
+disable_error_code = [
+    "no-any-expr",
+    "no-untyped-def",
+    "no-untyped-call",
+    "no-untyped-usage",
+]
+
+# External libraries without types
+[[tool.mypy.overrides]]
+module = [
+    "bleach_allowlist",
+    "cssutils",
+    "cups",
+    "email_reply_parser",
+    "filetype",
+    "google",
+    "googleapiclient.discovery",
+    "googleapiclient.errors",
+    "google.oauth2",
+    "google.oauth2.credentials",
+    "markdown2",
+    "num2words",
+    "premailer",
+    "pyngrok",
+    "pyqrcode",
+    "rauth",
+    "requests_oauthlib",
+    "RestrictedPython",
+    "RestrictedPython.Guards",
+    "RestrictedPython.transformer",
+    "semantic_version",
+    "terminaltables",
+    "traceback_with_variables",
+    "xlrd",
+    "xmlrunner",
+]
+ignore_missing_imports = true

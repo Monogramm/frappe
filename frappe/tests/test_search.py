@@ -1,84 +1,1540 @@
-# Copyright (c) 2018, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import unittest
+import re
+from contextlib import contextmanager
+from functools import partial
+from typing import Any
+from unittest.mock import patch
+
 import frappe
-from frappe.desk.search import search_link
-from frappe.desk.search import search_widget
+from frappe.core.doctype.doctype.test_doctype import new_doctype
+from frappe.desk.link_title import get_report_link_titles
+from frappe.desk.search import (
+	awesomebar_search,
+	get_link_title,
+	get_names_for_mentions,
+	like_contains,
+	search_link,
+	search_widget,
+)
+from frappe.permissions import add_user_permission
+from frappe.tests import IntegrationTestCase
+from frappe.tests.utils import whitelist_for_tests
 
-class TestSearch(unittest.TestCase):
+
+class TestSearch(IntegrationTestCase):
+	def setUp(self):
+		if self._testMethodName == "test_link_field_order":
+			setup_test_link_field_order(self)
+			self.addCleanup(teardown_test_link_field_order, self)
+
 	def test_search_field_sanitizer(self):
-		# pass
-		search_link('DocType', 'User', query=None, filters=None, page_length=20, searchfield='name')
-		result = frappe.response['results'][0]
-		self.assertTrue('User' in result['value'])
+		results = search_link("DocType", "User", query=None, filters=None, page_length=20, searchfield="name")
+		self.assertTrue("User" in results[0]["value"])
 
-		#raise exception on injection
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield='1=1')
+		# raise exception on injection
+		for searchfield in (
+			"1=1",
+			"select * from tabSessions) --",
+			"name or (select * from tabSessions)",
+			"*",
+			";",
+			"select`sid`from`tabSessions`",
+		):
+			self.assertRaises(
+				frappe.DataError,
+				search_link,
+				"DocType",
+				"User",
+				query=None,
+				filters=None,
+				page_length=20,
+				searchfield=searchfield,
+			)
 
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield='select * from tabSessions) --')
+	def test_only_enabled_in_mention(self):
+		email = "test_disabled_user_in_mentions@example.com"
+		frappe.delete_doc("User", email)
+		if not frappe.db.exists("User", email):
+			user = frappe.new_doc("User")
+			user.update(
+				{
+					"email": email,
+					"first_name": email.split("@", 1)[0],
+					"enabled": False,
+					"allowed_in_mentions": True,
+				}
+			)
+			# saved when roles are added
+			user.add_roles(
+				"System Manager",
+			)
 
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield='name or (select * from tabSessions)')
+		names_for_mention = [
+			user.get("id") for user in get_names_for_mentions("test_disabled_user_in_mentions")
+		]
+		self.assertNotIn(email, names_for_mention)
 
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield='*')
+	def test_allowed_in_mentions_cache_invalidation(self):
+		email = "test_allowed_in_mentions@example.com"
+		frappe.delete_doc("User", email, ignore_missing=True)
 
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield=';')
+		user = frappe.new_doc("User")
+		user.update(
+			{
+				"email": email,
+				"first_name": email.split("@", 1)[0],
+				"enabled": True,
+				"allowed_in_mentions": True,
+			}
+		)
+		# saved when roles are added
+		user.add_roles("System Manager")
 
-		self.assertRaises(frappe.DataError,
-			search_link, 'DocType', 'Customer', query=None, filters=None,
-			page_length=20, searchfield=';')
+		# Populate the users_for_mentions cache.
+		names_for_mention = [user.get("id") for user in get_names_for_mentions("test_allowed_in_mentions")]
+		self.assertIn(email, names_for_mention)
 
-	#Search for the word "pay", part of the word "pays" (country) in french.
+		# Changing Allowed In Mentions should invalidate the cache.
+		user.allowed_in_mentions = False
+		user.save()
+
+		names_for_mention = [user.get("id") for user in get_names_for_mentions("test_allowed_in_mentions")]
+		self.assertNotIn(email, names_for_mention)
+
+		frappe.delete_doc("User", email)
+
+	def test_search_link_start_paginates(self):
+		# a plain doctype; translated ones are paged differently (see below)
+		doctype = new_doctype(autoname="field:some_fieldname").insert()
+		self.addCleanup(doctype.delete)
+		for i in range(12):
+			frappe.get_doc({"doctype": doctype.name, "some_fieldname": f"Row {i:02d}"}).insert()
+
+		first = search_link(doctype=doctype.name, txt="", page_length=5)
+		second = search_link(doctype=doctype.name, txt="", page_length=5, start=5)
+		self.assertEqual(len(first), 5)
+		self.assertEqual(len(second), 5)
+		self.assertFalse({r["value"] for r in first} & {r["value"] for r in second})
+
+		# only membership: with search text each page would be relevance-sorted on its own
+		both = search_link(doctype=doctype.name, txt="", page_length=10)
+		self.assertEqual({r["value"] for r in both}, {r["value"] for r in first + second})
+
+		self.assertEqual(search_link(doctype=doctype.name, txt="", page_length=5, start=50), [])
+
+		# keep_order: pages in database order, still disjoint and complete
+		kept = [
+			search_link(doctype=doctype.name, txt="", page_length=5, start=s, keep_order=True)
+			for s in (0, 5, 10)
+		]
+		self.assertEqual([len(page) for page in kept], [5, 5, 2])
+		# 12 distinct names across pages of 5 + 5 + 2: disjoint, and nothing missed
+		self.assertEqual(
+			{r["value"] for page in kept for r in page},
+			{f"Row {i:02d}" for i in range(12)},
+		)
+
+	def test_search_link_pages_translated_doctypes(self):
+		# DocType is a translated doctype, paged in Python after an unlimited query
+		first = search_link("DocType", "", page_length=10)
+		second = search_link("DocType", "", page_length=10, start=10)
+		self.assertEqual(len(first), 10)
+		self.assertEqual(len(second), 10)
+		self.assertFalse({r["value"] for r in first} & {r["value"] for r in second})
+		# later pages ask to keep order; the whole list is paged in one order, so they still match
+		self.assertEqual(search_link("DocType", "", page_length=10, start=10, keep_order=True), second)
+		self.assertEqual(search_link("DocType", "", page_length=20)[10:], second)
+
+	def test_search_link_include_image(self):
+		frappe.db.set_value("User", "Administrator", "user_image", "/files/admin.png")
+		self.addCleanup(frappe.db.set_value, "User", "Administrator", "user_image", None)
+
+		rows = search_link(doctype="User", txt="Administrator", include_image=True)
+		admin = next(r for r in rows if r["value"] == "Administrator")
+		self.assertEqual(admin["image"], "/files/admin.png")
+		self.assertNotIn("admin.png", admin["description"])
+
+		rows = search_link(doctype="User", txt="Administrator")
+		admin = next(r for r in rows if r["value"] == "Administrator")
+		self.assertNotIn("image", admin)
+
+		# Role has no image_field
+		rows = search_link(doctype="Role", txt="System Manager", include_image=True)
+		self.assertTrue(rows)
+		self.assertNotIn("image", rows[0])
+
+	def test_search_link_images_only_from_records_the_user_can_read(self):
+		from frappe.desk.search import add_images
+
+		frappe.db.set_value("User", "Administrator", "user_image", "/files/admin.png")
+		self.addCleanup(frappe.db.set_value, "User", "Administrator", "user_image", None)
+
+		test_user = "test_search_image_user@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": test_user,
+					"first_name": "Test Search Image User",
+					"user_type": "System User",
+				}
+			).insert(ignore_permissions=True).add_roles("System Manager")
+			self.addCleanup(lambda: frappe.delete_doc("User", test_user, force=True))
+		add_user_permission("User", test_user, test_user)
+		self.addCleanup(lambda: frappe.db.delete("User Permission", {"user": test_user}))
+
+		# a Link field that ignores User Permissions can list Administrator, but not its image
+		rows = [{"value": "Administrator"}, {"value": test_user}]
+		with self.set_user(test_user):
+			add_images(rows, "User")
+		self.assertNotIn("image", rows[0])
+
+	def test_image_field_behind_a_permlevel_is_not_returned(self):
+		from frappe.desk.search import get_image_field
+
+		# the user reads the record but not the image's permlevel
+		doctype, user = self.make_image_doctype(read=1, image_permlevel=1)
+		with self.set_user(user):
+			self.assertIsNone(get_image_field(doctype))
+		self.assertEqual(get_image_field(doctype), "image")
+
+	def test_image_field_needs_read_access(self):
+		from frappe.desk.search import get_image_field
+
+		# select-only access covers the search fields, not the image
+		doctype, user = self.make_image_doctype(read=0)
+		with self.set_user(user):
+			self.assertIsNone(get_image_field(doctype))
+		self.assertEqual(get_image_field(doctype), "image")
+
+	def test_boot_link_settings_skip_disabled_apps(self):
+		from frappe.boot import get_link_settings
+
+		original = frappe.db.get_value("DocType", "Role", "link_display_mode")
+		self.addCleanup(frappe.db.set_value, "DocType", "Role", "link_display_mode", original)
+		frappe.db.set_value("DocType", "Role", "link_display_mode", "Search")
+		ps = frappe.get_doc(
+			{
+				"doctype": "Property Setter",
+				"doctype_or_field": "DocType",
+				"doc_type": "Role",
+				"property": "link_display_mode",
+				"property_type": "Select",
+				"value": "Select",
+			}
+		).insert()
+		self.addCleanup(ps.delete)
+		frappe.db.set_value("Property Setter", ps.name, "is_app_disabled", 1)
+
+		# a disabled app's setting is skipped while disabled apps are hidden, as Meta does
+		with patch("frappe.app_state.is_disabled_app_filtering_active", return_value=True):
+			self.assertNotIn("Role", get_link_settings())
+		with patch("frappe.app_state.is_disabled_app_filtering_active", return_value=False):
+			self.assertEqual(get_link_settings()["Role"], {"display_mode": "Select"})
+
+	def test_boot_link_settings(self):
+		from frappe.boot import get_link_settings
+
+		# start from the default whatever the site has set
+		original = frappe.db.get_value("DocType", "Role", "link_display_mode")
+		self.addCleanup(frappe.db.set_value, "DocType", "Role", "link_display_mode", original)
+		frappe.db.set_value("DocType", "Role", "link_display_mode", "Search")
+		self.assertNotIn("Role", get_link_settings())
+
+		frappe.db.set_value("DocType", "Role", "link_display_mode", "Select")
+		self.assertEqual(get_link_settings()["Role"], {"display_mode": "Select"})
+
+		# Customize Form (a Property Setter) wins over the DocType's own value
+		ps = frappe.get_doc(
+			{
+				"doctype": "Property Setter",
+				"doctype_or_field": "DocType",
+				"doc_type": "Role",
+				"property": "link_display_mode",
+				"property_type": "Select",
+				"value": "Search",
+			}
+		).insert()
+		self.addCleanup(ps.delete)
+		self.assertNotIn("Role", get_link_settings())
+
+		# Role has no image_field, so its flag is dropped
+		original_image = frappe.db.get_value("DocType", "User", "show_image_in_link")
+		self.addCleanup(frappe.db.set_value, "DocType", "User", "show_image_in_link", original_image)
+		frappe.db.set_value("DocType", "User", "show_image_in_link", 1)
+		self.assertEqual(get_link_settings()["User"], {"image_field": "user_image"})
+		frappe.db.set_value("DocType", "Role", "show_image_in_link", 1)
+		self.addCleanup(frappe.db.set_value, "DocType", "Role", "show_image_in_link", 0)
+		self.assertNotIn("Role", get_link_settings())
+
+		# a Property Setter turning images off wins over the DocType flag
+		ps_image = frappe.get_doc(
+			{
+				"doctype": "Property Setter",
+				"doctype_or_field": "DocType",
+				"doc_type": "User",
+				"property": "show_image_in_link",
+				"property_type": "Check",
+				"value": "0",
+			}
+		).insert()
+		self.addCleanup(ps_image.delete)
+		self.assertNotIn("User", get_link_settings())
+
+		# a Property Setter left behind by a deleted DocType is ignored
+		orphan = frappe.get_doc(
+			{
+				"doctype": "Property Setter",
+				"doctype_or_field": "DocType",
+				"doc_type": "Gone DocType For Link Settings",
+				"property": "link_display_mode",
+				"property_type": "Select",
+				"value": "Select",
+			}
+		).insert(ignore_links=True)
+		self.addCleanup(orphan.delete)
+		self.assertNotIn("Gone DocType For Link Settings", get_link_settings())
+
+	def test_link_field_order(self):
+		# Making a request to the search_link with the tree doctype
+		results = search_link(
+			doctype=self.tree_doctype_name,
+			txt="all",
+			query=None,
+			filters=None,
+			page_length=20,
+			searchfield=None,
+		)
+
+		# Check whether the result is sorted or not
+		self.assertEqual(self.parent_doctype_name, results[0]["value"])
+
+		# Check whether searching for parent also list out children
+		self.assertEqual(len(results), len(self.child_doctypes_names) + 1)
+
 	def test_link_search_in_foreign_language(self):
-		try:
-			frappe.local.lang = 'fr'
-			search_widget(doctype="DocType", txt="pay", page_length=20)
-			output = frappe.response["values"]
+		with custom_translation("fr", "Country", "Pays"), use_language("fr"):
+			output = search_widget(doctype="DocType", txt="pay", page_length=20)
+			results = [result[0] for result in output]
+			self.assertIn(
+				"Country", results, "Search results for 'pay' in French should include 'Country' ('Pays')"
+			)
 
-			result = [['found' for x in y if x=="Country"] for y in output]
-			self.assertTrue(['found'] in result)
-		finally:
-			frappe.local.lang = 'en'
+	def test_doctype_search_in_foreign_language(self):
+		def do_search(txt: str):
+			results = search_link(
+				doctype="DocType",
+				txt=txt,
+				query="frappe.core.report.permitted_documents_for_user.permitted_documents_for_user.query_doctypes",
+				filters={"user": "Administrator"},
+				page_length=20,
+				searchfield=None,
+			)
+			return [x["value"] for x in results]
+
+		self.assertIn("User", do_search("user"))
+
+		with custom_translation("fr", "User", "Utilisateur"), use_language("fr"):
+			self.assertIn(
+				"User",
+				do_search("utilisateur"),
+				"Search results for 'utilisateur' in French should include 'User' ('Utilisateur')",
+			)
+
+		with custom_translation("de", "User", "Nutzer"), use_language("de"):
+			self.assertIn(
+				"User",
+				do_search("nutzer"),
+				"Search results for 'nutzer' in German should include 'User' ('Nutzer')",
+			)
+
+	def test_translated_doctype_search_pagination(self):
+		# non matching records are stored first, so an offset applied before the translated
+		# filtering would eat into them instead of into the matches
+		titles = [f"Harbour Freight Terminal {i:02d}" for i in range(1, 7)]
+		titles += [f"Northwind Depot {i:02d}" for i in range(1, 10)]
+		doctype = self.make_translated_search_doctype([{"title": title} for title in titles])
+
+		expected = [title for title in titles if "Depot" in title]
+
+		with self.as_search_reader():
+			for query in (None, "frappe.tests.test_search.paginated_query"):
+				with self.subTest(query=query):
+					pages = [
+						[
+							result[0]
+							for result in search_widget(
+								doctype=doctype, txt="Depot", query=query, start=start, page_length=3
+							)
+						]
+						for start in (0, 3, 6, 9)
+					]
+
+					self.assertEqual(pages, [expected[0:3], expected[3:6], expected[6:9], []])
+
+	def test_translated_doctype_search_treats_percent_as_wildcard(self):
+		doctype = self.make_translated_search_doctype(
+			[{"title": "Copper Mesh"}, {"title": "Cast Hinge"}, {"title": "Hinge Cast"}]
+		)
+
+		with self.as_search_reader():
+			results = search_widget(doctype=doctype, txt="c%s%h")
+			self.assertEqual(sorted(result[0] for result in results), ["Cast Hinge", "Copper Mesh"])
+
+			# `_` matches any one character, as in LIKE
+			results = search_widget(doctype=doctype, txt="c_st h")
+			self.assertEqual([result[0] for result in results], ["Cast Hinge"])
+
+	def test_like_contains_does_not_backtrack(self):
+		# a regex built from many `%`s backtracks for seconds on a value like this one
+		self.assertFalse(like_contains("a" * 200, "a%" * 40 + "b"))
+		self.assertTrue(like_contains("Cast Hinge", "C%H"))
+
+	def test_translated_doctype_search_matches_only_search_fields(self):
+		doctype = self.make_translated_search_doctype(
+			[
+				{"title": "Granite Block", "category": "Stone"},
+				{"title": "Oak Plank", "category": "Wood", "notes": "Stone finish"},
+			]
+		)
+
+		with self.as_search_reader():
+			# notes is only displayed, so it must not be matched
+			results = search_widget(doctype=doctype, txt="stone", filter_fields=["notes"], as_dict=True)
+			self.assertEqual([result.name for result in results], ["Granite Block"])
+
+	def test_translated_doctype_search_pages_in_sql_order(self):
+		doctype = self.make_translated_search_doctype(
+			[
+				{"title": "Depot Alpha"},
+				{"title": "Depot Bravo"},
+				{"title": "Depot Charlie"},
+				{"title": "Old Depot"},
+				{"title": "Depot Zulu"},
+			]
+		)
+		# most linked, so these come first among rows that match equally early
+		frappe.db.set_value(doctype, "Old Depot", "idx", 50)
+		frappe.db.set_value(doctype, "Depot Zulu", "idx", 10)
+
+		with self.as_search_reader():
+			pages = [
+				[
+					result[0]
+					for result in search_widget(doctype=doctype, txt="depot", start=start, page_length=2)
+				]
+				for start in (0, 2, 4)
+			]
+			self.assertEqual(
+				pages, [["Depot Alpha", "Depot Zulu"], ["Depot Bravo", "Depot Charlie"], ["Old Depot"]]
+			)
+
+	def test_translated_doctype_custom_query_matches_value_in_query_order(self):
+		doctype = self.make_translated_search_doctype(
+			[
+				{"title": "Depot Alpha", "category": "Box"},
+				{"title": "Box Depot", "category": "Crate"},
+				{"title": "Crate Store", "category": "Box"},
+				{"title": "Depot Zulu", "category": "Box"},
+			]
+		)
+		query = "frappe.tests.test_search.category_query"
+
+		with self.as_search_reader():
+			# only the value column is matched, in the query's order (Z to A), then paged
+			pages = [
+				[
+					row[0]
+					for row in search_widget(
+						doctype=doctype, txt="box", query=query, start=start, page_length=1
+					)
+				]
+				for start in (0, 1)
+			]
+			self.assertEqual(pages, [["Box Depot"], []])
+
+			results = search_widget(doctype=doctype, txt="depot", query=query)
+			self.assertEqual([row[0] for row in results], ["Depot Zulu", "Depot Alpha", "Box Depot"])
+
+	def as_search_reader(self):
+		"""Run as a normal user, who can read the translated search doctype."""
+		email = "translated-search-reader@example.com"
+		if not frappe.db.exists("User", email):
+			frappe.get_doc(
+				{"doctype": "User", "email": email, "first_name": "Search Reader", "send_welcome_email": 0}
+			).insert(ignore_permissions=True)
+		return self.set_user(email)
+
+	def make_translated_search_doctype(self, records: list[dict]) -> str:
+		doctype = "Test Translated Search"
+		if frappe.db.exists("DocType", doctype):
+			frappe.delete_doc("DocType", doctype, force=True)
+		new_doctype(
+			name=doctype,
+			translated_doctype=1,
+			autoname="field:title",
+			search_fields="category",
+			permissions=[{"role": "All", "read": 1}],
+			sort_field="sequence",
+			sort_order="ASC",
+			fields=[
+				{"label": "Title", "fieldname": "title", "fieldtype": "Data"},
+				{"label": "Category", "fieldname": "category", "fieldtype": "Data"},
+				{"label": "Notes", "fieldname": "notes", "fieldtype": "Data"},
+				{"label": "Sequence", "fieldname": "sequence", "fieldtype": "Int"},
+			],
+		).insert()
+		self.addCleanup(partial(frappe.delete_doc, "DocType", doctype, force=True, ignore_missing=True))
+
+		# creating the doctype implicitly commits, so rows can outlive a previous run
+		for name in frappe.get_all(doctype, pluck="name"):
+			frappe.delete_doc(doctype, name, force=True)
+		for sequence, record in enumerate(records, start=1):
+			frappe.get_doc({"doctype": doctype, "sequence": sequence, **record}).insert()
+		return doctype
+
+	def test_page_length_zero_returns_all_options(self):
+		# `frappe.db.get_link_options()` (MultiSelectList filters) sends page_length=0 for "no limit"
+		titles = [f"Search Option {i:02d}" for i in range(1, 13)]
+
+		for translated_doctype in (0, 1):
+			doctype = f"Test Search No Limit {translated_doctype}"
+			if frappe.db.exists("DocType", doctype):
+				frappe.delete_doc("DocType", doctype, force=True)
+			new_doctype(
+				name=doctype,
+				translated_doctype=translated_doctype,
+				autoname="field:title",
+				fields=[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+			).insert()
+			self.addCleanup(partial(frappe.delete_doc, "DocType", doctype, force=True, ignore_missing=True))
+
+			# creating the doctype implicitly commits, so rows can outlive a previous run
+			frappe.db.delete(doctype)
+			for title in titles:
+				frappe.get_doc({"doctype": doctype, "title": title}).insert()
+
+			for query in (None, "frappe.tests.test_search.limited_query"):
+				with self.subTest(translated_doctype=translated_doctype, query=query):
+					results = search_widget(doctype=doctype, txt="", query=query, page_length=0)
+					self.assertEqual(len(results), len(titles))
 
 	def test_validate_and_sanitize_search_inputs(self):
-
 		# should raise error if searchfield is injectable
-		self.assertRaises(frappe.DataError,
-			get_data, *('User', 'Random', 'select * from tabSessions) --', '1', '10', dict()))
+		self.assertRaises(
+			frappe.DataError,
+			get_data,
+			*("User", "Random", "select * from tabSessions) --", "1", "10", dict()),
+		)
 
 		# page_len and start should be converted to int
-		self.assertListEqual(get_data('User', 'Random', 'email', 'name or (select * from tabSessions)', '10', dict()),
-			['User', 'Random', 'email', 0, 10, {}])
-		self.assertListEqual(get_data('User', 'Random', 'email', page_len='2', start='10', filters=dict()),
-			['User', 'Random', 'email', 10, 2, {}])
+		self.assertListEqual(
+			get_data("User", "Random", "email", "name or (select * from tabSessions)", "10", dict()),
+			["User", "Random", "email", 0, 10, {}],
+		)
+		self.assertListEqual(
+			get_data("User", "Random", "email", page_len="2", start="10", filters=dict()),
+			["User", "Random", "email", 10, 2, {}],
+		)
 
 		# DocType can be passed as None which should be accepted
-		self.assertListEqual(get_data(None, 'Random', 'email', '2', '10', dict()),
-			[None, 'Random', 'email', 2, 10, {}])
+		self.assertListEqual(
+			get_data(None, "Random", "email", "2", "10", dict()), [None, "Random", "email", 2, 10, {}]
+		)
 
 		# return empty string if passed doctype is invalid
-		self.assertListEqual(get_data("Random DocType", 'Random', 'email', '2', '10', dict()), [])
+		self.assertListEqual(get_data("Random DocType", "Random", "email", "2", "10", dict()), [])
 
 		# should not fail if function is called via frappe.call with extra arguments
-		args = ("Random DocType", 'Random', 'email', '2', '10', dict())
-		kwargs = {'as_dict': False}
-		self.assertListEqual(frappe.call('frappe.tests.test_search.get_data', *args, **kwargs), [])
+		args = ("Random DocType", "Random", "email", "2", "10", dict())
+		kwargs = {"as_dict": False}
+		self.assertListEqual(frappe.call("frappe.tests.test_search.get_data", *args, **kwargs), [])
 
 		# should not fail if query has @ symbol in it
-		search_link('User', 'user@random', searchfield='name')
-		self.assertListEqual(frappe.response['results'], [])
+		results = search_link("User", "user@random", searchfield="name")
+		self.assertListEqual(results, [])
+
+	def test_reference_doctype(self):
+		"""search query methods should get reference_doctype if they want"""
+		results = search_link(
+			doctype="User",
+			txt="",
+			filters=None,
+			page_length=20,
+			reference_doctype="ToDo",
+			query="frappe.tests.test_search.query_with_reference_doctype",
+		)
+		self.assertListEqual(results, [])
+
+	def test_search_relevance(self):
+		frappe.db.set_value("Language", {"name": ("like", "e%")}, "enabled", 1)
+
+		search = partial(search_link, doctype="Language", filters=None, page_length=10)
+		for row in search(txt="e"):
+			self.assertTrue(row["value"].startswith("e"))
+
+		for row in search(txt="es"):
+			self.assertIn("es", row["value"])
+
+		# Assume that "es" is used at least 10 times, it should now be first
+		frappe.db.set_value("Language", "es", "idx", 10)
+		self.assertEqual("es", search(txt="es")[0]["value"])
+
+	def test_relevance_skipped_without_txt(self):
+		"""`_relevance` is a constant when txt is empty, so it must not be selected or sorted on."""
+
+		def search_and_capture(txt):
+			captured = []
+			orig_sql = frappe.db.__class__.sql
+
+			def _capture(*args, **kwargs):
+				result = orig_sql(*args, **kwargs)
+				captured.append(str(args[0].last_query))
+				return result
+
+			with patch.object(frappe.db.__class__, "sql", _capture):
+				values = search_widget(doctype="Language", txt=txt, page_length=5)
+
+			return values, "\n".join(captured)
+
+		empty, empty_sql = search_and_capture("")
+		typed, typed_sql = search_and_capture("e")
+
+		self.assertNotIn("_relevance", empty_sql)
+		self.assertIn("_relevance", typed_sql)
+
+		# the result shape must not change: a mismatched strip would drop a real column
+		self.assertEqual(len(empty[0]), len(typed[0]))
+
+	def test_empty_search_still_orders_by_idx(self):
+		"""Dropping the constant relevance key must not change the order of an empty search."""
+		frappe.db.set_value("Language", "es", {"enabled": 1, "idx": 500})
+
+		# page_length=1 leaves the python relevance_sorter no second row to reorder
+		self.assertEqual("es", search_link("Language", "", page_length=1)[0]["value"])
+
+	def test_empty_search_keeps_doctype_sort_order(self):
+		titles = ["Web Form", "Phone", "Email"]
+		role = frappe.new_doc("Role", role_name=frappe.generate_hash()).insert().name
+		self.addCleanup(partial(frappe.delete_doc, "Role", role, force=True))
+		user = frappe.get_doc(
+			doctype="User",
+			email=f"sort-order-{frappe.generate_hash(length=8)}@example.com",
+			first_name="Sort Order",
+			send_welcome_email=0,
+			roles=[{"role": role}],
+		).insert()
+		self.addCleanup(partial(frappe.delete_doc, "User", user.name, force=True))
+
+		for translated_doctype in (0, 1):
+			doctype = new_doctype(
+				translated_doctype=translated_doctype,
+				autoname="field:title",
+				sort_field="sequence",
+				sort_order="ASC",
+				fields=[
+					{"label": "Title", "fieldname": "title", "fieldtype": "Data"},
+					{"label": "Sequence", "fieldname": "sequence", "fieldtype": "Int"},
+				],
+				permissions=[{"role": role, "read": 1}],
+			).insert()
+			self.addCleanup(partial(frappe.delete_doc, "DocType", doctype.name, force=True))
+
+			for sequence, title in enumerate(titles, start=1):
+				frappe.get_doc({"doctype": doctype.name, "title": title, "sequence": sequence * 10}).insert()
+
+			for query in (None, "frappe.tests.test_search.paginated_query"):
+				with (
+					self.subTest(translated_doctype=translated_doctype, query=query),
+					self.set_user(user.name),
+				):
+					results = search_link(doctype.name, "", query=query, page_length=10)
+					self.assertEqual([r["value"] for r in results], titles)
+
+	def test_search_with_paren(self):
+		search = partial(search_link, doctype="Language", filters=None, page_length=10)
+		result = search(txt="(txt)")
+		self.assertEqual(result, [])
+
+	def test_search_link_ignore_user_permissions_without_field_logs_one_line(self):
+		import io
+		import logging
+
+		logger = frappe.logger()
+		stream = io.StringIO()
+		handler = logging.StreamHandler(stream)
+		handler.setFormatter(logger.handlers[0].formatter)
+		logger.addHandler(handler)
+		self.addCleanup(logger.removeHandler, handler)
+
+		injected = "Other\n2026-07-28 12:00:00,000 INFO frappe forged entry"
+		frappe.set_user("test@example.com")
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.local.form_dict = frappe._dict(reference_doctype=injected, ignore_user_permissions=1)
+		search_link("User", "a", reference_doctype=injected, ignore_user_permissions=True)
+
+		lines = stream.getvalue().splitlines()
+		self.assertFalse([line for line in lines if line.startswith("2026-07-28")])
+		self.assertTrue(any("Ignoring flag." in line for line in lines))
+		self.assertTrue(any(line.startswith("Form Dict:") and "Other\\n2026-07-28" in line for line in lines))
+
+	def test_search_link_with_ignore_user_permissions(self):
+		"""Test that ignore_user_permissions works correctly in search_link
+		when the link field has ignore_user_permissions enabled"""
+
+		# Clean up any leftover doctypes from previous test runs
+		for dt in ("Test Search Form", "Test Search Linked"):
+			if frappe.db.exists("DocType", dt):
+				frappe.delete_doc("DocType", dt, force=True)
+
+		# Create a test doctype to link to
+		new_doctype(
+			name="Test Search Linked",
+			fields=[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+			search_fields="title",
+		).insert()
+
+		# Create a form doctype with a link field that has ignore_user_permissions
+		new_doctype(
+			name="Test Search Form",
+			fields=[
+				{
+					"label": "Linked Doc",
+					"fieldname": "linked_doc",
+					"fieldtype": "Link",
+					"options": "Test Search Linked",
+					"ignore_user_permissions": 1,
+				}
+			],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+		).insert()
+
+		self.addCleanup(
+			lambda: frappe.delete_doc("DocType", "Test Search Form", force=True, ignore_missing=True)
+		)
+		self.addCleanup(lambda: frappe.delete_doc("DocType", "Test Search Linked", force=True))
+
+		# Create some test documents
+		allowed_doc = frappe.get_doc({"doctype": "Test Search Linked", "title": "Allowed Document"}).insert()
+		restricted_doc = frappe.get_doc(
+			{"doctype": "Test Search Linked", "title": "Restricted Document"}
+		).insert()
+		self.addCleanup(lambda: frappe.delete_doc("Test Search Linked", allowed_doc.name, force=True))
+		self.addCleanup(lambda: frappe.delete_doc("Test Search Linked", restricted_doc.name, force=True))
+
+		# Create a test user with restricted permissions
+		test_user = "test_search_user@example.com"
+		if not frappe.db.exists("User", test_user):
+			user = frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": test_user,
+					"first_name": "Test Search User",
+					"user_type": "System User",
+				}
+			).insert(ignore_permissions=True)
+			user.add_roles("System Manager")
+			self.addCleanup(lambda: frappe.delete_doc("User", test_user, force=True))
+
+		# Add user permission to restrict the user to only allowed_doc
+		add_user_permission("Test Search Linked", allowed_doc.name, test_user)
+		self.addCleanup(
+			lambda: frappe.db.delete("User Permission", {"user": test_user, "allow": "Test Search Linked"})
+		)
+
+		frappe.set_user(test_user)
+		self.addCleanup(lambda: frappe.set_user("Administrator"))
+
+		# Without ignore_user_permissions, only allowed_doc should be returned
+		results_without_ignore = search_link(
+			doctype="Test Search Linked",
+			txt="Document",
+			ignore_user_permissions=False,
+		)
+		result_values = [r["value"] for r in results_without_ignore]
+		self.assertIn(allowed_doc.name, result_values)
+		self.assertNotIn(restricted_doc.name, result_values)
+
+		# With ignore_user_permissions + reference_doctype + link_fieldname, both should be returned
+		results_with_ignore = search_link(
+			doctype="Test Search Linked",
+			txt="Document",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form",
+			link_fieldname="linked_doc",
+		)
+		result_values = [r["value"] for r in results_with_ignore]
+		self.assertIn(allowed_doc.name, result_values)
+		self.assertIn(restricted_doc.name, result_values)
+
+		# With ignore_user_permissions=True but WITHOUT reference_doctype/link_fieldname,
+		# the flag should be silently ignored and user permissions should apply
+		results_without_context = search_link(
+			doctype="Test Search Linked",
+			txt="Document",
+			ignore_user_permissions=True,
+			# reference_doctype and link_fieldname not provided
+		)
+		result_values = [r["value"] for r in results_without_context]
+		self.assertIn(allowed_doc.name, result_values)
+		self.assertNotIn(restricted_doc.name, result_values)
+
+		# a custom query runs its own frappe.get_list, the flag should still apply
+		results_from_custom_query = search_link(
+			doctype="Test Search Linked",
+			txt="Document",
+			query="frappe.tests.test_search.query_by_title",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form",
+			link_fieldname="linked_doc",
+		)
+		result_values = [r["value"] for r in results_from_custom_query]
+		self.assertIn(allowed_doc.name, result_values)
+		self.assertIn(restricted_doc.name, result_values)
+
+		# and should not outlive the search call
+		self.assertEqual([d.name for d in frappe.get_list("Test Search Linked")], [allowed_doc.name])
+
+	def test_search_link_ignore_user_permissions_validation(self):
+		"""Test that ignore_user_permissions is validated correctly"""
+
+		# Clean up any leftover doctypes from previous test runs
+		for dt in (
+			"Test Search Form No Ignore",
+			"Test Search Form Wrong Link",
+			"Test Search Form With Ignore",
+			"Test Search Linked2",
+		):
+			if frappe.db.exists("DocType", dt):
+				frappe.delete_doc("DocType", dt, force=True)
+
+		# Create doctypes for testing
+		new_doctype(
+			name="Test Search Linked2",
+			fields=[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+		).insert()
+
+		# Form with link field WITHOUT ignore_user_permissions
+		new_doctype(
+			name="Test Search Form No Ignore",
+			fields=[
+				{
+					"label": "Linked Doc",
+					"fieldname": "linked_doc",
+					"fieldtype": "Link",
+					"options": "Test Search Linked2",
+					"ignore_user_permissions": 0,
+				}
+			],
+		).insert()
+
+		self.addCleanup(
+			lambda: frappe.delete_doc(
+				"DocType", "Test Search Form No Ignore", force=True, ignore_missing=True
+			)
+		)
+		self.addCleanup(
+			lambda: frappe.delete_doc(
+				"DocType", "Test Search Form Wrong Link", force=True, ignore_missing=True
+			)
+		)
+		self.addCleanup(
+			lambda: frappe.delete_doc("DocType", "Test Search Linked2", force=True, ignore_missing=True)
+		)
+
+		# Should throw when field does not have ignore_user_permissions
+		self.assertRaises(
+			frappe.ValidationError,
+			search_link,
+			doctype="Test Search Linked2",
+			txt="test",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form No Ignore",
+			link_fieldname="linked_doc",
+		)
+
+		# Should throw when field doesn't exist
+		self.assertRaises(
+			frappe.ValidationError,
+			search_link,
+			doctype="Test Search Linked2",
+			txt="test",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form No Ignore",
+			link_fieldname="nonexistent_field",
+		)
+
+		# Should throw when doctype doesn't match
+		new_doctype(
+			name="Test Search Form Wrong Link",
+			fields=[
+				{
+					"label": "Wrong Link",
+					"fieldname": "wrong_link",
+					"fieldtype": "Link",
+					"options": "User",  # Different doctype
+					"ignore_user_permissions": 1,
+				}
+			],
+		).insert()
+		self.addCleanup(lambda: frappe.delete_doc("DocType", "Test Search Form Wrong Link", force=True))
+
+		self.assertRaises(
+			frappe.ValidationError,
+			search_link,
+			doctype="Test Search Linked2",
+			txt="test",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form Wrong Link",
+			link_fieldname="wrong_link",
+		)
+
+		# Should NOT throw when link_fieldname is bogus (e.g. bulk edit sends "value")
+		# but a Link field with ignore_user_permissions exists on the form doctype
+		new_doctype(
+			name="Test Search Form With Ignore",
+			fields=[
+				{
+					"label": "Linked Doc",
+					"fieldname": "linked_doc",
+					"fieldtype": "Link",
+					"options": "Test Search Linked2",
+					"ignore_user_permissions": 1,
+				}
+			],
+		).insert()
+		self.addCleanup(lambda: frappe.delete_doc("DocType", "Test Search Form With Ignore", force=True))
+
+		search_link(
+			doctype="Test Search Linked2",
+			txt="test",
+			ignore_user_permissions=True,
+			reference_doctype="Test Search Form With Ignore",
+			link_fieldname="value",
+		)
+
+	def test_search_link_ignore_user_permissions_child_table(self):
+		"""List view filters target a child table field; the ignore_user_permissions flag
+		lives on the child table's link field, not on the parent."""
+
+		target = "Test Search Child Target"
+		child = "Test Search Child Row"
+		parent = "Test Search Child Parent"
+		parent_dup = "Test Search Child Parent Dup"
+
+		def make_doctype(name, fields, **kwargs):
+			if frappe.db.exists("DocType", name):
+				frappe.delete_doc("DocType", name, force=True)
+			new_doctype(name=name, fields=fields, **kwargs).insert()
+			self.addCleanup(lambda: frappe.delete_doc("DocType", name, force=True, ignore_missing=True))
+
+		def link_to_target(fieldname, label, ignore_user_permissions):
+			return {
+				"label": label,
+				"fieldname": fieldname,
+				"fieldtype": "Link",
+				"options": target,
+				"ignore_user_permissions": ignore_user_permissions,
+			}
+
+		def rows_field():
+			return {"label": "Rows", "fieldname": "rows", "fieldtype": "Table", "options": child}
+
+		make_doctype(
+			target,
+			[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+			search_fields="title",
+		)
+		make_doctype(
+			child,
+			[
+				link_to_target("member", "Member", 1),
+				link_to_target("plain_member", "Plain Member", 0),
+				{
+					"label": "Member Doctype",
+					"fieldname": "member_doctype",
+					"fieldtype": "Link",
+					"options": "DocType",
+				},
+				{
+					"label": "Dynamic Member",
+					"fieldname": "dynamic_member",
+					"fieldtype": "Dynamic Link",
+					"options": "member_doctype",
+					"ignore_user_permissions": 1,
+				},
+			],
+			istable=1,
+		)
+		make_doctype(parent, [rows_field()])
+		make_doctype(parent_dup, [link_to_target("member", "Member", 0), rows_field()])
+
+		allowed = frappe.get_doc({"doctype": target, "title": "Allowed Document"}).insert()
+		restricted = frappe.get_doc({"doctype": target, "title": "Restricted Document"}).insert()
+
+		test_user = "test_search_child_user@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc(
+				{
+					"doctype": "User",
+					"email": test_user,
+					"first_name": "Test Search Child User",
+					"user_type": "System User",
+				}
+			).insert(ignore_permissions=True).add_roles("System Manager")
+			self.addCleanup(lambda: frappe.delete_doc("User", test_user, force=True))
+
+		add_user_permission(target, allowed.name, test_user)
+		self.addCleanup(lambda: frappe.db.delete("User Permission", {"user": test_user}))
+
+		def values(**kwargs):
+			return [r["value"] for r in search_link(doctype=target, txt="Document", **kwargs)]
+
+		with self.set_user(test_user):
+			self.assertNotIn(restricted.name, values(ignore_user_permissions=False))
+
+			for reference_doctype in (parent, parent_dup):
+				self.assertIn(
+					restricted.name,
+					values(
+						ignore_user_permissions=True,
+						reference_doctype=reference_doctype,
+						link_fieldname="member",
+					),
+				)
+
+			self.assertIn(
+				restricted.name,
+				values(
+					ignore_user_permissions=True,
+					reference_doctype=parent,
+					link_fieldname="dynamic_member",
+				),
+			)
+
+			with self.assertRaisesRegex(frappe.ValidationError, "does not allow ignoring user permissions"):
+				values(ignore_user_permissions=True, reference_doctype=parent, link_fieldname="plain_member")
+
+			with self.assertRaisesRegex(frappe.ValidationError, "not found"):
+				values(ignore_user_permissions=True, reference_doctype=parent, link_fieldname="unknown_field")
+
+	def test_search_link_ignore_user_permissions_needs_a_field_the_user_can_type_in(self):
+		"""Read-only and hidden fields, like amended_from, have no search box, so a request through
+		them keeps user permissions. Grid rows send the child doctype as the reference."""
+
+		target = "Test Search Locked Target"
+		child = "Test Search Locked Row"
+		form = "Test Search Locked Form"
+		locked_form = "Test Search Locked Table Form"
+
+		for dt in (form, locked_form, child, target):
+			if frappe.db.exists("DocType", dt):
+				frappe.delete_doc("DocType", dt, force=True)
+
+		def make_doctype(name, fields, **kwargs):
+			new_doctype(name=name, fields=fields, **kwargs).insert()
+			self.addCleanup(lambda: frappe.delete_doc("DocType", name, force=True, ignore_missing=True))
+
+		def link_to_target(fieldname, **kwargs):
+			return {
+				"label": fieldname,
+				"fieldname": fieldname,
+				"fieldtype": "Link",
+				"options": target,
+				"ignore_user_permissions": 1,
+				**kwargs,
+			}
+
+		def rows(fieldname, **kwargs):
+			return {
+				"label": fieldname,
+				"fieldname": fieldname,
+				"fieldtype": "Table",
+				"options": child,
+				**kwargs,
+			}
+
+		make_doctype(
+			target,
+			[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+			search_fields="title",
+		)
+		make_doctype(child, [link_to_target("member"), link_to_target("linked", read_only=1)], istable=1)
+		make_doctype(
+			form,
+			[
+				link_to_target("linked"),
+				link_to_target("amended_from", read_only=1),
+				rows("rows"),
+				{"label": "Value", "fieldname": "value", "fieldtype": "Float"},
+			],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+		)
+		make_doctype(
+			locked_form,
+			[link_to_target("linked", ignore_user_permissions=0), rows("locked_rows", read_only=1)],
+			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
+		)
+
+		allowed = frappe.get_doc({"doctype": target, "title": "Allowed Document"}).insert()
+		restricted = frappe.get_doc({"doctype": target, "title": "Restricted Document"}).insert()
+
+		test_user = "test_search_locked_user@example.com"
+		if not frappe.db.exists("User", test_user):
+			frappe.get_doc(
+				{"doctype": "User", "email": test_user, "first_name": test_user, "user_type": "System User"}
+			).insert(ignore_permissions=True).add_roles("System Manager")
+			self.addCleanup(lambda: frappe.delete_doc("User", test_user, force=True))
+		add_user_permission(target, allowed.name, test_user)
+		self.addCleanup(
+			lambda: [
+				frappe.delete_doc("User Permission", name, force=True)
+				for name in frappe.get_all("User Permission", {"user": test_user}, pluck="name")
+			]
+		)
+
+		def values(reference_doctype, link_fieldname):
+			with self.set_user(test_user):
+				return [
+					r["value"]
+					for r in search_link(
+						doctype=target,
+						txt="Document",
+						ignore_user_permissions=True,
+						reference_doctype=reference_doctype,
+						link_fieldname=link_fieldname,
+					)
+				]
+
+		self.assertIn(restricted.name, values(form, "linked"))
+		self.assertIn(restricted.name, values(form, "member"))
+		self.assertIn(restricted.name, values(child, "member"))
+		# bulk edit sends "value", which here is also a Float field of the form
+		self.assertIn(restricted.name, values(form, "value"))
+
+		self.assertEqual(values(form, "amended_from"), [allowed.name])
+		self.assertEqual(values(child, "linked"), [allowed.name])
+		self.assertEqual(values(locked_form, "member"), [allowed.name])
+		self.assertEqual(values(locked_form, "linked"), [allowed.name])
+
+	def test_search_link_ignore_user_permissions_dangling_child_table(self):
+		"""A child table pointing at a deleted doctype should not escape as DoesNotExistError."""
+
+		for dt in ("Test Search Dangling Parent", "Test Search Dangling Row"):
+			if frappe.db.exists("DocType", dt):
+				frappe.delete_doc("DocType", dt, force=True)
+
+		new_doctype(
+			name="Test Search Dangling Row",
+			istable=1,
+			fields=[{"label": "Title", "fieldname": "title", "fieldtype": "Data"}],
+		).insert()
+
+		new_doctype(
+			name="Test Search Dangling Parent",
+			fields=[
+				{
+					"label": "Rows",
+					"fieldname": "rows",
+					"fieldtype": "Table",
+					"options": "Test Search Dangling Row",
+				}
+			],
+		).insert()
+		self.addCleanup(
+			lambda: frappe.delete_doc(
+				"DocType", "Test Search Dangling Parent", force=True, ignore_missing=True
+			)
+		)
+
+		frappe.delete_doc("DocType", "Test Search Dangling Row", force=True)
+		frappe.clear_cache()
+
+		with self.assertRaisesRegex(frappe.ValidationError, "not found"):
+			search_link(
+				doctype="User",
+				txt="test",
+				ignore_user_permissions=True,
+				reference_doctype="Test Search Dangling Parent",
+				link_fieldname="nonexistent_field",
+			)
+
+	def test_select_permission_shows_link_titles(self):
+		doctype, name, user = self.make_select_only_titled_doc()
+
+		with self.set_user(user):
+			self.assertFalse(frappe.has_permission(doctype, "read", name))
+			self.assertEqual(get_link_title(doctype, name), "Selectable Title")
+			self.assertEqual(search_link(doctype, "")[0].get("label"), "Selectable Title")
+			self.assertEqual(
+				self.get_report_titles(doctype, name), {f"{doctype}::{name}": "Selectable Title"}
+			)
+
+	def test_select_permission_hides_restricted_link_titles(self):
+		doctype, name, user = self.make_select_only_titled_doc(permlevel=1)
+
+		with self.set_user(user):
+			self.assertEqual(get_link_title(doctype, name), name)
+			self.assertNotEqual(search_link(doctype, "")[0].get("label"), "Selectable Title")
+			self.assertEqual(self.get_report_titles(doctype, name), {})
+
+	def test_select_permission_hides_restricted_link_titles_in_search_fields(self):
+		doctype, name, user = self.make_select_only_titled_doc(permlevel=1, search_fields="title")
+
+		with self.set_user(user):
+			self.assertEqual(get_link_title(doctype, name), name)
+			self.assertNotEqual(search_link(doctype, "")[0].get("label"), "Selectable Title")
+			self.assertEqual(self.get_report_titles(doctype, name), {})
+
+	def test_select_permission_skips_virtual_link_titles_in_reports(self):
+		doctype, name, user = self.make_select_only_titled_doc(is_virtual=1, options="'Virtual Title'")
+
+		with self.set_user(user):
+			self.assertEqual(self.get_report_titles(doctype, name), {})
+
+	def test_select_permission_skips_virtual_search_link_titles_in_reports(self):
+		doctype, name, user = self.make_select_only_titled_doc(
+			is_virtual=1, options="'Virtual Title'", search_fields="title"
+		)
+
+		with self.set_user(user):
+			self.assertEqual(self.get_report_titles(doctype, name), {})
+
+	def get_report_titles(self, doctype, name):
+		return get_report_link_titles(
+			[{"fieldname": "link", "fieldtype": "Link", "options": doctype}], [{"link": name}]
+		)
+
+	def make_image_doctype(self, *, read: int, image_permlevel: int = 0) -> tuple[str, str]:
+		with self.set_user("Administrator"):
+			role = frappe.new_doc("Role", role_name=frappe.generate_hash()).insert().name
+			permissions = [{"role": role, "select": 1, "read": read}, {"role": "System Manager", "read": 1}]
+			if image_permlevel:
+				# someone must be able to read the image's permlevel
+				permissions.append({"role": "System Manager", "read": 1, "permlevel": image_permlevel})
+			doctype = new_doctype(
+				fields=[
+					{
+						"fieldname": "image",
+						"fieldtype": "Attach Image",
+						"label": "Image",
+						"permlevel": image_permlevel,
+					}
+				],
+				image_field="image",
+				permissions=permissions,
+			).insert()
+			user = frappe.get_doc(
+				doctype="User",
+				email=f"image-{frappe.generate_hash(length=8)}@example.com",
+				first_name="Image Reader",
+				send_welcome_email=0,
+				roles=[{"role": role}],
+			).insert()
+			return doctype.name, user.name
+
+	def make_select_only_titled_doc(self, *, search_fields=None, **title_properties):
+		with self.set_user("Administrator"):
+			role = frappe.new_doc("Role", role_name=frappe.generate_hash()).insert().name
+			doctype = new_doctype(
+				fields=[
+					{"fieldname": "code", "fieldtype": "Data", "label": "Code"},
+					{"fieldname": "title", "fieldtype": "Data", "label": "Title", **title_properties},
+				],
+				title_field="title",
+				search_fields=search_fields,
+				show_title_field_in_link=1,
+				permissions=[{"role": role, "select": 1, "read": 0}],
+			).insert()
+			name = frappe.get_doc(doctype=doctype.name, title="Selectable Title").insert().name
+			user = frappe.get_doc(
+				doctype="User",
+				email=f"select-{frappe.generate_hash(length=8)}@example.com",
+				first_name="Select Only",
+				send_welcome_email=0,
+				roles=[{"role": role}],
+			).insert()
+			return doctype.name, name, user.name
+
+	def test_awesomebar_search_hook(self):
+		real_get_hooks = frappe.get_hooks
+
+		def get_hooks(hook=None, *args, **kwargs):
+			if hook == "awesomebar_search":
+				return [
+					"frappe.tests.test_search._awesomebar_help",
+					"frappe.tests.test_search._awesomebar_broken",
+					"frappe.tests.test_search._awesomebar_bad_items",
+				]
+			return real_get_hooks(hook, *args, **kwargs)
+
+		with patch.object(frappe, "get_hooks", side_effect=get_hooks):
+			self.assertEqual(awesomebar_search(""), [])
+			self.assertEqual(awesomebar_search("   "), [])
+
+			results = awesomebar_search("help")
+			self.assertEqual(
+				results,
+				[
+					{
+						"label": "Open Help",
+						"value": "Open Help",
+						"index": 50,
+						"route": ["https://docs.example.com"],
+						"description": "Docs",
+					},
+					{
+						"label": "ToDo List",
+						"value": "ToDo List",
+						"index": 0,
+						"route": ["List", "ToDo"],
+					},
+				],
+			)
+
+			http_results = awesomebar_search("intranet")
+			self.assertEqual(
+				http_results,
+				[
+					{
+						"label": "Intranet",
+						"value": "Intranet",
+						"index": 40,
+						"route": ["http://docs.local"],
+					},
+				],
+			)
+
+			inapp_results = awesomebar_search("inapp")
+			self.assertEqual(
+				inapp_results,
+				[
+					{
+						"label": "Desk Docs",
+						"value": "Desk Docs",
+						"index": 30,
+						"route": ["/desk/docs/some/page"],
+					},
+				],
+			)
+
+			self.assertEqual(awesomebar_search("unrelated"), [])
+
+
+def _awesomebar_help(txt):
+	query = txt.lower()
+	if "help" in query:
+		return [
+			{
+				"label": "Open Help",
+				"description": "Docs",
+				"route": "https://docs.example.com",
+				"index": 50,
+			}
+		]
+	if "intranet" in query:
+		return [
+			{
+				"label": "Intranet",
+				"route": "http://docs.local",
+				"index": 40,
+			}
+		]
+	if "inapp" in query:
+		return [
+			{
+				"label": "Desk Docs",
+				"route": "/desk/docs/some/page",
+				"index": 30,
+			}
+		]
+	return []
+
+
+def _awesomebar_broken(txt):
+	raise RuntimeError("boom")
+
+
+def _awesomebar_bad_items(txt):
+	if "help" not in txt.lower():
+		return []
+	return [
+		"not a dict",
+		{},
+		{"label": "JS", "route": "javascript:alert(1)"},
+		{"label": "Proto", "route": "//evil.com"},
+		{"label": "ToDo List", "route": ["List", "ToDo"]},
+	]
+
 
 @frappe.validate_and_sanitize_search_inputs
 def get_data(doctype, txt, searchfield, start, page_len, filters):
 	return [doctype, txt, searchfield, start, page_len, filters]
+
+
+@whitelist_for_tests()
+@frappe.validate_and_sanitize_search_inputs
+def query_with_reference_doctype(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: str | list | dict[str, Any],
+	reference_doctype: str | None = None,
+):
+	return []
+
+
+@whitelist_for_tests()
+@frappe.validate_and_sanitize_search_inputs
+def query_by_title(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: str | list | dict[str, Any],
+):
+	return frappe.get_list(doctype, filters={"title": ("like", f"%{txt}%")}, as_list=True)
+
+
+@whitelist_for_tests()
+@frappe.validate_and_sanitize_search_inputs
+def paginated_query(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: str | list | dict[str, Any],
+):
+	return frappe.get_all(
+		doctype,
+		fields=["name"],
+		filters={"name": ["like", f"%{txt}%"]} if txt else None,
+		order_by="sequence asc",
+		limit_start=start,
+		limit_page_length=page_len,
+		as_list=True,
+	)
+
+
+@whitelist_for_tests()
+@frappe.validate_and_sanitize_search_inputs
+def limited_query(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: str | list | dict[str, Any],
+):
+	# app level link queries push page_len straight into the SQL limit, where 0 means "no rows"
+	table = frappe.qb.DocType(doctype)
+	return frappe.qb.from_(table).select(table.name).offset(start).limit(page_len).run()
+
+
+def setup_test_link_field_order(TestCase):
+	TestCase.tree_doctype_name = "Test Tree Order"
+	TestCase.child_doctype_list = []
+	TestCase.child_doctypes_names = ["USA", "India", "Russia", "China"]
+	TestCase.parent_doctype_name = "All Territories"
+
+	# Create Tree doctype
+	if not frappe.db.exists("DocType", TestCase.tree_doctype_name):
+		TestCase.tree_doc = frappe.get_doc(
+			{
+				"doctype": "DocType",
+				"name": TestCase.tree_doctype_name,
+				"module": "Custom",
+				"custom": 1,
+				"is_tree": 1,
+				"autoname": "field:random",
+				"fields": [{"fieldname": "random", "label": "Random", "fieldtype": "Data"}],
+			}
+		).insert()
+		TestCase.tree_doc.search_fields = "parent_test_tree_order"
+		TestCase.tree_doc.save()
+	else:
+		TestCase.tree_doc = frappe.get_doc("DocType", TestCase.tree_doctype_name)
+
+	# Create root for the tree doctype
+	if not frappe.db.exists(TestCase.tree_doctype_name, {"random": TestCase.parent_doctype_name}):
+		frappe.get_doc(
+			{"doctype": TestCase.tree_doctype_name, "random": TestCase.parent_doctype_name, "is_group": 1}
+		).insert(ignore_if_duplicate=True)
+
+	# Create children for the root
+	for child_name in TestCase.child_doctypes_names:
+		temp = frappe.get_doc(
+			{
+				"doctype": TestCase.tree_doctype_name,
+				"random": child_name,
+				"parent_test_tree_order": TestCase.parent_doctype_name,
+			}
+		).insert(ignore_if_duplicate=True)
+		TestCase.child_doctype_list.append(temp)
+
+
+@contextmanager
+def custom_translation(language: str, source_text: str, translated_text: str):
+	doc = frappe.new_doc("Translation")
+	doc.language = language
+	doc.source_text = source_text
+	doc.translated_text = translated_text
+	doc.save()
+
+	try:
+		yield
+	finally:
+		doc.delete()
+
+
+@contextmanager
+def use_language(language: str):
+	original_lang = frappe.local.lang
+	frappe.local.lang = language
+
+	try:
+		yield
+	finally:
+		frappe.local.lang = original_lang
+
+
+def teardown_test_link_field_order(TestCase):
+	# Deleting all the created doctype
+	for child_doctype in TestCase.child_doctype_list:
+		child_doctype.delete()
+
+	frappe.delete_doc(
+		TestCase.tree_doctype_name,
+		TestCase.parent_doctype_name,
+		ignore_permissions=True,
+		force=True,
+		for_reload=True,
+	)
+
+	TestCase.tree_doc.delete()
+
+
+@whitelist_for_tests()
+@frappe.validate_and_sanitize_search_inputs
+def category_query(
+	doctype: str,
+	txt: str,
+	searchfield: str,
+	start: int,
+	page_len: int,
+	filters: str | list | dict[str, Any],
+) -> list[tuple]:
+	table = frappe.qb.DocType(doctype)
+	query = (
+		frappe.qb.from_(table).select(table.name, table.category).orderby(table.name, order=frappe.qb.desc)
+	)
+	return query.offset(start).limit(page_len).run()

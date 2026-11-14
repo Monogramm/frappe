@@ -1,0 +1,7 @@
+{% extends "templates/print_format/macros/Data.html" %}
+
+{%- block value -%}
+<div class="value">
+    {% if value %}<img src="{{ value|e }}" alt="{{ _(df.label)|e }}">{% endif %}
+</div>
+{%- endblock -%}

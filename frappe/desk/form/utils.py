@@ -1,125 +1,179 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import frappe, json
-import frappe.desk.form.meta
+import json
+from typing import TYPE_CHECKING
+from urllib.parse import urlencode
+
+import frappe
 import frappe.desk.form.load
-from frappe.desk.form.document_follow import follow_document
-from frappe.utils.file_manager import extract_images_from_html
-
+import frappe.desk.form.meta
 from frappe import _
-from six import string_types
+from frappe.core.doctype.file.utils import extract_images_from_html
+from frappe.desk.form.document_follow import _follow_document
+from frappe.query_builder.functions import Cast, IfNull
+from frappe.utils import strip_html
 
-@frappe.whitelist()
+if TYPE_CHECKING:
+	from frappe.core.doctype.comment.comment import Comment
+
+
+@frappe.whitelist(methods=["DELETE", "POST"])
 def remove_attach():
 	"""remove attachment"""
-	fid = frappe.form_dict.get('fid')
-	file_name = frappe.form_dict.get('file_name')
-	frappe.delete_doc('File', fid)
+	fid = frappe.form_dict.get("fid")
+	frappe.delete_doc("File", fid)
 
-@frappe.whitelist()
-def validate_link():
-	"""validate link when updated by user"""
-	import frappe
-	import frappe.utils
 
-	value, options, fetch = frappe.form_dict.get('value'), frappe.form_dict.get('options'), frappe.form_dict.get('fetch')
+@frappe.whitelist(methods=["POST", "PUT"])
+def add_comment(
+	reference_doctype: str, reference_name: str, content: str, comment_email: str, comment_by: str
+) -> "Comment":
+	"""Allow logged user with permission to read document to add a comment"""
+	validate_comment_content(content)
+	reference_doc = frappe.get_lazy_doc(reference_doctype, reference_name, check_permission=True)
 
-	# no options, don't validate
-	if not options or options=='null' or options=='undefined':
-		frappe.response['message'] = 'Ok'
-		return
+	comment = frappe.new_doc("Comment")
+	comment.update(
+		{
+			"comment_type": "Comment",
+			"reference_doctype": reference_doctype,
+			"reference_name": reference_name,
+			"comment_email": frappe.session.user,
+			"comment_by": frappe.utils.get_fullname(),
+			"content": extract_images_from_html(reference_doc, content, is_private=True),
+		}
+	)
+	comment.insert(ignore_permissions=True)
 
-	valid_value = frappe.db.get_all(options, filters=dict(name=value), as_list=1, limit=1)
+	if frappe.get_cached_value("User", frappe.session.user, "follow_commented_documents"):
+		_follow_document(comment.reference_doctype, comment.reference_name, frappe.session.user)
 
-	if valid_value:
-		valid_value = valid_value[0][0]
+	return comment
 
-		# get fetch values
-		if fetch:
-			# escape with "`"
-			fetch = ", ".join(("`{0}`".format(f.strip()) for f in fetch.split(",")))
-			fetch_value = None
-			try:
-				fetch_value = frappe.db.sql("select %s from `tab%s` where name=%s"
-					% (fetch, options, '%s'), (value,))[0]
-			except Exception as e:
-				error_message = str(e).split("Unknown column '")
-				fieldname = None if len(error_message)<=1 else error_message[1].split("'")[0]
-				frappe.msgprint(_("Wrong fieldname <b>{0}</b> in add_fetch configuration of custom script").format(fieldname))
-				frappe.errprint(frappe.get_traceback())
 
-			if fetch_value:
-				frappe.response['fetch_values'] = [frappe.utils.parse_val(c) for c in fetch_value]
-
-		frappe.response['valid_value'] = valid_value
-		frappe.response['message'] = 'Ok'
+def validate_comment_content(content: str) -> None:
+	if not (strip_html(content or "").strip() or "<img" in (content or "")):
+		frappe.throw(_("Comment cannot be empty"), frappe.MandatoryError)
 
 
 @frappe.whitelist()
-def add_comment(reference_doctype, reference_name, content, comment_email, comment_by):
-	"""allow any logged user to post a comment"""
-	doc = frappe.get_doc(dict(
-		doctype='Comment',
-		reference_doctype=reference_doctype,
-		reference_name=reference_name,
-		comment_email=comment_email,
-		comment_type='Comment',
-		comment_by=comment_by
-	))
-	doc.content = extract_images_from_html(doc, content)
-	doc.insert(ignore_permissions=True)
-
-	follow_document(doc.reference_doctype, doc.reference_name, frappe.session.user)
-	return doc.as_dict()
-
-@frappe.whitelist()
-def update_comment(name, content):
+def update_comment(name: str | int, content: str):
 	"""allow only owner to update comment"""
-	doc = frappe.get_doc('Comment', name)
+	doc = frappe.get_doc("Comment", name)
 
-	if frappe.session.user not in ['Administrator', doc.owner]:
-		frappe.throw(_('Comment can only be edited by the owner'), frappe.PermissionError)
+	if frappe.session.user not in ["Administrator", doc.owner]:
+		frappe.throw(_("Comment can only be edited by the owner"), frappe.PermissionError)
 
-	doc.content = content
+	validate_comment_content(content)
+
+	if doc.reference_doctype and doc.reference_name:
+		reference_doc = frappe.get_lazy_doc(doc.reference_doctype, doc.reference_name, check_permission=True)
+
+		doc.content = extract_images_from_html(reference_doc, content, is_private=True)
+	else:
+		doc.content = content
+
 	doc.save(ignore_permissions=True)
 
-@frappe.whitelist()
-def get_next(doctype, value, prev, filters=None, sort_order='desc', sort_field='modified'):
 
+@frappe.whitelist()
+def update_comment_publicity(name: str, publish: bool):
+	doc = frappe.get_doc("Comment", name)
+	if frappe.session.user != doc.owner and "System Manager" not in frappe.get_roles():
+		frappe.throw(_("Comment publicity can only be updated by the original author or a System Manager."))
+
+	doc.published = int(publish)
+	doc.save(ignore_permissions=True)
+
+
+@frappe.whitelist()
+def get_next(
+	doctype: str,
+	value: str,
+	prev: str | int,
+	filters: dict | str | list | None = None,
+	sort_order: str = "desc",
+	sort_field: str = "creation",
+):
 	prev = int(prev)
-	if not filters: filters = []
-	if isinstance(filters, string_types):
+	if not filters:
+		filters = []
+	if isinstance(filters, str):
 		filters = json.loads(filters)
 
-	# # condition based on sort order
-	condition = ">" if sort_order.lower() == "asc" else "<"
-
-	# switch the condition
-	if prev:
-		sort_order = "asc" if sort_order.lower() == "desc" else "desc"
-		condition = "<" if condition == ">" else ">"
-
-	# # add condition for next or prev item
-	filters.append([doctype, sort_field, condition, frappe.get_value(doctype, value, sort_field)])
-
-	res = frappe.get_list(doctype,
-		fields = ["name"],
-		filters = filters,
-		order_by = "`tab{0}`.{1}".format(doctype, sort_field) + " " + sort_order,
-		limit_start=0, limit_page_length=1, as_list=True)
-
-	if not res:
-		frappe.msgprint(_("No further records"))
-		return None
+	table = frappe.qb.DocType(doctype)
+	name_column = table.name
+	current_sort_column = table[sort_field]
+	sort_field_meta = frappe.get_meta(doctype).get_field(sort_field)
+	if (
+		frappe.db.db_type == "sqlite"
+		and sort_field_meta
+		and sort_field_meta.fieldtype
+		in (
+			"Date",
+			"Datetime",
+			"Time",
+		)
+	):
+		# SQLite's type converters can normalize a stored date-only value to a datetime.
+		# Compare against the original text so the current row does not sort before itself.
+		current_sort_column = Cast(current_sort_column, "text")
+	current_sort_value = frappe.db.get_value(doctype, value, current_sort_column)
+	fallback = _sort_field_fallback(doctype, sort_field)
+	if fallback is not None:
+		sort_column = IfNull(table[sort_field], fallback)
+		if current_sort_value is None:
+			current_sort_value = fallback
 	else:
+		sort_column = table[sort_field]
+
+	is_ascending = sort_order.lower() == "asc"
+	if prev == is_ascending:
+		composite_condition = (sort_column < current_sort_value) | (
+			(sort_column == current_sort_value) & (name_column < value)
+		)
+		order = frappe.qb.desc
+	else:
+		composite_condition = (sort_column > current_sort_value) | (
+			(sort_column == current_sort_value) & (name_column > value)
+		)
+		order = frappe.qb.asc
+
+	query = (
+		frappe.qb.get_query(doctype, filters=filters, fields=["name"], ignore_permissions=False)
+		.orderby(sort_column, order=order)
+		.orderby(name_column, order=order)
+		.where(composite_condition)
+		.limit(1)
+	)
+
+	if res := query.run(as_list=True):
 		return res[0][0]
 
-def get_pdf_link(doctype, docname, print_format='Standard', no_letterhead=0):
-	return '/api/method/frappe.utils.print_format.download_pdf?doctype={doctype}&name={docname}&format={print_format}&no_letterhead={no_letterhead}'.format(
-		doctype = doctype,
-		docname = docname,
-		print_format = print_format,
-		no_letterhead = no_letterhead
+	frappe.msgprint(_("No further records"))
+	return None
+
+
+def _sort_field_fallback(doctype: str, fieldname: str):
+	if fieldname in ("name", "modified", "creation", "modified_by", "owner", "idx", "docstatus"):
+		return None
+	df = frappe.get_meta(doctype).get_field(fieldname)
+	if df is None:
+		return ""
+	if df.fieldtype in ("Check", "Float", "Int", "Currency", "Percent"):
+		return None
+	if getattr(df, "not_nullable", False):
+		return None
+	if df.fieldtype in ("Date", "Datetime"):
+		return "0001-01-01"
+	if df.fieldtype == "Time":
+		return "00:00:00"
+	return ""
+
+
+def get_pdf_link(doctype, docname, print_format="Standard", no_letterhead=0):
+	query = urlencode(
+		{"doctype": doctype, "name": docname, "format": print_format, "no_letterhead": no_letterhead}
 	)
+	return f"/api/method/frappe.utils.print_format.download_pdf?{query}"

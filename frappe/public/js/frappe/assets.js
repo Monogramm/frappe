@@ -5,159 +5,161 @@
 // will try and get from localStorage if latest are available
 // depends on frappe.versions to manage versioning
 
-frappe.require = function(items, callback) {
-	if(typeof items === "string") {
+frappe.require = function (items, callback) {
+	if (typeof items === "string") {
 		items = [items];
 	}
-	frappe.assets.execute(items, callback);
+	items = items.map((item) => frappe.assets.bundled_asset(item));
+
+	return new Promise((resolve) => {
+		frappe.assets.execute(items, () => {
+			resolve();
+			callback && callback();
+		});
+	});
 };
 
-frappe.assets = {
-	check: function() {
+class AssetManager {
+	constructor() {
+		this._executed = [];
+		this._handlers = {
+			js: (url) => {
+				return new Promise((resolve) => {
+					const script = document.createElement("script");
+					script.type = "text/javascript";
+					script.src = url;
+					script.onload = resolve;
+					// for backward compatibility, resolve even on error
+					script.onerror = resolve;
+					document.head.appendChild(script);
+				});
+			},
+			css: (url) => {
+				return new Promise((resolve) => {
+					const link = document.createElement("link");
+					link.type = "text/css";
+					link.rel = "stylesheet";
+					link.href = url;
+					link.onload = resolve;
+					// for backward compatibility, resolve even on error
+					link.onerror = resolve;
+					document.head.appendChild(link);
+				});
+			},
+		};
+	}
+	check() {
 		// if version is different then clear localstorage
-		if(window._version_number != localStorage.getItem("_version_number")) {
-			frappe.assets.clear_local_storage();
+		if (window._version_number != localStorage.getItem("_version_number")) {
+			this.clear_local_storage();
 			console.log("Cleared App Cache.");
 		}
 
-		if(localStorage._last_load) {
-			var not_updated_since = new Date() - new Date(localStorage._last_load);
-			if(not_updated_since < 10000 || not_updated_since > 86400000) {
-				frappe.assets.clear_local_storage();
+		if (localStorage._last_load) {
+			let not_updated_since = new Date() - new Date(localStorage._last_load);
+			// Evict cache every 2 days
+			// Evict cache if page is reloaded within 10 seconds. Which could be user trying to
+			// refresh if things feel broken.
+			if ((not_updated_since < 5000 && is_reload()) || not_updated_since > 2 * 86400000) {
+				this.clear_local_storage();
 			}
 		} else {
-			frappe.assets.clear_local_storage();
+			this.clear_local_storage();
 		}
 
-		frappe.assets.init_local_storage();
-	},
+		this.init_local_storage();
+	}
 
-	init_local_storage: function() {
+	init_local_storage() {
 		localStorage._last_load = new Date();
 		localStorage._version_number = window._version_number;
-		if(frappe.boot) localStorage.metadata_version = frappe.boot.metadata_version;
-	},
+		if (frappe.boot) localStorage.metadata_version = frappe.boot.metadata_version;
+	}
 
-	clear_local_storage: function() {
-		$.each(["_last_load", "_version_number", "metadata_version", "page_info",
-			"last_visited"], function(i, key) {
-			localStorage.removeItem(key);
-		});
+	clear_local_storage() {
+		["_last_load", "_version_number", "metadata_version", "page_info", "last_visited"].forEach(
+			(key) => localStorage.removeItem(key)
+		);
 
 		// clear assets
-		for(var key in localStorage) {
-			if(key.indexOf("desk_assets:")===0 || key.indexOf("_page:")===0
-				|| key.indexOf("_doctype:")===0 || key.indexOf("preferred_breadcrumbs:")===0) {
+		for (let key in localStorage) {
+			if (key.startsWith("_page:") || key.startsWith("_doctype:")) {
 				localStorage.removeItem(key);
 			}
 		}
 		console.log("localStorage cleared");
-	},
+	}
 
-
-	// keep track of executed assets
-	executed_ : [],
-
-	// pass on to the handler to set
-	execute: function(items, callback) {
-		var to_fetch = []
-		for(var i=0, l=items.length; i<l; i++) {
-			if(!frappe.assets.exists(items[i])) {
-				to_fetch.push(items[i]);
-			}
+	load_asset(path, url) {
+		if (this._executed.includes(path)) {
+			return Promise.resolve();
 		}
-		if(to_fetch.length) {
-			frappe.assets.fetch(to_fetch, function() {
-				frappe.assets.eval_assets(items, callback);
-			});
-		} else {
-			frappe.assets.eval_assets(items, callback);
-		}
-	},
 
-	eval_assets: function(items, callback) {
-		for(var i=0, l=items.length; i<l; i++) {
-			// execute js/css if not already.
-			var path = items[i];
-			if(frappe.assets.executed_.indexOf(path)===-1) {
-				// execute
-				frappe.assets.handler[frappe.assets.extn(path)](frappe.assets.get(path), path);
-				frappe.assets.executed_.push(path)
-			}
-		}
-		callback && callback();
-	},
-
-	// check if the asset exists in
-	// localstorage
-	exists: function(src) {
-		if(frappe.assets.executed_.indexOf(src)!== -1) {
-			return true;
-		}
-		if(frappe.boot.developer_mode) {
-			return false;
-		}
-		if(frappe.assets.get(src)) {
-			return true;
-		} else {
-			return false;
-		}
-	},
-
-	// load an asset via
-	fetch: function(items, callback) {
-		// this is virtual page load, only get the the source
-		// *without* the template
-
-		frappe.call({
-			type: "GET",
-			method:"frappe.client.get_js",
-			args: {
-				"items": items
-			},
-			callback: function(r) {
-				$.each(items, function(i, src) {
-					frappe.assets.add(src, r.message[i]);
-				});
-				callback();
-			},
-			freeze: true,
+		const ext = this.extn(path);
+		const handler = this._handlers[ext];
+		return handler(url).then(() => {
+			this._executed.push(path);
 		});
-	},
+	}
 
-	add: function(src, txt) {
-		if('localStorage' in window) {
-			try {
-				frappe.assets.set(src, txt);
-			} catch(e) {
-				// if quota is exceeded, clear local storage and set item
-				frappe.assets.clear_local_storage();
-				frappe.assets.set(src, txt);
+	execute(items, callback) {
+		// this is virtual page load, only get the the source
+		let me = this;
+
+		const version_string =
+			frappe.boot.developer_mode || window.dev_server ? Date.now() : window._version_number;
+
+		let load_promises = items.map((path) => {
+			let url = new URL(path, window.location.origin);
+
+			// Add the version to the URL to bust the cache for non-bundled assets
+			if (
+				url.hostname === window.location.hostname &&
+				!path.includes(".bundle.") &&
+				!url.searchParams.get("v")
+			) {
+				url.searchParams.append("v", version_string);
 			}
+
+			return me.load_asset(path, url.toString());
+		});
+
+		frappe.dom.freeze();
+		Promise.all(load_promises).then(() => {
+			frappe.dom.unfreeze();
+			callback?.();
+		});
+	}
+
+	extn(src) {
+		if (src.indexOf("?") != -1) {
+			src = src.split("?").slice(-1)[0];
 		}
-	},
+		return src.split(".").slice(-1)[0];
+	}
 
-	get: function(src) {
-		return localStorage.getItem("desk_assets:" + src);
-	},
-
-	set: function(src, txt) {
-		localStorage.setItem("desk_assets:" + src, txt);
-	},
-
-	extn: function(src) {
-		if(src.indexOf('?')!=-1) {
-			src = src.split('?').slice(-1)[0];
+	bundled_asset(path, is_rtl = null) {
+		if (!path.startsWith("/assets") && path.includes(".bundle.")) {
+			if (path.endsWith(".css") && is_rtl) {
+				path = `rtl_${path}`;
+			}
+			path = frappe.boot.assets_json[path] || path;
+			return path;
 		}
-		return src.split('.').slice(-1)[0];
-	},
+		return path;
+	}
+}
 
-	handler: {
-		js: function(txt, src) {
-			frappe.dom.eval(txt);
-		},
-		css: function(txt, src) {
-			frappe.dom.set_style(txt);
-		}
-	},
-};
+function is_reload() {
+	try {
+		return window.performance
+			?.getEntriesByType("navigation")
+			.map((nav) => nav.type)
+			.includes("reload");
+	} catch (e) {
+		// Safari probably
+		return true;
+	}
+}
+
+frappe.assets = new AssetManager();

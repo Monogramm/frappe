@@ -1,10 +1,13 @@
 {
+ "actions": [],
+ "allow_bulk_edit": 0,
  "creation": "2019-09-13 21:33:55.551941",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "document_type"
+  "document_type",
+  "configure"
  ],
  "fields": [
   {
@@ -13,17 +16,26 @@
    "in_list_view": 1,
    "label": "Document Type",
    "options": "DocType"
+  },
+  {
+   "fieldname": "configure",
+   "fieldtype": "Button",
+   "in_list_view": 1,
+   "label": "Configure"
   }
  ],
  "istable": 1,
- "modified": "2019-09-18 17:59:44.354052",
+ "links": [],
+ "modified": "2026-04-27 21:41:43.954439",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Global Search DocType",
  "owner": "Administrator",
  "permissions": [],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

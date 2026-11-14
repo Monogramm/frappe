@@ -1,51 +1,207 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
+from typing import Protocol, runtime_checkable
+
 import frappe
 from frappe import _
-from frappe.model.document import Document
+from frappe.model.document import Document, get_controller
+from frappe.query_builder import Table
+from frappe.utils import add_days, cint, now_datetime
+from frappe.utils.caching import site_cache
+
+
+@runtime_checkable
+class LogType(Protocol):
+	"""Interface requirement for doctypes that can be cleared using log settings."""
+
+	@staticmethod
+	def clear_old_logs(days: int) -> None: ...
+
+
+@site_cache
+def _supports_log_clearing(doctype: str) -> bool:
+	try:
+		controller = get_controller(doctype)
+		return issubclass(controller, LogType)
+	except Exception:
+		return False
+
 
 class LogSettings(Document):
+	_DOCTYPE_NAME = "Log Settings"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.core.doctype.logs_to_clear.logs_to_clear import LogsToClear
+		from frappe.types import DF
+
+		logs_to_clear: DF.Table[LogsToClear]
+	# end: auto-generated types
+
+	def validate(self):
+		self.remove_unsupported_doctypes()
+		self._deduplicate_entries()
+		self.add_default_logtypes()
+
+	def remove_unsupported_doctypes(self):
+		for entry in list(self.logs_to_clear):
+			if _supports_log_clearing(entry.ref_doctype):
+				continue
+
+			msg = _("{} does not support automated log clearing.").format(frappe.bold(entry.ref_doctype))
+			if frappe.conf.developer_mode:
+				msg += "<br>" + _("Implement `clear_old_logs` method to enable auto error clearing.")
+			frappe.msgprint(msg, title=_("DocType not supported by Log Settings."))
+			self.remove(entry)
+
+	def _deduplicate_entries(self):
+		seen = set()
+		for entry in list(self.logs_to_clear):
+			if entry.ref_doctype in seen:
+				self.remove(entry)
+			seen.add(entry.ref_doctype)
+
+	def add_default_logtypes(self):
+		existing_logtypes = {d.ref_doctype for d in self.logs_to_clear}
+		added_logtypes = set()
+		default_logtypes_retention = frappe.get_hooks("default_log_clearing_doctypes", {})
+
+		for logtype, retentions in default_logtypes_retention.items():
+			if logtype not in existing_logtypes and _supports_log_clearing(logtype):
+				if not frappe.db.exists("DocType", logtype):
+					continue
+
+				self.append("logs_to_clear", {"ref_doctype": logtype, "days": cint(retentions[-1])})
+				added_logtypes.add(logtype)
+
+		if added_logtypes:
+			frappe.msgprint(_("Added default log doctypes: {}").format(",".join(added_logtypes)), alert=True)
+
 	def clear_logs(self):
-		self.clear_error_logs()
-		self.clear_activity_logs()
-		self.clear_email_queue()
+		"""
+		Log settings can clear any log type that's registered to it and provides a method to delete old logs.
 
-	def clear_error_logs(self):
-		frappe.db.sql(""" DELETE FROM `tabError Log`
-			WHERE `creation` < (NOW() - INTERVAL '{0}' DAY)
-		""".format(self.clear_error_log_after))
+		Check `LogDoctype` above for interface that doctypes need to implement.
+		"""
 
-	def clear_activity_logs(self):
-		from frappe.core.doctype.activity_log.activity_log import clear_activity_logs
-		clear_activity_logs(days=self.clear_activity_log_after)
+		for entry in self.logs_to_clear:
+			controller: LogType = get_controller(entry.ref_doctype)
+			func = controller.clear_old_logs
 
-	def clear_email_queue(self):
-		from frappe.email.queue import clear_outbox
-		clear_outbox(days=self.clear_email_queue_after)
+			# Only pass what the method can handle, this is considering any
+			# future addition that might happen to the required interface.
+			kwargs = frappe.get_newargs(func, {"days": entry.days})
+			func(**kwargs)
+			frappe.db.commit()
+
+	def register_doctype(self, doctype: str, days=30):
+		existing_logtypes = {d.ref_doctype for d in self.logs_to_clear}
+
+		if doctype not in existing_logtypes and _supports_log_clearing(doctype):
+			self.append("logs_to_clear", {"ref_doctype": doctype, "days": cint(days)})
+		else:
+			for entry in self.logs_to_clear:
+				if entry.ref_doctype == doctype:
+					entry.days = days
+					break
+
 
 def run_log_clean_up():
 	doc = frappe.get_doc("Log Settings")
+	doc.remove_unsupported_doctypes()
+	doc.add_default_logtypes()
+	doc.save()
 	doc.clear_logs()
 
-@frappe.whitelist()
-def has_unseen_error_log(user):
 
-	def _get_response(show_alert=True):
+@frappe.whitelist()
+def has_unseen_error_log():
+	if frappe.get_all("Error Log", filters={"seen": 0}, limit=1):
 		return {
-			'show_alert': True,
-			'message': _("You have unseen {0}").format('<a href="/app/List/Error%20Log/List"> Error Logs </a>')
+			"show_alert": True,
+			"message": _("You have unseen {0}").format(
+				'<a href="/desk/List/Error%20Log/List"> Error Logs </a>'
+			),
 		}
 
-	if frappe.db.sql_list("select name from `tabError Log` where seen = 0 limit 1"):
-		log_settings = frappe.get_cached_doc('Log Settings')
 
-		if log_settings.users_to_notify:
-			if user in [u.user for u in log_settings.users_to_notify]:
-				return _get_response()
-			else:
-				return _get_response(show_alert=False)
-		else:
-			return _get_response()
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_log_doctypes(doctype: str, txt: str, searchfield: str, start: int, page_len: int, filters: list):
+	filters = filters or []
+
+	filters.extend(
+		[
+			["istable", "=", 0],
+			["issingle", "=", 0],
+			["name", "like", f"%%{txt}%%"],
+		]
+	)
+	doctypes = frappe.get_list("DocType", filters=filters, pluck="name")
+
+	supported_doctypes = [(d,) for d in doctypes if _supports_log_clearing(d)]
+
+	return supported_doctypes[start : start + page_len]
+
+
+def clear_log_table(doctype, days=90):
+	"""If any logtype table grows too large then clearing it with DELETE query
+	is not feasible in reasonable time. This command copies recent data to new
+	table and replaces current table with new smaller table.
+
+	ref: https://mariadb.com/kb/en/big-deletes/#deleting-more-than-half-a-table
+	"""
+	from frappe.utils import get_table_name
+	from frappe.utils.logging import is_log_doctype
+
+	if doctype not in frappe.get_hooks("default_log_clearing_doctypes", {}):
+		raise frappe.ValidationError(f"Unsupported logging DocType: {doctype}")
+
+	if is_log_doctype(doctype):
+		# The copy-and-rename dance below exists to avoid a huge DELETE on MariaDB. A log
+		# DocType has no table in the primary database to rename, and its rows live in
+		# SQLite, where a bounded DELETE is cheap. Let the controller do its own cleanup.
+		get_controller(doctype).clear_old_logs(days=cint(days))
+		return
+
+	original = get_table_name(doctype)
+	temporary = f"{original} temp_table"
+	backup = f"{original} backup_table"
+
+	original_table = Table(original)
+	cutoff = add_days(now_datetime(), -cint(days))
+	copy_recent_rows = (
+		frappe.qb.into(Table(temporary))
+		.from_(original_table)
+		.select("*")
+		.where(original_table.creation > cutoff)
+	)
+
+	try:
+		if frappe.db.db_type == "sqlite":
+			frappe.db.delete(doctype, {"creation": ("<=", cutoff)})
+		elif frappe.db.db_type == "postgres":
+			frappe.db.sql_ddl(f'CREATE TABLE "{temporary}" (LIKE "{original}" INCLUDING ALL)')
+
+			copy_recent_rows.run()
+			frappe.db.sql_ddl(f'ALTER TABLE "{original}" RENAME TO "{backup}"')
+			frappe.db.sql_ddl(f'ALTER TABLE "{temporary}" RENAME TO "{original}"')
+		elif frappe.db.db_type == "mariadb":
+			frappe.db.sql_ddl(f"CREATE TABLE `{temporary}` LIKE `{original}`")
+
+			copy_recent_rows.run()
+			frappe.db.sql_ddl(f"RENAME TABLE `{original}` TO `{backup}`, `{temporary}` TO `{original}`")
+	except Exception:
+		frappe.db.rollback()
+		frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `{temporary}`")
+		raise
+	else:
+		if frappe.db.db_type != "sqlite":
+			frappe.db.sql_ddl(f"DROP TABLE `{backup}`")
+		# Each cleanup is a durable unit of progress and releases locks before the next log table.
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit

@@ -1,35 +1,83 @@
 # Copyright (c) 2020, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-import os
-import io
-import frappe
-import timeit
 import json
-from datetime import datetime, date
-from frappe import _
-from frappe.utils import cint, flt, update_progress_bar, cstr, duration_to_seconds
-from frappe.utils.csvutils import read_csv_content, get_csv_content_from_google_sheets
-from frappe.utils.xlsxutils import (
-	read_xlsx_file_from_attached_file,
-	read_xls_file_from_attached_file,
-)
-from frappe.model import no_value_fields, table_fields as table_fieldtypes
-from frappe.core.doctype.version.version import get_diff
+import os
+import re
+import timeit
+from datetime import date, datetime, time
 
-INVALID_VALUES = ("", None)
+import frappe
+from frappe import _
+from frappe.app_state import clear_cache_after_maintenance
+from frappe.core.doctype.data_import.value_mapping import INVALID_VALUES
+from frappe.core.doctype.version.version import get_diff
+from frappe.locale import get_number_format
+from frappe.model import no_value_fields
+from frappe.utils import cint, cstr, duration_to_seconds, flt, update_progress_bar
+from frappe.utils.caching import request_cache
+from frappe.utils.csvutils import get_csv_content_from_google_sheets, read_csv_content
+from frappe.utils.data import escape_html
+from frappe.utils.html_utils import clean_html
+from frappe.utils.number_format import NumberFormat
+from frappe.utils.xlsxutils import (
+	read_xls_file_from_attached_file,
+	read_xlsx_file_from_attached_file,
+)
+
 MAX_ROWS_IN_PREVIEW = 10
 INSERT = "Insert New Records"
 UPDATE = "Update Existing Records"
+UPSERT = "Insert or Update Records"
+ACTION_INSERT = "Insert"
+ACTION_UPDATE = "Update"
+DURATION_PATTERN = re.compile(r"^(?:(\d+d)?((^|\s)\d+h)?((^|\s)\d+m)?((^|\s)\d+s)?)$")
+
+
+def _get_fixed_csv_delimiter(custom_delimiters, delimiter_options) -> str | None:
+	if not cint(custom_delimiters) or not delimiter_options:
+		return None
+	options = delimiter_options.strip()
+	return options if len(options) == 1 else None
+
+
+def _parse_number(value: str, number_format: NumberFormat) -> float | None:
+	"""Return None if the value is not a number, or if it reads differently as a plain number
+	(how the exporter writes it) and in the user's number format, like 1.234 in #.###,##."""
+	value = value.strip()
+	try:
+		plain = float(value)
+	except ValueError:
+		plain = None
+
+	group = re.escape(number_format.thousands_separator)
+	decimal = re.escape(number_format.decimal_separator)
+	# 2-digit middle groups keep Indian grouping (12,34,567) working in every format, as flt() does
+	integer = rf"\d+|[1-9]\d{{0,2}}(?:{group}\d{{2,3}})*{group}\d{{3}}" if group else r"\d+"
+	fraction = rf"(?:{decimal}\d+)?" if decimal else ""
+	if not re.fullmatch(rf"[+-]?(?:{integer}){fraction}", value):
+		return plain
+
+	if group:
+		value = value.replace(number_format.thousands_separator, "")
+	if decimal:
+		value = value.replace(number_format.decimal_separator, ".")
+	formatted = float(value)
+
+	if plain is not None and plain != formatted:
+		return None
+	return formatted
 
 
 class Importer:
 	def __init__(
-		self, doctype, data_import=None, file_path=None, import_type=None, console=False
+		self, doctype, data_import=None, file_path=None, import_type=None, console=False, use_sniffer=False
 	):
 		self.doctype = doctype
 		self.console = console
+		self.use_sniffer = use_sniffer
+		# Set when prechecks block the run; callers then skip the "refresh" broadcast.
+		self.blocked_by_warnings = False
 
 		self.data_import = data_import
 		if not self.data_import:
@@ -45,141 +93,336 @@ class Importer:
 			file_path or data_import.google_sheets_url or data_import.import_file,
 			self.template_options,
 			self.import_type,
+			data_import_name=self.data_import.name,
+			reference_doctype=doctype,
+			console=self.console,
+			use_sniffer=self.use_sniffer,
+			custom_delimiters=data_import.custom_delimiters,
+			delimiter_options=data_import.delimiter_options,
+			tree_parent_overrides=self.data_import.get("tree_parent_overrides"),
 		)
 
 	def get_data_for_import_preview(self):
-		return self.import_file.get_data_for_import_preview()
+		out = self.import_file.get_data_for_import_preview()
+
+		out.import_log = frappe.get_all(
+			"Data Import Log",
+			fields=["row_indexes", "success"],
+			filters={"data_import": self.data_import.name},
+			order_by="log_index",
+			limit=10,
+		)
+
+		return out
 
 	def before_import(self):
 		# set user lang for translations
-		frappe.cache().hdel("lang", frappe.session.user)
+		frappe.cache.hdel("lang", frappe.session.user)
 		frappe.set_user_lang(frappe.session.user)
 
 		# set flags
 		frappe.flags.in_import = True
 		frappe.flags.mute_emails = self.data_import.mute_emails
 
-		self.data_import.db_set("status", "Pending")
 		self.data_import.db_set("template_warnings", "")
+		from frappe.core.doctype.data_import.import_provider import get_import_provider
+
+		self.provider = get_import_provider(self.doctype)
+		self._inserted_name_map = {}
+		meta = frappe.get_meta(self.doctype)
+		self._tree_parent_field = meta.nsm_parent_field if meta.is_nested_set() else None
+		header = getattr(self.import_file, "header", None)
+		self._tree_alias_field = getattr(header, "tree_alias_field", None)
+		self._id_fieldname = getattr(header, "id_fieldname", None) or get_id_field(self.doctype).fieldname
+		self._uses_tree_aliases = bool(self._tree_alias_field)
+		self._tree_parent_column = _get_tree_columns(self.import_file)[1] if self._tree_parent_field else None
+		self._prime_inserted_name_map_from_db()
+
+	def _prime_inserted_name_map_from_db(self):
+		"""Pre-fetch DB name mappings for parent links not defined as rows in this file."""
+		if not self._tree_parent_column:
+			return
+
+		parent_values = {
+			cstr(v).strip() for v in self._tree_parent_column.column_values if v not in INVALID_VALUES
+		}
+		header = self.import_file.header
+		in_file_refs = (header.import_ids or set()) | (header.import_aliases or set())
+		if self.import_type == UPDATE:
+			refs_to_fetch = parent_values
+		else:
+			refs_to_fetch = parent_values - in_file_refs
+		if not refs_to_fetch:
+			return
+
+		self._inserted_name_map.update(
+			_build_db_tree_parent_name_map(self.doctype, refs_to_fetch, self._tree_alias_field)
+		)
 
 	def import_data(self):
 		self.before_import()
 
 		# parse docs from rows
 		payloads = self.import_file.get_payloads_for_import()
+		self.data_import.payload_count = len(payloads)
+		# Subclasses such as Bank Statement Import pass a doc without this column.
+		if self.data_import.name and self.data_import.meta.has_field("payload_count"):
+			self.data_import.db_set("payload_count", len(payloads))
 
 		# dont import if there are non-ignorable warnings
-		warnings = self.import_file.get_warnings()
-		warnings = [w for w in warnings if w.get("type") != "info"]
+		from frappe.core.doctype.data_import.value_mapping import (
+			create_missing_link_records,
+			get_blocking_warnings,
+			get_skipped_row_numbers,
+		)
+
+		warnings = get_blocking_warnings(
+			self.import_file.get_all_warnings(), self.import_file, self.data_import
+		)
 
 		if warnings:
+			self.blocked_by_warnings = True
 			if self.console:
 				self.print_grouped_warnings(warnings)
 			else:
 				self.data_import.db_set("template_warnings", json.dumps(warnings))
+				# Back to Pending so the user can fix the file and start again.
+				self.data_import.db_set("status", "Pending")
+				frappe.publish_realtime(
+					"data_import_blocked",
+					{"data_import": self.data_import.name},
+					user=frappe.session.user,
+				)
 			return
 
-		# setup import log
-		if self.data_import.import_log:
-			import_log = frappe.parse_json(self.data_import.import_log)
-		else:
-			import_log = []
+		create_missing_link_records(self.data_import)
 
-		# remove previous failures from import log
-		import_log = [log for log in import_log if log.get("success")]
+		# Read previous status before 'In Progress' overwrites it; retry purge needs it.
+		previous_status = self.data_import.status
+
+		if self.data_import.name:
+			self.data_import.db_set("status", "In Progress")
+
+		# setup import log
+		# Reuse import log only when the doc is persisted; CLI imports never insert it.
+		import_log = []
+		if self.data_import.name and frappe.db.exists("Data Import", self.data_import.name):
+			import_log = (
+				frappe.get_all(
+					"Data Import Log",
+					fields=["row_indexes", "success", "log_index", "import_action"],
+					filters={"data_import": self.data_import.name},
+					order_by="log_index",
+				)
+				or []
+			)
+
+		log_index = 0
+
+		# Do not remove rows in case of retry after an error or pending data import
+		if (
+			previous_status in ("Partial Success", "Error", "Timed Out")
+			and len(import_log) >= self.data_import.payload_count
+		):
+			# On full-logged retry, keep only successful rows and drop stale failures.
+			import_log = [log for log in import_log if log.get("success")]
+			frappe.db.delete("Data Import Log", {"success": 0, "data_import": self.data_import.name})
 
 		# get successfully imported rows
-		imported_rows = []
+		imported_rows = set()
+		failed_count = 0
+		inserted_count = 0
+		updated_count = 0
 		for log in import_log:
 			log = frappe._dict(log)
 			if log.success:
-				imported_rows += log.row_indexes
+				if self.import_type == UPSERT:
+					if log.import_action == ACTION_UPDATE:
+						updated_count += 1
+					else:
+						inserted_count += 1
+				elif self.import_type == UPDATE:
+					updated_count += 1
+				else:
+					inserted_count += 1
+			else:
+				failed_count += 1
+
+			if log.success or len(import_log) < self.data_import.payload_count:
+				imported_rows.update(json.loads(log.row_indexes))
+
+			log_index = log.log_index
 
 		# start import
 		total_payload_count = len(payloads)
+		skipped_rows = get_skipped_row_numbers(self.data_import)
+		skipped_payload_count = 0
 		batch_size = frappe.conf.data_import_batch_size or 1000
 
-		for batch_index, batched_payloads in enumerate(
-			frappe.utils.create_batch(payloads, batch_size)
-		):
+		for batch_index, batched_payloads in enumerate(frappe.utils.create_batch(payloads, batch_size)):
 			for i, payload in enumerate(batched_payloads):
 				doc = payload.doc
 				row_indexes = [row.row_number for row in payload.rows]
 				current_index = (i + 1) + (batch_index * batch_size)
+				row_set = set(row_indexes)
 
-				if set(row_indexes).intersection(set(imported_rows)):
-					print("Skipping imported rows", row_indexes)
-					if total_payload_count > 5:
-						frappe.publish_realtime(
-							"data_import_progress",
-							{
-								"current": current_index,
-								"total": total_payload_count,
-								"skipping": True,
-								"data_import": self.data_import.name,
-							},
-						)
+				if row_set.intersection(skipped_rows):
+					skipped_payload_count += 1
+					self._publish_skip_progress(
+						current_index,
+						total_payload_count,
+						inserted_count,
+						updated_count,
+						failed_count,
+						row_indexes=row_indexes,
+						reason=_("Skipped row {0}").format(row_indexes[0]),
+					)
 					continue
 
+				if row_set.intersection(imported_rows):
+					self._publish_skip_progress(
+						current_index,
+						total_payload_count,
+						inserted_count,
+						updated_count,
+						failed_count,
+						row_indexes=row_indexes,
+						reason=_("Already imported row {0}").format(row_indexes[0]),
+					)
+					continue
+
+				start = timeit.default_timer()
 				try:
-					start = timeit.default_timer()
-					doc = self.process_doc(doc)
+					doc, import_action = self.process_doc(doc)
 					processing_time = timeit.default_timer() - start
 					eta = self.get_eta(current_index, total_payload_count, processing_time)
 
+					if self.import_type == UPSERT:
+						if import_action == ACTION_UPDATE:
+							updated_count += 1
+						else:
+							inserted_count += 1
+					elif self.import_type == UPDATE:
+						updated_count += 1
+					else:
+						inserted_count += 1
+
 					if self.console:
 						update_progress_bar(
-							"Importing {0} records".format(total_payload_count),
-							current_index,
+							f"Importing {self.doctype}: {total_payload_count} records",
+							current_index - 1,
 							total_payload_count,
 						)
 					elif total_payload_count > 5:
-						frappe.publish_realtime(
-							"data_import_progress",
-							{
-								"current": current_index,
-								"total": total_payload_count,
-								"docname": doc.name,
-								"data_import": self.data_import.name,
-								"success": True,
-								"row_indexes": row_indexes,
-								"eta": eta,
-							},
+						self._publish_progress_event(
+							current_index=current_index,
+							total_payload_count=total_payload_count,
+							eta=eta,
+							inserted_count=inserted_count,
+							updated_count=updated_count,
+							failed_count=failed_count,
+							success=True,
+							row_indexes=row_indexes,
+							docname=doc.name,
+							activity=self._build_success_activity(import_action, doc.name),
 						)
 
-					import_log.append(
-						frappe._dict(success=True, docname=doc.name, row_indexes=row_indexes)
-					)
+					log_details = {
+						"success": True,
+						"docname": doc.name,
+						"row_indexes": row_indexes,
+					}
+					if self.import_type == UPSERT:
+						log_details["import_action"] = import_action
+
+					create_import_log(self.data_import.name, log_index, log_details)
+
+					log_index += 1
+
 					# commit after every successful import
 					frappe.db.commit()
 
 				except Exception:
-					import_log.append(
-						frappe._dict(
-							success=False,
-							exception=frappe.get_traceback(),
-							messages=frappe.local.message_log,
-							row_indexes=row_indexes,
-						)
-					)
+					messages = frappe.local.message_log
 					frappe.clear_messages()
+
 					# rollback if exception
 					frappe.db.rollback()
 
+					create_import_log(
+						self.data_import.name,
+						log_index,
+						{
+							"success": False,
+							"exception": frappe.get_traceback(),
+							"messages": messages,
+							"row_indexes": row_indexes,
+						},
+					)
+
+					log_index += 1
+					failed_count += 1
+
+					try:
+						frappe.logger("data_import").error(
+							f"Data Import {self.data_import.name}: row(s) {row_indexes} failed to import",
+							exc_info=True,
+						)
+					except Exception:
+						pass
+
+					processing_time = timeit.default_timer() - start
+					self._publish_progress_event(
+						current_index=current_index,
+						total_payload_count=total_payload_count,
+						eta=self.get_eta(current_index, total_payload_count, processing_time),
+						inserted_count=inserted_count,
+						updated_count=updated_count,
+						failed_count=failed_count,
+						success=False,
+						row_indexes=row_indexes,
+						activity=self._build_error_activity(messages, row_indexes),
+					)
+
+		# Logs are db inserted directly so will have to be fetched again
+		import_log = (
+			frappe.get_all(
+				"Data Import Log",
+				fields=["row_indexes", "success", "log_index"],
+				filters={"data_import": self.data_import.name},
+				order_by="log_index",
+			)
+			or []
+		)
+
 		# set status
-		failures = [log for log in import_log if not log.get("success")]
-		if len(failures) == total_payload_count:
-			status = "Pending"
-		elif len(failures) > 0:
-			status = "Partial Success"
-		else:
+		successes = []
+		failures = []
+		for log in import_log:
+			if log.get("success"):
+				successes.append(log)
+			else:
+				failures.append(log)
+		attempted_payload_count = total_payload_count - skipped_payload_count
+		if attempted_payload_count == 0 or len(successes) == attempted_payload_count:
 			status = "Success"
+		elif len(failures) >= attempted_payload_count and len(successes) == 0:
+			status = "Error"
+		elif len(failures) > 0 and len(successes) > 0:
+			status = "Partial Success"
+			try:
+				frappe.logger("data_import").warning(
+					f"Data Import {self.data_import.name}: {len(failures)} of {attempted_payload_count} rows failed"
+				)
+			except Exception:
+				pass
+		else:
+			status = "Pending"
 
 		if self.console:
 			self.print_import_log(import_log)
 		else:
 			self.data_import.db_set("status", status)
-			self.data_import.db_set("import_log", json.dumps(import_log))
 
 		self.after_import()
 
@@ -188,21 +431,133 @@ class Importer:
 	def after_import(self):
 		frappe.flags.in_import = False
 		frappe.flags.mute_emails = False
+		clear_cache_after_maintenance()
+
+	def _publish_progress_event(
+		self,
+		*,
+		current_index,
+		total_payload_count,
+		inserted_count,
+		updated_count,
+		failed_count,
+		success=None,
+		skipping=False,
+		row_indexes=None,
+		docname=None,
+		eta=0,
+		activity=None,
+	):
+		if total_payload_count <= 5:
+			return
+
+		payload = {
+			"current": current_index,
+			"total": total_payload_count,
+			"data_import": self.data_import.name,
+			"eta": eta,
+			"inserted": inserted_count,
+			"updated": updated_count,
+			"failed": failed_count,
+			"skipping": skipping,
+		}
+		if success is not None:
+			payload["success"] = success
+		if row_indexes:
+			payload["row_indexes"] = row_indexes
+		if docname:
+			payload["docname"] = docname
+		if activity:
+			payload["activity"] = activity
+
+		frappe.publish_realtime("data_import_progress", payload, user=frappe.session.user)
+
+	def _publish_skip_progress(
+		self,
+		current_index,
+		total_payload_count,
+		inserted_count,
+		updated_count,
+		failed_count,
+		row_indexes=None,
+		reason=None,
+	):
+		self._publish_progress_event(
+			current_index=current_index,
+			total_payload_count=total_payload_count,
+			inserted_count=inserted_count,
+			updated_count=updated_count,
+			failed_count=failed_count,
+			skipping=True,
+			row_indexes=row_indexes,
+			activity={"kind": "info", "text": reason} if reason else None,
+		)
+
+	def _build_success_activity(self, import_action, docname):
+		if self.import_type == UPSERT:
+			action = _("Updated") if import_action == ACTION_UPDATE else _("Inserted")
+		elif self.import_type == UPDATE:
+			action = _("Updated")
+		else:
+			action = _("Imported")
+		# `action` is already translated; the "{0} {1}" wrapper has no translatable text.
+		return {"kind": "success", "text": f"{action} {docname}"}
+
+	def _build_error_activity(self, messages, row_indexes):
+		message_text = ""
+		is_html = False
+		if isinstance(messages, list) and messages:
+			first_message = messages[0]
+			if isinstance(first_message, dict):
+				if first_message.get("message"):
+					# The client renders this as HTML and not every message went through msgprint.
+					message_text = clean_html(first_message.get("message"))
+					is_html = True
+				else:
+					message_text = first_message.get("title") or ""
+			elif isinstance(first_message, str):
+				message_text = first_message
+
+		if not message_text:
+			first_row = row_indexes[0] if row_indexes else None
+			message_text = _("Row {0} failed").format(first_row) if first_row else _("Row validation failed")
+
+		return {"kind": "error", "text": cstr(message_text), "is_html": is_html}
 
 	def process_doc(self, doc):
+		"""Process one import payload; returns ``(document, import_action)``."""
+		# Provider owns record creation; framework keeps the loop and logging.
+		if getattr(self, "provider", None):
+			return self.provider.import_row(self, doc)
 		if self.import_type == INSERT:
-			return self.insert_record(doc)
-		elif self.import_type == UPDATE:
-			return self.update_record(doc)
+			return self.insert_record(doc), None
+		if self.import_type == UPDATE:
+			return self.update_record(doc), None
+		return self.upsert_record(doc)
+
+	def upsert_record(self, doc):
+		"""Update the record when it exists, otherwise insert it."""
+		id_field = get_id_field(self.doctype)
+		id_value = doc.get(id_field.fieldname)
+		if id_value and frappe.db.exists(self.doctype, id_value):
+			result = self.update_record(doc, raise_if_no_changes=False)
+			if self._uses_tree_aliases:
+				self._register_inserted_name(doc, result)
+			return result, ACTION_UPDATE
+		return self.insert_record(doc), ACTION_INSERT
 
 	def insert_record(self, doc):
 		meta = frappe.get_meta(self.doctype)
 		new_doc = frappe.new_doc(self.doctype)
 		new_doc.update(doc)
 
-		if (meta.autoname or "").lower() != "prompt":
+		if not doc.name and (meta.autoname or "").lower() != "prompt":
 			# name can only be set directly if autoname is prompt
 			new_doc.set("name", None)
+
+		if self._uses_tree_aliases and self._tree_parent_column:
+			self._resolve_tree_parent_link(doc)
+			new_doc.set(self._tree_parent_field, doc.get(self._tree_parent_field))
 
 		new_doc.flags.updater_reference = {
 			"doctype": self.data_import.doctype,
@@ -211,29 +566,65 @@ class Importer:
 		}
 
 		new_doc.insert()
+		if self._uses_tree_aliases:
+			self._register_inserted_name(doc, new_doc)
 		if meta.is_submittable and self.data_import.submit_after_import:
 			new_doc.submit()
 		return new_doc
 
-	def update_record(self, doc):
-		id_field = get_id_field(self.doctype)
-		existing_doc = frappe.get_doc(self.doctype, doc.get(id_field.fieldname))
+	def _resolve_tree_parent_link(self, doc):
+		"""Swap parent link aliases from the file with document names (in-file or DB)."""
+		parent = doc.get(self._tree_parent_field)
+		if parent in INVALID_VALUES:
+			return
 
+		parent = cstr(parent).strip()
+		resolved = self._inserted_name_map.get(parent)
+		if resolved:
+			doc[self._tree_parent_field] = resolved
+
+	def _register_inserted_name(self, doc, new_doc):
+		"""Track alias/id values from the file against the generated document name."""
+		if self._tree_alias_field:
+			alias = new_doc.get(self._tree_alias_field) or doc.get(self._tree_alias_field)
+			if alias not in INVALID_VALUES:
+				self._inserted_name_map[cstr(alias).strip()] = new_doc.name
+
+		id_value = doc.get(self._id_fieldname)
+		if id_value not in INVALID_VALUES:
+			self._inserted_name_map[cstr(id_value).strip()] = new_doc.name
+
+	def update_record(self, doc, raise_if_no_changes=True):
+		id_field = get_id_field(self.doctype)
 		updated_doc = frappe.get_doc(self.doctype, doc.get(id_field.fieldname))
+		existing_doc = frappe.copy_doc(updated_doc)
+
 		updated_doc.update(doc)
+
+		if self._uses_tree_aliases and self._tree_parent_column:
+			self._resolve_tree_parent_link(doc)
+			updated_doc.set(self._tree_parent_field, doc.get(self._tree_parent_field))
+
+		submit_after_import = (
+			updated_doc.meta.is_submittable
+			and self.data_import.submit_after_import
+			and updated_doc.docstatus.is_draft()
+		)
+		updated_doc.flags.updater_reference = {
+			"doctype": self.data_import.doctype,
+			"docname": self.data_import.name,
+			"label": _("via Data Import"),
+		}
 
 		if get_diff(existing_doc, updated_doc):
 			# update doc if there are changes
-			updated_doc.flags.updater_reference = {
-				"doctype": self.data_import.doctype,
-				"docname": self.data_import.name,
-				"label": _("via Data Import"),
-			}
 			updated_doc.save()
-			return updated_doc
-		else:
-			# throw if no changes
-			frappe.throw("No changes to update")
+		elif raise_if_no_changes and not submit_after_import:
+			frappe.throw(_("No changes to update"))
+
+		if submit_after_import:
+			updated_doc.submit()
+		return updated_doc
 
 	def get_eta(self, current, total, processing_time):
 		self.last_eta = getattr(self, "last_eta", 0)
@@ -249,11 +640,20 @@ class Importer:
 		if not self.data_import:
 			return
 
-		import_log = frappe.parse_json(self.data_import.import_log or "[]")
+		import_log = (
+			frappe.get_all(
+				"Data Import Log",
+				fields=["row_indexes", "success"],
+				filters={"data_import": self.data_import.name},
+				order_by="log_index",
+			)
+			or []
+		)
+
 		failures = [log for log in import_log if not log.get("success")]
 		row_indexes = []
 		for f in failures:
-			row_indexes.extend(f.get("row_indexes", []))
+			row_indexes.extend(json.loads(f.get("row_indexes", [])))
 
 		# de duplicate
 		row_indexes = list(set(row_indexes))
@@ -263,6 +663,50 @@ class Importer:
 		rows = [header_row]
 		rows += [row.data for row in self.import_file.data if row.row_number in row_indexes]
 
+		build_csv_response(rows, _(self.doctype))
+
+	def export_skipped_rows(self):
+		from frappe.utils.csvutils import build_csv_response
+
+		if not self.data_import or not self.data_import.skipped_rows:
+			return
+
+		# Read from the file: row_data is only filled for rows the preview carried.
+		skipped = {cint(row.row_number) for row in self.data_import.skipped_rows}
+		header_row = [col.header_title for col in self.import_file.columns]
+		rows = [header_row]
+		rows += [row.data for row in self.import_file.data if row.row_number in skipped]
+
+		build_csv_response(rows, _(self.doctype))
+
+	def export_import_log(self):
+		from frappe.utils.csvutils import build_csv_response
+
+		if not self.data_import:
+			return
+
+		import_log = frappe.get_all(
+			"Data Import Log",
+			fields=["row_indexes", "success", "messages", "exception", "docname"],
+			filters={"data_import": self.data_import.name},
+			order_by="log_index",
+		)
+
+		header_row = ["Row Numbers", "Status", "Message", "Exception"]
+
+		rows = [header_row]
+
+		for log in import_log:
+			row_number = json.loads(log.get("row_indexes"))[0]
+			status = "Success" if log.get("success") else "Failure"
+			message = (
+				"Successfully Imported {}".format(log.get("docname"))
+				if log.get("success")
+				else log.get("messages")
+			)
+			exception = frappe.utils.cstr(log.get("exception", ""))
+			rows += [[row_number, status, message, exception]]
+
 		build_csv_response(rows, self.doctype)
 
 	def print_import_log(self, import_log):
@@ -271,21 +715,17 @@ class Importer:
 
 		if successful_records:
 			print()
-			print(
-				"Successfully imported {0} records out of {1}".format(
-					len(successful_records), len(import_log)
-				)
-			)
+			print(f"Successfully imported {len(successful_records)} records out of {len(import_log)}")
 
 		if failed_records:
-			print("Failed to import {0} records".format(len(failed_records)))
-			file_name = "{0}_import_on_{1}.txt".format(self.doctype, frappe.utils.now())
-			print("Check {0} for errors".format(os.path.join("sites", file_name)))
+			print(f"Failed to import {len(failed_records)} records")
+			file_name = f"{self.doctype}_import_on_{frappe.utils.now()}.txt"
+			print("Check {} for errors".format(os.path.join("sites", file_name)))
 			text = ""
 			for w in failed_records:
-				text += "Row Indexes: {0}\n".format(str(w.get("row_indexes", [])))
-				text += "Messages:\n{0}\n".format("\n".join(w.get("messages", [])))
-				text += "Traceback:\n{0}\n\n".format(w.get("exception"))
+				text += "Row Indexes: {}\n".format(str(w.get("row_indexes", [])))
+				text += "Messages:\n{}\n".format("\n".join(w.get("messages", [])))
+				text += "Traceback:\n{}\n\n".format(w.get("exception"))
 
 			with open(file_name, "w") as f:
 				f.write(text)
@@ -300,7 +740,7 @@ class Importer:
 				other_warnings.append(w)
 
 		for row_number, warnings in warnings_by_row.items():
-			print("Row {0}".format(row_number))
+			print(f"Row {row_number}")
 			for w in warnings:
 				print(w.get("message"))
 
@@ -309,17 +749,46 @@ class Importer:
 
 
 class ImportFile:
-	def __init__(self, doctype, file, template_options=None, import_type=None):
+	def __init__(
+		self,
+		doctype,
+		file,
+		template_options=None,
+		import_type=None,
+		*,
+		data_import_name=None,
+		reference_doctype=None,
+		console=False,
+		use_sniffer=False,
+		custom_delimiters=False,
+		delimiter_options=None,
+		tree_parent_overrides=None,
+	):
 		self.doctype = doctype
-		self.template_options = template_options or frappe._dict(
-			column_to_field_map=frappe._dict()
-		)
+		self.reference_doctype = reference_doctype or doctype
+		# {row_number: {"parent": ..., "is_group": ...}} from the tree editor.
+		self.tree_parent_overrides = {
+			cint(row): value
+			for row, value in (frappe.parse_json(tree_parent_overrides or "{}") or {}).items()
+		}
+		self.template_options = template_options or frappe._dict(column_to_field_map=frappe._dict())
 		self.column_to_field_map = self.template_options.column_to_field_map
+		# Optional per-column date/time format overrides, chosen by the user in the UI.
+		self.column_to_date_format_map = (
+			self.template_options.get("column_to_date_format_map") or frappe._dict()
+		)
 		self.import_type = import_type
+		from frappe.core.doctype.data_import.value_mapping import build_lookup_for_data_import
+
+		self.value_lookup = build_lookup_for_data_import(data_import_name, self.reference_doctype)
 		self.warnings = []
+		self.console = console
+		self.use_sniffer = use_sniffer
+		self.custom_delimiters = custom_delimiters
+		self.delimiter_options = delimiter_options
 
 		self.file_doc = self.file_path = self.google_sheets_url = None
-		if isinstance(file, frappe.string_types):
+		if isinstance(file, str):
 			if frappe.db.exists("File", {"file_url": file}):
 				self.file_doc = frappe.get_doc("File", {"file_url": file})
 			elif "docs.google.com/spreadsheets" in file:
@@ -369,7 +838,16 @@ class ImportFile:
 				continue
 
 			if not header:
-				header = Header(i, row, self.doctype, self.raw_data, self.column_to_field_map)
+				header = Header(
+					i,
+					row,
+					self.doctype,
+					self.raw_data[i + 1 :],
+					self.column_to_field_map,
+					self.value_lookup,
+					self.reference_doctype,
+					self.column_to_date_format_map,
+				)
 			else:
 				row_obj = Row(i, row, self.doctype, header, self.import_type)
 				data.append(row_obj)
@@ -377,6 +855,15 @@ class ImportFile:
 		self.header = header
 		self.columns = self.header.columns
 		self.data = data
+		meta = frappe.get_meta(self.doctype)
+		self.header.id_fieldname = _get_id_fieldname_from_meta(meta)
+		self.header.tree_alias_field = _get_tree_alias_field_from_meta(meta)
+		self.header.import_ids, self.header.import_aliases = _build_import_reference_sets(
+			self, self.header.id_fieldname, self.header.tree_alias_field
+		)
+		self.header.import_refs = self.header.import_ids | self.header.import_aliases
+		self._refresh_self_referential_link_validation()
+		self.__dict__.pop("_tree_preview_cache", None)
 
 		if len(data) < 1:
 			frappe.throw(
@@ -384,10 +871,41 @@ class ImportFile:
 				title=_("Template Error"),
 			)
 
+	def _refresh_self_referential_link_validation(self):
+		"""Re-validate parent Link columns after IDs from the file are known."""
+		from frappe.core.doctype.data_import.value_mapping import warn_invalid_link_select_values
+
+		alias_field = self.header.tree_alias_field
+		if alias_field:
+			link_values = set()
+			for col in self.header.columns:
+				if not col.df or col.skip_import or col.df.fieldtype != "Link":
+					continue
+				if col.df.options != self.doctype:
+					continue
+				for value in col.column_values:
+					if value not in INVALID_VALUES:
+						link_values.add(cstr(value).strip())
+			if link_values:
+				self.header.import_refs |= _get_existing_tree_parent_refs(
+					self.doctype, link_values, alias_field
+				)
+
+		for col in self.header.columns:
+			if not col.df or col.skip_import or col.df.fieldtype != "Link":
+				continue
+			if col.df.options != self.doctype:
+				continue
+
+			col.import_refs = self.header.import_refs
+			col.invalid_value_items = None
+			col.warnings = [w for w in col.warnings if w.get("type") != "value_mapping"]
+			warn_invalid_link_select_values(col)
+
 	def get_data_for_import_preview(self):
 		"""Adds a serial number column as the first column"""
 
-		columns = [frappe._dict({"header_title": "Sr. No", "skip_import": True})]
+		columns = [frappe._dict({"header_title": _("Sr. No"), "skip_import": True})]
 		columns += [col.as_dict() for col in self.columns]
 		for col in columns:
 			# only pick useful fields in docfields to minimise the payload
@@ -403,35 +921,70 @@ class ImportFile:
 					"read_only": col.df.read_only,
 				}
 
-		data = [[row.row_number] + row.as_list() for row in self.data]
+		data = [[row.row_number, *row.as_list()] for row in self.data]
 
-		warnings = self.get_warnings()
+		tree_preview = self.get_tree_preview()
 
 		out = frappe._dict()
 		out.data = data
 		out.columns = columns
-		out.warnings = warnings
+		out.warnings = self.get_warnings()
+		if tree_preview:
+			out.tree_preview = tree_preview
+			out.warnings += tree_preview.tree_warnings
 		total_number_of_rows = len(out.data)
+		out.total_number_of_rows = total_number_of_rows
 		if total_number_of_rows > MAX_ROWS_IN_PREVIEW:
 			out.data = out.data[:MAX_ROWS_IN_PREVIEW]
 			out.max_rows_exceeded = True
 			out.max_rows_in_preview = MAX_ROWS_IN_PREVIEW
-			out.total_number_of_rows = total_number_of_rows
+			# Fix issues shows a warned row's cells, which may fall past the preview.
+			warned = {cint(w.get("row")) for w in out.warnings if w.get("row")}
+			out.warning_rows = [row for row in data[MAX_ROWS_IN_PREVIEW:] if row[0] in warned]
+
 		return out
 
 	def get_payloads_for_import(self):
+		# Before building docs, so sort_tree_payloads orders by the edited parents.
+		self.apply_tree_overrides()
 		payloads = []
 		# make a copy
 		data = list(self.data)
 		while data:
+			prev_len = len(data)
 			doc, rows, data = self.parse_next_row_for_import(data)
+			assert len(data) < prev_len, "each iteration must consume at least one row to terminate"
 			payloads.append(frappe._dict(doc=doc, rows=rows))
-		return payloads
+		return sort_tree_payloads(payloads, self.doctype, self.import_type)
+
+	def apply_tree_overrides(self):
+		"""Write the user's tree edits into the parent and is_group cells before import."""
+		overrides = self.tree_parent_overrides
+		if not overrides:
+			return
+		_parent_field, parent_column, _is_group_field, is_group_column = _get_tree_columns(self)
+
+		def set_cell(row, column, value):
+			if not column:
+				return
+			# Rows can be shorter than the header; pad so the index is assignable.
+			while len(row.data) <= column.index:
+				row.data.append(None)
+			row.data[column.index] = value
+
+		for row in self.data:
+			override = overrides.get(row.row_number)
+			if not override:
+				continue
+			if "parent" in override:
+				set_cell(row, parent_column, override.get("parent"))
+			if "is_group" in override:
+				set_cell(row, is_group_column, cint(override.get("is_group")))
 
 	def parse_next_row_for_import(self, data):
 		"""
-		Parses rows that make up a doc. A doc maybe built from a single row or multiple rows.
-		Returns the doc, rows, and data without the rows.
+		Parse rows that make up a doc. A doc maybe built from a single row or multiple rows.
+		Return the doc, rows, and data without the rows.
 		"""
 		doctypes = self.header.doctypes
 
@@ -444,13 +997,12 @@ class ImportFile:
 			# subsequent rows that have blank values in parent columns
 			# are considered as child rows
 			parent_column_indexes = self.header.get_column_indexes(self.doctype)
-			parent_row_values = first_row.get_values(parent_column_indexes)
 
 			data_without_first_row = data[1:]
 			for row in data_without_first_row:
 				row_values = row.get_values(parent_column_indexes)
 				# if the row is blank, it's a child row doc
-				if all([v in INVALID_VALUES for v in row_values]):
+				if all(v in INVALID_VALUES for v in row_values):
 					rows.append(row)
 					continue
 				# if we encounter a row which has values in parent columns,
@@ -467,36 +1019,13 @@ class ImportFile:
 					child_doc = row.parse_doc(doctype, parent_doc, table_df)
 					if child_doc is None:
 						continue
+					if parent_doc is None:
+						# no column of the file is for the record itself, so it starts empty
+						parent_doc = row._parse_doc(self.doctype, [], [])
 					parent_doc[table_df.fieldname] = parent_doc.get(table_df.fieldname, [])
 					parent_doc[table_df.fieldname].append(child_doc)
 
 		doc = parent_doc
-
-		if self.import_type == INSERT:
-			# check if there is atleast one row for mandatory table fields
-			meta = frappe.get_meta(self.doctype)
-			mandatory_table_fields = [
-				df
-				for df in meta.fields
-				if df.fieldtype in table_fieldtypes
-				and df.reqd
-				and len(doc.get(df.fieldname, [])) == 0
-			]
-			if len(mandatory_table_fields) == 1:
-				self.warnings.append(
-					{
-						"row": first_row.row_number,
-						"message": _("There should be atleast one row for {0} table").format(
-							frappe.bold(mandatory_table_fields[0].label)
-						),
-					}
-				)
-			elif mandatory_table_fields:
-				fields_string = ", ".join([df.label for df in mandatory_table_fields])
-				message = _("There should be atleast one row for the following tables: {0}").format(
-					fields_string
-				)
-				self.warnings.append({"row": first_row.row_number, "message": message})
 
 		return doc, rows, data[len(rows) :]
 
@@ -514,39 +1043,517 @@ class ImportFile:
 		for row in self.data:
 			warnings += row.warnings
 
+		# Custom Import Provider business validation (blocks unless type=info)
+		warnings += self._get_provider_warnings()
+
 		return warnings
+
+	def _get_provider_warnings(self):
+		if "_provider_warnings" not in self.__dict__:
+			from frappe.core.doctype.data_import.import_provider import get_import_provider
+
+			provider = get_import_provider(self.reference_doctype)
+			warnings = (provider.validate(self) or []) if provider else []
+			# The UI renders messages as HTML, and a provider may put file values in them.
+			for warning in warnings:
+				warning["message"] = clean_html(cstr(warning.get("message")))
+			self._provider_warnings = warnings
+		return self._provider_warnings
+
+	def get_all_warnings(self):
+		"""Row/column warnings plus tree-structure warnings used to block import."""
+		warnings = self.get_warnings()
+		tree_preview = self.get_tree_preview()
+		if tree_preview:
+			warnings += tree_preview.tree_warnings
+		return warnings
+
+	def get_tree_preview(self):
+		"""Cached tree preview; invalidated when parse_data_from_template re-parses the file."""
+		if "_tree_preview_cache" not in self.__dict__:
+			self._tree_preview_cache = build_tree_preview(self)
+		return self._tree_preview_cache
 
 	######
 
-	def read_file(self, file_path):
-		extn = file_path.split(".")[1]
+	def read_file(self, file_path: str):
+		extn = os.path.splitext(file_path)[1][1:]
 
 		file_content = None
-		with io.open(file_path, mode="rb") as f:
-			file_content = f.read()
+
+		if self.console:
+			file_content = frappe.read_file(file_path, True)
+			return file_content, extn
+
+		file_name = frappe.db.get_value("File", {"file_url": file_path})
+		if file_name:
+			file = frappe.get_doc("File", file_name)
+			file_content = file.get_content()
 
 		return file_content, extn
 
 	def read_content(self, content, extension):
 		error_title = _("Template Error")
 		if extension not in ("csv", "xlsx", "xls"):
-			frappe.throw(
-				_("Import template should be of type .csv, .xlsx or .xls"), title=error_title
-			)
+			frappe.throw(_("Import template should be of type .csv, .xlsx or .xls"), title=error_title)
 
 		if extension == "csv":
-			data = read_csv_content(content)
+			data = read_csv_content(
+				content,
+				use_sniffer=self.use_sniffer,
+				delimiter=_get_fixed_csv_delimiter(self.custom_delimiters, self.delimiter_options),
+			)
 		elif extension == "xlsx":
-			data = read_xlsx_file_from_attached_file(fcontent=content)
+			data = read_xlsx_file_from_attached_file(fcontent=content, read_only=True)
 		elif extension == "xls":
 			data = read_xls_file_from_attached_file(content)
-
 		return data
 
 
-class Row:
-	link_values_exist_map = {}
+def get_value_row_map(column_values, value_row_numbers):
+	"""Map each distinct cell value to sorted 1-based sheet row numbers (first-seen order)."""
+	value_rows = {}
+	for value, row_number in zip(column_values, value_row_numbers, strict=False):
+		if value in INVALID_VALUES:
+			continue
+		value_rows.setdefault(cstr(value), set()).add(row_number)
+	return {value: sorted(rows) for value, rows in value_rows.items()}
 
+
+def format_row_numbers_for_warning(rows: list, max_shown: int = 6) -> str:
+	"""Compact row list for warnings: first ``max_shown`` rows, then …, then the last row."""
+	if len(rows) <= max_shown:
+		return ", ".join(str(r) for r in rows)
+	return f"{', '.join(str(r) for r in rows[:max_shown])}, ... {rows[-1]}"
+
+
+def _get_id_fieldname_from_meta(meta) -> str:
+	if meta.autoname and meta.autoname.startswith("field:"):
+		return meta.autoname[6:]
+	return "name"
+
+
+def _get_tree_alias_field_from_meta(meta) -> str | None:
+	"""Alias field for parent-by-alias tree imports; None when name comes from a field: autoname."""
+	# Not a tree DocType, so no alias
+	if not meta.is_nested_set():
+		return None
+
+	# field: autoname puts the name in the file, so no alias
+	if meta.autoname and meta.autoname.startswith("field:"):
+		return None
+
+	# A title_field different from the ID field is the alias
+	if meta.title_field and meta.title_field != _get_id_fieldname_from_meta(meta):
+		return meta.title_field
+
+	# No usable title_field: fall back to the first mandatory Data field (e.g. account_name).
+	for field in meta.fields:
+		if field.fieldtype == "Data" and field.reqd:
+			return field.fieldname
+
+	return None
+
+
+def get_tree_alias_fieldname(doctype):
+	"""Title field for parent-by-alias tree imports; None when names come from a ``field:`` autoname."""
+	return _get_tree_alias_field_from_meta(frappe.get_meta(doctype))
+
+
+def uses_tree_alias_references(doctype):
+	"""Whether tree parent links may use title-field values instead of generated names."""
+	return bool(get_tree_alias_fieldname(doctype))
+
+
+def _get_tree_node_key(doc, id_fieldname, alias_field=None):
+	"""Stable row identity for tree sorting/preview: explicit id, else title-field alias."""
+	node_id = doc.get(id_fieldname)
+	if node_id not in INVALID_VALUES:
+		return cstr(node_id).strip()
+
+	if alias_field:
+		alias = doc.get(alias_field)
+		if alias not in INVALID_VALUES:
+			return cstr(alias).strip()
+
+	return None
+
+
+def _is_same_file_tree_reference(value, header) -> bool:
+	"""Whether a self-referential link value exists elsewhere in the import file."""
+	import_refs = getattr(header, "import_refs", None)
+	return bool(import_refs and cstr(value).strip() in import_refs)
+
+
+def _get_import_column_index(columns, fieldname):
+	column = next(
+		(col for col in columns if col.df and col.df.fieldname == fieldname and not col.skip_import),
+		None,
+	)
+	return column.index if column else None
+
+
+def _build_import_reference_sets(
+	import_file: "ImportFile", id_fieldname: str, alias_field: str | None
+) -> tuple[set[str], set[str]]:
+	"""Collect id and alias values from the template in a single pass."""
+	columns = import_file.header.columns
+	id_index = _get_import_column_index(columns, id_fieldname)
+	alias_index = _get_import_column_index(columns, alias_field) if alias_field else None
+
+	if id_index is None and alias_index is None:
+		return set(), set()
+
+	ids = set()
+	aliases = set()
+	for row in import_file.data:
+		if id_index is not None:
+			value = row.get(id_index)
+			if value not in INVALID_VALUES:
+				ids.add(cstr(value).strip())
+		if alias_index is not None:
+			value = row.get(alias_index)
+			if value not in INVALID_VALUES:
+				aliases.add(cstr(value).strip())
+
+	return ids, aliases
+
+
+def _get_existing_tree_parent_refs(doctype: str, parent_refs: set, alias_field: str | None) -> set:
+	"""Return parent values from the file that already exist in the DB (by name or alias)."""
+	return set(_build_db_tree_parent_name_map(doctype, parent_refs, alias_field))
+
+
+def _build_db_tree_parent_name_map(doctype: str, parent_refs: set, alias_field: str | None) -> dict:
+	"""Map parent link values from the file to existing document names.
+	An alias shared by more than one record is left out, so the file has to use the name."""
+	parent_list = list(parent_refs)
+	if not parent_list:
+		return {}
+
+	name_map = {}
+	for name in frappe.get_all(
+		doctype,
+		filters={"name": ("in", parent_list)},
+		pluck="name",
+		limit=len(parent_list),
+	):
+		name_map[name] = name
+
+	if alias_field:
+		names_by_alias = {}
+		for row in frappe.get_all(
+			doctype,
+			filters={alias_field: ("in", parent_list)},
+			fields=["name", alias_field],
+		):
+			names_by_alias.setdefault(cstr(row[alias_field]).strip(), []).append(row.name)
+
+		for alias, names in names_by_alias.items():
+			if len(names) == 1:
+				name_map.setdefault(alias, names[0])
+
+	return name_map
+
+
+def _get_tree_columns(import_file: "ImportFile"):
+	"""(parent_field, parent_column, is_group_field, is_group_column) for a tree import."""
+	meta = frappe.get_meta(import_file.doctype)
+	parent_field = meta.nsm_parent_field or f"parent_{frappe.scrub(import_file.doctype)}"
+	is_group_field = "is_group" if meta.has_field("is_group") else None
+
+	def find_column(fieldname):
+		if not fieldname:
+			return None
+		return next(
+			(
+				col
+				for col in import_file.header.columns
+				if col.df and col.df.fieldname == fieldname and not col.skip_import
+			),
+			None,
+		)
+
+	return parent_field, find_column(parent_field), is_group_field, find_column(is_group_field)
+
+
+def build_tree_preview(import_file: "ImportFile") -> frappe._dict | None:
+	"""Build a flat, depth-ordered node list for tree DocType import preview."""
+	meta = frappe.get_meta(import_file.doctype)
+	if not meta.is_nested_set():
+		return None
+
+	parent_field, parent_column, is_group_field, is_group_column = _get_tree_columns(import_file)
+	id_fieldname = getattr(import_file.header, "id_fieldname", None) or _get_id_fieldname_from_meta(meta)
+	alias_field = getattr(import_file.header, "tree_alias_field", None)
+	label_fieldname = meta.title_field or id_fieldname
+	# Editable only when the field is a mapped column we can write back through.
+	editable = bool(parent_column)
+	is_group_editable = bool(is_group_column)
+	overrides = getattr(import_file, "tree_parent_overrides", None) or {}
+
+	nodes = []
+	id_to_rows: dict[str, list[int]] = {}
+
+	for row in import_file.data:
+		doc = row.parse_doc(import_file.doctype)
+		if not doc:
+			continue
+
+		node_id = _get_tree_node_key(doc, id_fieldname, alias_field)
+		if not node_id:
+			continue
+
+		orig_parent = _get_tree_parent_value(row, parent_column, doc, parent_field)
+		orig_is_group = cint(doc.get(is_group_field)) if is_group_field else 0
+
+		# Keep the originals so the client can badge edited nodes and reset one.
+		override = overrides.get(row.row_number) or {}
+		parent = orig_parent
+		is_group = orig_is_group
+		if "parent" in override:
+			value = override.get("parent")
+			parent = cstr(value).strip() if value not in INVALID_VALUES else None
+		if "is_group" in override:
+			is_group = cint(override.get("is_group"))
+
+		label = doc.get(label_fieldname) or node_id
+		label = cstr(label).strip() if label not in INVALID_VALUES else node_id
+
+		id_to_rows.setdefault(node_id, []).append(row.row_number)
+		nodes.append(
+			frappe._dict(
+				id=node_id,
+				label=label,
+				parent=parent,
+				row_number=row.row_number,
+				is_group=is_group,
+				orig_parent=orig_parent,
+				orig_is_group=orig_is_group,
+				edited=bool(override),
+				warnings=[],
+			)
+		)
+
+	tree_warnings = []
+	nodes_by_id = {node.id: node for node in nodes}
+	duplicate_messages = {}
+	parent_refs = {node.parent for node in nodes}
+
+	for node_id, row_numbers in id_to_rows.items():
+		if len(row_numbers) > 1 and (
+			node_id not in import_file.header.import_aliases or node_id in parent_refs
+		):
+			message = _("Duplicate ID {0} in rows {1}").format(
+				frappe.bold(escape_html(cstr(node_id))), format_row_numbers_for_warning(row_numbers)
+			)
+			# type and rows let the UI offer "Keep First, Skip Rest".
+			tree_warnings.append(
+				{
+					"message": message,
+					"type": "duplicate_id",
+					"duplicate_id": cstr(node_id),
+					"rows": row_numbers,
+				}
+			)
+			duplicate_messages[node_id] = message
+
+	for node in nodes:
+		if message := duplicate_messages.get(node.id):
+			node.warnings.append(message)
+
+	for node in nodes:
+		parent_id = node.parent
+		if not parent_id or parent_id not in nodes_by_id:
+			continue
+		if _has_parent_cycle(node.id, nodes_by_id):
+			message = _("Circular parent reference for {0}").format(frappe.bold(escape_html(cstr(node.id))))
+			node.warnings.append(message)
+			if not any(w.get("message") == message for w in tree_warnings):
+				tree_warnings.append({"row": node.row_number, "message": message})
+
+	parents_needing_db_check = {
+		node.parent
+		for node in nodes
+		if node.parent
+		and node.parent not in nodes_by_id
+		and not _is_same_file_tree_reference(node.parent, import_file.header)
+	}
+	existing_parents_in_db = _get_existing_tree_parent_refs(
+		import_file.doctype, parents_needing_db_check, alias_field
+	)
+
+	allow_any_existing_parent = import_file.import_type == UPDATE
+	for node in nodes:
+		parent_id = node.parent
+		if not parent_id or parent_id in nodes_by_id:
+			continue
+		if _is_same_file_tree_reference(parent_id, import_file.header):
+			continue
+		if allow_any_existing_parent or parent_id in existing_parents_in_db:
+			continue
+
+		message = _("Parent {0} not found in file").format(frappe.bold(escape_html(cstr(parent_id))))
+		node.warnings.append(message)
+		tree_warnings.append({"row": node.row_number, "message": message})
+
+	if is_group_field:
+		_append_non_group_parent_warnings(nodes, nodes_by_id, tree_warnings, is_group_field)
+
+	display_nodes = _order_tree_preview_nodes(nodes)
+
+	return frappe._dict(
+		nodes=display_nodes,
+		tree_warnings=tree_warnings,
+		total_nodes=len(nodes),
+		editable=editable,
+		is_group_editable=is_group_editable,
+		parent_field=parent_field,
+	)
+
+
+def _append_non_group_parent_warnings(
+	nodes: list, nodes_by_id: dict, tree_warnings: list, is_group_field: str
+):
+	"""Warn when a node is used as a parent in the file but Is Group is unchecked."""
+	children_by_parent: dict[str, list] = {}
+	for node in nodes:
+		if node.parent and node.parent in nodes_by_id:
+			children_by_parent.setdefault(node.parent, []).append(node)
+
+	for parent_id, _children in children_by_parent.items():
+		parent = nodes_by_id.get(parent_id)
+		if not parent or parent.is_group:
+			continue
+
+		display_name = parent.label or parent.id
+		message = _("{0} has children but Is Group is 0 — parent must be a group node").format(
+			frappe.bold(escape_html(cstr(display_name)))
+		)
+		if message not in parent.warnings:
+			parent.warnings.append(message)
+		if not any(w.get("message") == message for w in tree_warnings):
+			tree_warnings.append({"row": parent.row_number, "message": message})
+
+
+def _get_tree_parent_value(row: "Row", parent_column, doc: frappe._dict, parent_field: str):
+	"""Parent link values are often unset in preview because targets are not in DB yet."""
+	if parent_column:
+		value = row.get(parent_column.index)
+		if value not in INVALID_VALUES:
+			return cstr(value).strip()
+
+	value = doc.get(parent_field)
+	return cstr(value).strip() if value not in INVALID_VALUES else None
+
+
+def _has_parent_cycle(node_id: str, nodes_by_id: dict) -> bool:
+	seen = set()
+	current = node_id
+	while current:
+		if current in seen:
+			return True
+		seen.add(current)
+		node = nodes_by_id.get(current)
+		if not node or not node.parent or node.parent not in nodes_by_id:
+			return False
+		current = node.parent
+	return False
+
+
+def sort_tree_payloads(payloads: list, doctype: str, import_type: str | None) -> list:
+	"""Return payloads in parent-before-child order for nested-set inserts."""
+	meta = frappe.get_meta(doctype)
+	if import_type not in (INSERT, UPSERT) or not meta.is_nested_set() or not payloads:
+		return payloads
+
+	parent_field = meta.nsm_parent_field or f"parent_{frappe.scrub(doctype)}"
+	id_fieldname = _get_id_fieldname_from_meta(meta)
+	alias_field = _get_tree_alias_field_from_meta(meta)
+
+	payload_keys = []
+	for payload in payloads:
+		node_id = _get_tree_node_key(payload.doc, id_fieldname, alias_field)
+		parent = payload.doc.get(parent_field)
+		parent = cstr(parent).strip() if parent not in INVALID_VALUES else None
+		payload_keys.append((payload, node_id, parent))
+
+	payload_by_id = {node_id: payload for payload, node_id, _parent in payload_keys if node_id}
+
+	children_by_parent: dict[str, list] = {}
+	roots = []
+
+	for payload, node_id, parent in payload_keys:
+		if not node_id:
+			continue
+		if parent and parent in payload_by_id:
+			children_by_parent.setdefault(parent, []).append(payload)
+		else:
+			roots.append(payload)
+
+	for children in children_by_parent.values():
+		children.sort(key=lambda payload: payload.rows[0].row_number)
+	roots.sort(key=lambda payload: payload.rows[0].row_number)
+
+	ordered = []
+	seen = set()
+	payload_id_by_payload = {id(payload): node_id for payload, node_id, _parent in payload_keys}
+
+	stack = list(reversed(roots))
+	while stack:
+		payload = stack.pop()
+		node_id = payload_id_by_payload[id(payload)]
+		if id(payload) in seen:
+			continue
+		seen.add(id(payload))
+		ordered.append(payload)
+		stack.extend(reversed(children_by_parent.get(node_id, [])))
+
+	for payload, _node_id, _parent in payload_keys:
+		if id(payload) not in seen:
+			ordered.append(payload)
+
+	return ordered
+
+
+def _order_tree_preview_nodes(nodes: list) -> list:
+	in_file_ids = {node.id for node in nodes}
+	children_by_parent: dict[str | None, list] = {}
+
+	for node in nodes:
+		parent_key = node.parent if node.parent in in_file_ids else None
+		children_by_parent.setdefault(parent_key, []).append(node)
+
+	for children in children_by_parent.values():
+		children.sort(key=lambda n: n.row_number)
+
+	# The tree nests children under their parent's id, so an id other rows point to is shown once.
+	def get_display_key(node):
+		return node.id if node.id in children_by_parent else node.row_number
+
+	ordered = []
+	seen = set()
+
+	stack = [(node, 0) for node in reversed(children_by_parent.get(None, []))]
+	while stack:
+		node, depth = stack.pop()
+		if get_display_key(node) in seen:
+			continue
+		seen.add(get_display_key(node))
+		node.depth = depth
+		ordered.append(node)
+		stack.extend((child, depth + 1) for child in reversed(children_by_parent.get(node.id, [])))
+
+	for node in nodes:
+		if get_display_key(node) not in seen:
+			node.depth = 0
+			node.orphan = True
+			ordered.append(node)
+
+	return ordered
+
+
+class Row:
 	def __init__(self, index, row, doctype, header, import_type):
 		self.index = index
 		self.row_number = index + 1
@@ -561,12 +1568,15 @@ class Row:
 		if len_row != len_columns:
 			less_than_columns = len_row < len_columns
 			message = (
-				"Row has less values than columns"
+				_("This row has fewer cells than the header — check for missing commas or columns")
 				if less_than_columns
-				else "Row has more values than columns"
+				else _("This row has more cells than the header — check for extra commas or columns")
 			)
 			self.warnings.append(
-				{"row": self.row_number, "message": message,}
+				{
+					"row": self.row_number,
+					"message": message,
+				}
 			)
 
 	def parse_doc(self, doctype, parent_doc=None, table_df=None):
@@ -578,8 +1588,7 @@ class Row:
 			return None
 
 		columns = self.header.get_columns(col_indexes)
-		doc = self._parse_doc(doctype, columns, values, parent_doc, table_df)
-		return doc
+		return self._parse_doc(doctype, columns, values, parent_doc, table_df)
 
 	def _parse_doc(self, doctype, columns, values, parent_doc=None, table_df=None):
 		doc = frappe._dict()
@@ -593,10 +1602,10 @@ class Row:
 			)
 
 		# remove standard fields and __islocal
-		for key in frappe.model.default_fields + ("__islocal",):
+		for key in frappe.model.default_fields + frappe.model.child_table_fields + ("__islocal",):
 			doc.pop(key, None)
 
-		for col, value in zip(columns, values):
+		for col, value in zip(columns, values, strict=False):
 			df = col.df
 			if value in INVALID_VALUES:
 				value = None
@@ -608,11 +1617,8 @@ class Row:
 				doc[df.fieldname] = self.parse_value(value, col)
 
 		is_table = frappe.get_meta(doctype).istable
-		is_update = self.import_type == UPDATE
+		is_update = self.import_type in (UPDATE, UPSERT)
 		if is_table and is_update:
-			# check if the row already exists
-			# if yes, fetch the original doc so that it is not updated
-			# if no, create a new doc
 			id_field = get_id_field(doctype)
 			id_value = doc.get(id_field.fieldname)
 			if id_value and frappe.db.exists(doctype, id_value):
@@ -626,72 +1632,90 @@ class Row:
 				new_doc.update(doc)
 				doc = new_doc
 
-		self.check_mandatory_fields(doctype, doc, table_df)
 		return doc
 
 	def validate_value(self, value, col):
-		df = col.df
-		if df.fieldtype == "Select":
-			select_options = get_select_options(df)
-			if select_options and value not in select_options:
-				options_string = ", ".join([frappe.bold(d) for d in select_options])
-				msg = _("Value must be one of {0}").format(options_string)
-				self.warnings.append(
-					{"row": self.row_number, "field": df_as_json(df), "message": msg,}
-				)
-				return
+		# Apply stored mappings only during import, not while building preview warnings.
+		if frappe.flags.in_import:
+			from frappe.core.doctype.data_import.value_mapping import resolve_import_value
 
-		elif df.fieldtype == "Link":
-			exists = self.link_exists(value, df)
-			if not exists:
-				msg = _("Value {0} missing for {1}").format(
-					frappe.bold(value), frappe.bold(df.options)
-				)
-				self.warnings.append(
-					{"row": self.row_number, "field": df_as_json(df), "message": msg,}
-				)
-				return
-		elif df.fieldtype in ["Date", "Datetime"]:
+			value = resolve_import_value(
+				value, col.df, self.header.reference_doctype, self.header.value_lookup
+			)
+		df = col.df
+		if df.fieldtype in ("Select", "Link"):
+			# Invalid values are reported once per column as a value_mapping warning, with their
+			# rows, and that warning blocks the import until they are mapped or skipped.
+			return value
+		if df.fieldtype == "Date":
 			value = self.get_date(value, col)
-			if isinstance(value, frappe.string_types):
+			if isinstance(value, str):
 				# value was not parsed as datetime object
 				self.warnings.append(
 					{
 						"row": self.row_number,
 						"col": col.column_number,
 						"field": df_as_json(df),
-						"message": _("Value {0} must in {1} format").format(
-							frappe.bold(value), frappe.bold(get_user_format(col.date_format))
+						"message": _('"{0}" is not a valid date. Use {1}').format(
+							frappe.bold(escape_html(cstr(value))),
+							frappe.bold(get_user_format(col.date_format)),
 						),
 					}
 				)
 				return
-		elif df.fieldtype == "Duration":
-			import re
-			is_valid_duration = re.match("^(?:(\d+d)?((^|\s)\d+h)?((^|\s)\d+m)?((^|\s)\d+s)?)$", value)
-			if not is_valid_duration:
+		elif df.fieldtype == "Datetime":
+			value = self.get_datetime(value, col)
+			if isinstance(value, str):
+				# value was not parsed as datetime object
 				self.warnings.append(
 					{
 						"row": self.row_number,
 						"col": col.column_number,
 						"field": df_as_json(df),
-						"message": _("Value {0} must be in the valid duration format: d h m s").format(
-							frappe.bold(value)
-						)
+						"message": _('"{0}" is not a valid datetime. Use {1}').format(
+							frappe.bold(escape_html(cstr(value))),
+							frappe.bold(get_user_format(col.date_format)),
+						),
 					}
 				)
+				return
+		elif df.fieldtype == "Duration":
+			if not DURATION_PATTERN.match(value):
+				self.warnings.append(
+					{
+						"row": self.row_number,
+						"col": col.column_number,
+						"field": df_as_json(df),
+						"message": _('"{0}" is not valid. Use duration format: d h m s').format(
+							frappe.bold(escape_html(cstr(value)))
+						),
+					}
+				)
+		elif df.fieldtype in ("Int", "Float", "Currency", "Percent") and isinstance(value, str):
+			number_format = get_number_format()
+			number = _parse_number(value, number_format)
+			if number is None:
+				example = (
+					f"1234{number_format.decimal_separator}56" if number_format.decimal_separator else "1234"
+				)
+				self.warnings.append(
+					{
+						"row": self.row_number,
+						"col": col.column_number,
+						"field": df_as_json(df),
+						"message": _(
+							'"{0}" is not a valid number, or could mean two numbers. Write it like {1}'
+						).format(frappe.bold(escape_html(value)), frappe.bold(example)),
+					}
+				)
+				return
+			value = number
 
 		return value
 
-	def link_exists(self, value, df):
-		key = df.options + "::" + cstr(value)
-		if Row.link_values_exist_map.get(key) is None:
-			Row.link_values_exist_map[key] = frappe.db.exists(df.options, value)
-		return Row.link_values_exist_map.get(key)
-
 	def parse_value(self, value, col):
 		df = col.df
-		if isinstance(value, (datetime, date)) and df.fieldtype in ["Date", "Datetime"]:
+		if isinstance(value, datetime | date) and df.fieldtype in ["Date", "Datetime"]:
 			return value
 
 		value = cstr(value)
@@ -706,15 +1730,31 @@ class Row:
 			value = cint(value)
 		elif df.fieldtype in ["Float", "Percent", "Currency"]:
 			value = flt(value)
-		elif df.fieldtype in ["Date", "Datetime"]:
+		elif df.fieldtype == "Date":
 			value = self.get_date(value, col)
+		elif df.fieldtype == "Datetime":
+			value = self.get_datetime(value, col)
 		elif df.fieldtype == "Duration":
 			value = duration_to_seconds(value)
 
 		return value
 
-	def get_date(self, value, column):
-		if isinstance(value, (datetime, date)):
+	def get_date(self, value, column) -> date:
+		if isinstance(value, date):
+			return value
+
+		date_format = column.date_format
+		if date_format:
+			try:
+				return datetime.strptime(value, date_format).date()
+			except ValueError:
+				# ignore date values that dont match the format
+				# import will break for these values later
+				pass
+		return value
+
+	def get_datetime(self, value, column) -> datetime:
+		if isinstance(value, datetime):
 			return value
 
 		date_format = column.date_format
@@ -727,68 +1767,8 @@ class Row:
 				pass
 		return value
 
-	def check_mandatory_fields(self, doctype, doc, table_df=None):
-		"""If import type is Insert:
-			Check for mandatory fields (except table fields) in doc
-		if import type is Update:
-			Check for name field or autoname field in doc
-		"""
-		meta = frappe.get_meta(doctype)
-		if self.import_type == UPDATE:
-			if meta.istable:
-				# when updating records with table rows,
-				# there are two scenarios:
-				# 1. if row 'name' is provided in the template
-				# the table row will be updated
-				# 2. if row 'name' is not provided
-				# then a new row will be added
-				# so we dont need to check for mandatory
-				return
-
-			# for update, only ID (name) field is mandatory
-			id_field = get_id_field(doctype)
-			if doc.get(id_field.fieldname) in INVALID_VALUES:
-				self.warnings.append(
-					{
-						"row": self.row_number,
-						"message": _("{0} is a mandatory field").format(id_field.label),
-					}
-				)
-			return
-
-		fields = [
-			df
-			for df in meta.fields
-			if df.fieldtype not in table_fieldtypes
-			and df.reqd
-			and doc.get(df.fieldname) in INVALID_VALUES
-		]
-
-		if not fields:
-			return
-
-		def get_field_label(df):
-			return "{0}{1}".format(df.label, " ({})".format(table_df.label) if table_df else "")
-
-		if len(fields) == 1:
-			field_label = get_field_label(fields[0])
-			self.warnings.append(
-				{
-					"row": self.row_number,
-					"message": _("{0} is a mandatory field").format(frappe.bold(field_label)),
-				}
-			)
-		else:
-			fields_string = ", ".join([frappe.bold(get_field_label(df)) for df in fields])
-			self.warnings.append(
-				{
-					"row": self.row_number,
-					"message": _("{0} are mandatory fields").format(fields_string),
-				}
-			)
-
 	def get_values(self, indexes):
-		return [self.data[i] for i in indexes]
+		return [get_item_at_index(self.data, i) for i in indexes]
 
 	def get(self, index):
 		return self.data[index]
@@ -798,20 +1778,45 @@ class Row:
 
 
 class Header(Row):
-	def __init__(self, index, row, doctype, raw_data, column_to_field_map=None):
+	def __init__(
+		self,
+		index,
+		row,
+		doctype,
+		raw_data,
+		column_to_field_map=None,
+		value_lookup=None,
+		reference_doctype=None,
+		column_to_date_format_map=None,
+	):
 		self.index = index
 		self.row_number = index + 1
 		self.data = row
 		self.doctype = doctype
+		self.reference_doctype = reference_doctype or doctype
+		self.value_lookup = value_lookup or {}
 		column_to_field_map = column_to_field_map or frappe._dict()
+		column_to_date_format_map = column_to_date_format_map or frappe._dict()
 
 		self.seen = []
 		self.columns = []
 
+		# 1-based sheet row for each data row (row 1 = header); passed into Column validation
+		value_row_numbers = [self.index + data_idx + 2 for data_idx in range(len(raw_data))]
+
 		for j, header in enumerate(row):
 			column_values = [get_item_at_index(r, j) for r in raw_data]
 			map_to_field = column_to_field_map.get(str(j))
-			column = Column(j, header, self.doctype, column_values, map_to_field, self.seen)
+			column = Column(
+				j,
+				header,
+				self.doctype,
+				column_values,
+				map_to_field,
+				self.seen,
+				value_row_numbers,
+				column_to_date_format_map.get(str(j)),
+			)
 			self.seen.append(header)
 			self.columns.append(column)
 
@@ -824,9 +1829,7 @@ class Header(Row):
 			else:
 				doctypes.append((col.df.parent, col.df.child_table_df))
 
-		self.doctypes = sorted(
-			list(set(doctypes)), key=lambda x: -1 if x[0] == self.doctype else 1
-		)
+		self.doctypes = sorted(list(set(doctypes)), key=lambda x: -1 if x[0] == self.doctype else 1)
 
 	def get_column_indexes(self, doctype, tablefield=None):
 		def is_table_field(df):
@@ -837,10 +1840,7 @@ class Header(Row):
 		return [
 			col.index
 			for col in self.columns
-			if not col.skip_import
-			and col.df
-			and col.df.parent == doctype
-			and is_table_field(col.df)
+			if not col.skip_import and col.df and col.df.parent == doctype and is_table_field(col.df)
 		]
 
 	def get_columns(self, indexes):
@@ -848,18 +1848,31 @@ class Header(Row):
 
 
 class Column:
-	seen = []
-	fields_column_map = {}
-
-	def __init__(self, index, header, doctype, column_values, map_to_field=None, seen=[]):
+	def __init__(
+		self,
+		index,
+		header,
+		doctype,
+		column_values,
+		map_to_field=None,
+		seen=None,
+		value_row_numbers=None,
+		date_format_override=None,
+	):
+		if seen is None:
+			seen = []
 		self.index = index
 		self.column_number = index + 1
 		self.doctype = doctype
 		self.header_title = header
 		self.column_values = column_values
+		self.value_row_numbers = value_row_numbers or list(range(2, len(column_values) + 2))
 		self.map_to_field = map_to_field
 		self.seen = seen
+		self.invalid_value_items = None
 
+		# User-chosen date/time format for this column (falls back to auto-guess).
+		self.date_format_override = date_format_override
 		self.date_format = None
 		self.df = None
 		self.skip_import = None
@@ -876,20 +1889,11 @@ class Column:
 
 		if self.map_to_field and self.map_to_field != "Don't Import":
 			df = get_df_for_column_header(self.doctype, self.map_to_field)
-			if df:
-				self.warnings.append(
-					{
-						"message": _("Mapping column {0} to field {1}").format(
-							frappe.bold(header_title or "<i>Untitled Column</i>"), frappe.bold(df.label)
-						),
-						"type": "info",
-					}
-				)
-			else:
+			if not df:
 				self.warnings.append(
 					{
 						"message": _("Could not map column {0} to field {1}").format(
-							column_number, self.map_to_field
+							column_number, escape_html(cstr(self.map_to_field))
 						),
 						"type": "info",
 					}
@@ -907,7 +1911,9 @@ class Column:
 			self.warnings.append(
 				{
 					"col": column_number,
-					"message": _("Skipping Duplicate Column {0}").format(frappe.bold(header_title)),
+					"message": _("Skipping Duplicate Column {0}").format(
+						frappe.bold(escape_html(header_title))
+					),
 					"type": "info",
 				}
 			)
@@ -918,7 +1924,7 @@ class Column:
 			self.warnings.append(
 				{
 					"col": column_number,
-					"message": _("Skipping column {0}").format(frappe.bold(header_title)),
+					"message": _("Skipping column {0}").format(frappe.bold(escape_html(header_title))),
 					"type": "info",
 				}
 			)
@@ -926,9 +1932,10 @@ class Column:
 			self.warnings.append(
 				{
 					"col": column_number,
-					"message": _("Cannot match column {0} with any field").format(
-						frappe.bold(header_title)
-					),
+					"message": _(
+						'"{0}" does not match any field. Map it in the Preview step, otherwise it will be ignored.'
+					).format(frappe.bold(escape_html(header_title))),
+					"code": "unknown_column",
 					"type": "info",
 				}
 			)
@@ -941,37 +1948,39 @@ class Column:
 		self.skip_import = skip_import
 
 	def guess_date_format_for_column(self):
-		"""Guesses date format for a column by parsing all the values in the column,
-		getting the date format and then returning the one which has the maximum frequency
-		"""
+		"""Return the most common date format among the column's values."""
 
 		def guess_date_format(d):
-			if isinstance(d, (datetime, date)):
+			if isinstance(d, datetime | date | time):
 				if self.df.fieldtype == "Date":
 					return "%Y-%m-%d"
 				if self.df.fieldtype == "Datetime":
 					return "%Y-%m-%d %H:%M:%S"
+				if self.df.fieldtype == "Time":
+					return "%H:%M:%S"
 			if isinstance(d, str):
 				return frappe.utils.guess_date_format(d)
 
-		date_formats = [guess_date_format(d) for d in self.column_values]
+		# Dates repeat a lot in real files, so guess each distinct value once.
+		format_by_value = {d: guess_date_format(d) for d in set(self.column_values)}
+		date_formats = [format_by_value[d] for d in self.column_values]
 		date_formats = [d for d in date_formats if d]
 		if not date_formats:
 			return
 
 		unique_date_formats = set(date_formats)
-		max_occurred_date_format = max(unique_date_formats, key=date_formats.count)
+		most_common_date_format = max(unique_date_formats, key=date_formats.count)
 
 		if len(unique_date_formats) > 1:
 			# fmt: off
 			message = _("The column {0} has {1} different date formats. Automatically setting {2} as the default format as it is the most common. Please change other values in this column to this format.")
 			# fmt: on
-			user_date_format = get_user_format(max_occurred_date_format)
+			user_date_format = get_user_format(most_common_date_format)
 			self.warnings.append(
 				{
 					"col": self.column_number,
 					"message": message.format(
-						frappe.bold(self.header_title),
+						frappe.bold(escape_html(self.header_title)),
 						len(unique_date_formats),
 						frappe.bold(user_date_format),
 					),
@@ -979,67 +1988,44 @@ class Column:
 				}
 			)
 
-		return max_occurred_date_format
+		return most_common_date_format
 
 	def validate_values(self):
+		"""Validate all values in the column; append column-level warnings with row numbers."""
 		if not self.df:
 			return
 
 		if self.skip_import:
 			return
 
-		if self.df.fieldtype == "Link":
-			# find all values that dont exist
-			values = list(set([cstr(v) for v in self.column_values[1:] if v]))
-			exists = [
-				d.name for d in frappe.db.get_all(self.df.options, filters={"name": ("in", values)})
-			]
-			not_exists = list(set(values) - set(exists))
-			if not_exists:
-				missing_values = ", ".join(not_exists)
-				self.warnings.append(
-					{
-						"col": self.column_number,
-						"message": (
-							"The following values do not exist for {}: {}".format(
-								self.df.options, missing_values
-							)
-						),
-						"type": "warning",
-					}
-				)
+		if not any(self.column_values):
+			return
+
+		if self.df.fieldtype in ("Link", "Select"):
+			from frappe.core.doctype.data_import.value_mapping import warn_invalid_link_select_values
+
+			warn_invalid_link_select_values(self)
 		elif self.df.fieldtype in ("Date", "Time", "Datetime"):
-			# guess date format
-			self.date_format = self.guess_date_format_for_column()
+			self.date_format = self.date_format_override or self.guess_date_format_for_column()
+
 			if not self.date_format:
-				self.date_format = "%Y-%m-%d"
+				if self.df.fieldtype == "Time":
+					self.date_format = "%H:%M:%S"
+					date_format = "HH:mm:ss"
+				else:
+					self.date_format = "%Y-%m-%d"
+					date_format = "yyyy-mm-dd"
+
+				message = _(
+					"{0} format could not be determined from the values in this column. Defaulting to {1}."
+				)
 				self.warnings.append(
 					{
 						"col": self.column_number,
-						"message": _(
-							"Date format could not be determined from the values in"
-							" this column. Defaulting to yyyy-mm-dd."
-						),
+						"message": message.format(self.df.fieldtype, date_format),
 						"type": "info",
 					}
 				)
-		elif self.df.fieldtype == "Select":
-			options = get_select_options(self.df)
-			if options:
-				values = list(set([cstr(v) for v in self.column_values[1:] if v]))
-				invalid = list(set(values) - set(options))
-				if invalid:
-					valid_values = ", ".join([frappe.bold(o) for o in options])
-					invalid_values = ", ".join([frappe.bold(i) for i in invalid])
-					self.warnings.append(
-						{
-							"col": self.column_number,
-							"message": (
-								"The following values are invalid: {0}. Values must be"
-								" one of {1}".format(invalid_values, valid_values)
-							),
-						}
-					)
 
 	def as_dict(self):
 		d = frappe._dict()
@@ -1058,19 +2044,107 @@ class Column:
 		return d
 
 
+class _HashableTableDF(frappe._dict):
+	"""Stand-in child-table docfield; hashable because Header puts table dfs in a set."""
+
+	def __hash__(self):
+		return hash((self.get("fieldname"), self.get("options")))
+
+
+def _build_fields_dict_from_schema(parent_doctype, schema):
+	"""build_fields_dict_for_column_matching for a provider schema instead of meta.
+	A child table's DocType is taken from its fields' ``parent``."""
+	out = {}
+
+	groups = [(parent_doctype, None, schema.get("fields") or [])]
+	for ct in schema.get("child_tables") or []:
+		child_fields = ct.get("fields") or []
+		child_doctype = (child_fields[0].get("parent") if child_fields else None) or ct.get("fieldname")
+		table_df = _HashableTableDF(
+			fieldname=ct["fieldname"], label=ct.get("label") or ct["fieldname"], options=child_doctype
+		)
+		groups.append((child_doctype, table_df, child_fields))
+
+	for doctype, table_df, fields in groups:
+		is_parent = table_df is None
+		table_ref = (table_df.label or table_df.fieldname) if table_df else None
+		translated_table_label = _(table_ref) if table_ref else None
+
+		name_df = frappe._dict(
+			{"fieldtype": "Data", "fieldname": "name", "label": "ID", "reqd": 1, "parent": doctype}
+		)
+		if is_parent:
+			name_headers = ("name", "ID", _("ID"))
+		else:
+			name_headers = (
+				f"{table_df.fieldname}.name",
+				f"ID ({table_ref})",
+				"{} ({})".format(_("ID"), translated_table_label),
+			)
+			name_df.is_child_table_field = True
+			name_df.child_table_df = table_df
+		for header in name_headers:
+			out[header] = name_df
+
+		for df in fields:
+			df = frappe._dict(df)
+			if (df.fieldtype or "Data") in no_value_fields:
+				continue
+			label = (df.label or "").strip()
+			translated_label = _(label)
+			prefer_plain_label = bool(df.get("prefer_plain_label"))
+			import_labels = list(df.get("import_labels") or [])
+
+			if is_parent:
+				for header in (label, translated_label):
+					if header not in out:
+						out[header] = df
+				for header in (
+					df.fieldname,
+					f"{label} ({df.fieldname})",
+					f"{translated_label} ({df.fieldname})",
+				):
+					out[header] = df
+			else:
+				new_df = frappe._dict(df.copy())
+				new_df.is_child_table_field = True
+				new_df.child_table_df = table_df
+				if prefer_plain_label:
+					for header in (label, translated_label, df.fieldname):
+						if header:
+							out[header] = new_df
+				for alias in import_labels:
+					if alias:
+						out[alias] = new_df
+				for header in (
+					f"{table_df.fieldname}.{df.fieldname}",
+					f"{label} ({table_ref})",
+					f"{translated_label} ({translated_table_label})",
+				):
+					out[header] = new_df
+
+	return out
+
+
 def build_fields_dict_for_column_matching(parent_doctype):
 	"""
 	Build a dict with various keys to match with column headers and value as docfield
 	The keys can be label or fieldname
 	{
-		'Customer': df1,
-		'customer': df1,
-		'Due Date': df2,
-		'due_date': df2,
-		'Item Code (Sales Invoice Item)': df3,
-		'Sales Invoice Item:item_code': df3,
+	        'Customer': df1,
+	        'customer': df1,
+	        'Due Date': df2,
+	        'due_date': df2,
+	        'Item Code (Sales Invoice Item)': df3,
+	        'Sales Invoice Item:item_code': df3,
 	}
 	"""
+	# A Custom Import Provider supplies its own field schema; map columns against that.
+	from frappe.core.doctype.data_import.import_provider import get_import_provider
+
+	provider = get_import_provider(parent_doctype)
+	if provider and (schema := provider.get_import_fields()):
+		return _build_fields_dict_from_schema(parent_doctype, schema)
 
 	def get_standard_fields(doctype):
 		meta = frappe.get_meta(doctype)
@@ -1098,18 +2172,13 @@ def build_fields_dict_for_column_matching(parent_doctype):
 	out = {}
 
 	# doctypes and fieldname if it is a child doctype
-	doctypes = [[parent_doctype, None]] + [
-		[df.options, df] for df in parent_meta.get_table_fields()
-	]
+	doctypes = [(parent_doctype, None)] + [(df.options, df) for df in parent_meta.get_table_fields()]
 
 	for doctype, table_df in doctypes:
+		table_ref = (table_df.label or table_df.fieldname) if table_df else None
+		translated_table_label = _(table_ref) if table_ref else None
+
 		# name field
-		name_by_label = (
-			"ID" if doctype == parent_doctype else "ID ({0})".format(table_df.label)
-		)
-		name_by_fieldname = (
-			"name" if doctype == parent_doctype else "{0}.name".format(table_df.fieldname)
-		)
 		name_df = frappe._dict(
 			{
 				"fieldtype": "Data",
@@ -1120,75 +2189,100 @@ def build_fields_dict_for_column_matching(parent_doctype):
 			}
 		)
 
-		if doctype != parent_doctype:
+		if doctype == parent_doctype:
+			name_headers = (
+				"name",  # fieldname
+				"ID",  # label
+				_("ID"),  # translated label
+			)
+		else:
+			name_headers = (
+				f"{table_df.fieldname}.name",  # fieldname
+				f"ID ({table_ref})",  # label
+				"{} ({})".format(_("ID"), translated_table_label),  # translated label
+			)
+
 			name_df.is_child_table_field = True
 			name_df.child_table_df = table_df
 
-		out[name_by_label] = name_df
-		out[name_by_fieldname] = name_df
+		for header in name_headers:
+			out[header] = name_df
 
-		# other fields
 		fields = get_standard_fields(doctype) + frappe.get_meta(doctype).fields
 		for df in fields:
-			label = (df.label or "").strip()
 			fieldtype = df.fieldtype or "Data"
-			parent = df.parent or parent_doctype
-			if fieldtype not in no_value_fields:
-				if parent_doctype == doctype:
-					# for parent doctypes keys will be
-					# Label
-					# label
-					# Label (label)
-					if not out.get(label):
-						# if Label is already set, don't set it again
-						# in case of duplicate column headers
-						out[label] = df
-					out[df.fieldname] = df
-					label_with_fieldname = "{0} ({1})".format(label, df.fieldname)
-					out[label_with_fieldname] = df
+			if fieldtype in no_value_fields:
+				continue
+
+			label = (df.label or "").strip()
+			translated_label = _(label)
+
+			if parent_doctype == doctype:
+				# for parent doctypes keys will be
+				# Label, fieldname, Label (fieldname)
+
+				for header in (label, translated_label):
+					# if Label is already set, don't set it again
+					# in case of duplicate column headers
+					if header not in out:
+						out[header] = df
+
+				for header in (
+					df.fieldname,
+					f"{label} ({df.fieldname})",
+					f"{translated_label} ({df.fieldname})",
+				):
+					out[header] = df
+
+			else:
+				# for child doctypes keys will be
+				# Label (Table Field Label)
+				# table_field.fieldname
+
+				# create a new df object to avoid mutation problems
+				if isinstance(df, dict):
+					new_df = frappe._dict(df.copy())
 				else:
-					# in case there are multiple table fields with the same doctype
-					# for child doctypes keys will be
-					# Label (Table Field Label)
-					# table_field.fieldname
-					table_fields = parent_meta.get(
-						"fields", {"fieldtype": ["in", table_fieldtypes], "options": parent}
-					)
-					for table_field in table_fields:
-						by_label = "{0} ({1})".format(label, table_field.label)
-						by_fieldname = "{0}.{1}".format(table_field.fieldname, df.fieldname)
+					new_df = df.as_dict()
 
-						# create a new df object to avoid mutation problems
-						if isinstance(df, dict):
-							new_df = frappe._dict(df.copy())
-						else:
-							new_df = df.as_dict()
+				new_df.is_child_table_field = True
+				new_df.child_table_df = table_df
 
-						new_df.is_child_table_field = True
-						new_df.child_table_df = table_field
-						out[by_label] = new_df
-						out[by_fieldname] = new_df
+				for header in (
+					# fieldname
+					f"{table_df.fieldname}.{df.fieldname}",
+					# label
+					f"{label} ({table_ref})",
+					# translated label
+					f"{translated_label} ({translated_table_label})",
+				):
+					out[header] = new_df
 
 	# if autoname is based on field
 	# add an entry for "ID (Autoname Field)"
 	autoname_field = get_autoname_field(parent_doctype)
 	if autoname_field:
-		out["ID ({})".format(autoname_field.label)] = autoname_field
-		# ID field should also map to the autoname field
-		out["ID"] = autoname_field
-		out["name"] = autoname_field
+		for header in (
+			f"ID ({autoname_field.label})",  # label
+			"{} ({})".format(_("ID"), _(autoname_field.label)),  # translated label
+			# ID field should also map to the autoname field
+			"ID",
+			_("ID"),
+			"name",
+		):
+			out[header] = autoname_field
 
 	return out
 
 
 def get_df_for_column_header(doctype, header):
-	def build_fields_dict_for_doctype():
-		return build_fields_dict_for_column_matching(doctype)
+	return _get_fields_dict(doctype, frappe.session.user).get(header)
 
-	df_by_labels_and_fieldname = frappe.cache().hget(
-		"data_import_column_header_map", doctype, generator=build_fields_dict_for_doctype
-	)
-	return df_by_labels_and_fieldname.get(header)
+
+@request_cache
+def _get_fields_dict(doctype, user):
+	# A provider's fields can depend on the user (e.g. their permissions)
+	return build_fields_dict_for_column_matching(doctype)
 
 
 # utilities
@@ -1217,12 +2311,7 @@ def get_item_at_index(_list, i, default=None):
 
 
 def get_user_format(date_format):
-	return (
-		date_format.replace("%Y", "yyyy")
-		.replace("%y", "yy")
-		.replace("%m", "mm")
-		.replace("%d", "dd")
-	)
+	return date_format.replace("%Y", "yyyy").replace("%y", "yy").replace("%m", "mm").replace("%d", "dd")
 
 
 def df_as_json(df):
@@ -1238,3 +2327,19 @@ def df_as_json(df):
 
 def get_select_options(df):
 	return [d for d in (df.options or "").split("\n") if d]
+
+
+def create_import_log(data_import, log_index, log_details):
+	frappe.get_doc(
+		{
+			"doctype": "Data Import Log",
+			"log_index": log_index,
+			"success": log_details.get("success"),
+			"data_import": data_import,
+			"row_indexes": json.dumps(log_details.get("row_indexes")),
+			"docname": log_details.get("docname"),
+			"messages": json.dumps(log_details.get("messages", "[]")),
+			"exception": log_details.get("exception"),
+			"import_action": log_details.get("import_action"),
+		}
+	).db_insert()

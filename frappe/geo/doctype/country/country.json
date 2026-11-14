@@ -1,18 +1,19 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_import": 1,
- "allow_rename": 1,
  "autoname": "field:country_name",
  "creation": "2013-01-19 10:23:30",
  "doctype": "DocType",
  "document_type": "Setup",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/country",
  "engine": "InnoDB",
  "field_order": [
   "country_name",
+  "code",
   "date_format",
   "time_format",
-  "time_zones",
-  "code"
+  "time_zones"
  ],
  "fields": [
   {
@@ -45,19 +46,23 @@
    "label": "Time Zones"
   },
   {
+   "description": "The country's ISO 3166 ALPHA-2 code.",
    "fieldname": "code",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Code"
+   "label": "Code",
+   "length": 2,
+   "reqd": 1
   }
  ],
- "icon": "fa fa-globe",
+ "icon": "globe",
  "idx": 1,
  "links": [],
- "modified": "2020-02-24 15:44:31.837133",
+ "modified": "2025-01-03 13:01:46.030113",
  "modified_by": "Administrator",
  "module": "Geo",
  "name": "Country",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -69,7 +74,6 @@
    "read": 1,
    "report": 1,
    "role": "System Manager",
-   "set_user_permissions": 1,
    "share": 1,
    "write": 1
   },
@@ -82,7 +86,10 @@
   }
  ],
  "quick_entry": 1,
+ "row_format": "Dynamic",
  "sort_field": "country_name",
  "sort_order": "ASC",
- "track_changes": 1
+ "states": [],
+ "track_changes": 1,
+ "translated_doctype": 1
 }

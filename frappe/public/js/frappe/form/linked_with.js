@@ -1,148 +1,118 @@
-// Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-// MIT License. See license.txt
-
+// Copyright (c) 2022, Frappe Technologies Pvt. Ltd. and Contributors
+// MIT License. See LICENSE
 
 frappe.ui.form.LinkedWith = class LinkedWith {
-
 	constructor(opts) {
 		$.extend(this, opts);
+		this.page_length = 50;
 	}
 
 	show() {
-		if(!this.dialog)
-			this.make_dialog();
+		if (!this.dialog) this.make_dialog();
 
 		$(this.dialog.body).html(
 			`<div class="text-muted text-center" style="padding: 30px 0px">
 				${__("Loading")}...
-			</div>`);
+			</div>`
+		);
 
 		this.dialog.show();
 	}
 
 	make_dialog() {
-
 		this.dialog = new frappe.ui.Dialog({
-			title: __("Linked With")
+			title: __("Links"),
+			minimizable: true,
 		});
 
 		this.dialog.on_page_show = () => {
-			// execute ajax calls sequentially
-			// 1. get linked doctypes
-			// 2. load all doctypes
-			// 3. load linked docs
-			this.get_linked_doctypes()
-				.then(() => this.load_doctypes())
-				.then(() => this.links_not_permitted_or_missing())
-				.then(() => this.get_linked_docs())
+			this.docname = this.frm.docname;
+			this.get_linked_docs()
+				.then((r) => {
+					for (const entry of Object.values(r)) {
+						entry.has_more = entry.docs.length > this.page_length;
+						entry.docs = entry.docs.slice(0, this.page_length);
+					}
+					this.frm.__linked_docs = r;
+				})
 				.then(() => this.make_html());
 		};
+
+		$(this.dialog.body).on("click", "[data-action='load-more']", (e) => {
+			const $button = $(e.currentTarget).prop("disabled", true);
+			this.load_more($button.closest("[data-doctype]")).finally(() =>
+				$button.prop("disabled", false)
+			);
+		});
+	}
+
+	get_linked_docs(args) {
+		return frappe.xcall("frappe.desk.form.linked_with.get", {
+			doctype: this.frm.doctype,
+			docname: this.docname,
+			limit: this.page_length + 1,
+			...args,
+		});
+	}
+
+	load_more($doctype_table) {
+		const doctype = $doctype_table.attr("data-doctype");
+		const entry = this.frm.__linked_docs[doctype];
+		return this.get_linked_docs({ linked_doctype: doctype, offset: entry.docs.length }).then(
+			(r) => {
+				const docs = r[doctype]?.docs || [];
+				entry.has_more = docs.length > this.page_length;
+				entry.docs.push(...docs.slice(0, this.page_length));
+				$doctype_table.html(this.make_doctype_html(doctype));
+			}
+		);
 	}
 
 	make_html() {
+		let html = "";
 		const linked_docs = this.frm.__linked_docs;
-
-		let html = '';
-
-		const linked_doctypes = Object.keys(linked_docs);
+		const linked_doctypes = Object.keys(linked_docs).filter((dt) => {
+			const entry = linked_docs[dt];
+			return (entry.docs && entry.docs.length) || entry.hidden_count > 0;
+		});
 
 		if (linked_doctypes.length === 0) {
 			html = __("Not Linked to any record");
 		} else {
-			html = linked_doctypes.map(doctype => {
-				const docs = linked_docs[doctype];
-				return `
-					<div class="list-item-table margin-bottom">
-						${this.make_doc_head(doctype)}
-						${docs.map(doc => this.make_doc_row(doc, doctype)).join('')}
+			html = `
+					<div class="margin-bottom">
+					${__("Following documents are linked with {0}", [
+						frappe.utils
+							.get_form_link(this.frm.doctype, this.frm.docname, true)
+							.bold(),
+					])}
 					</div>
-				`;
-			}).join('');
+					${linked_doctypes
+						.map(
+							(doctype) => `
+						<div class="list-item-table margin-bottom" data-doctype="${frappe.utils.escape_html(doctype)}">
+							${this.make_doctype_html(doctype)}
+						</div>
+					`
+						)
+						.join("")}
+					`;
 		}
 
 		$(this.dialog.body).html(html);
 	}
 
-	load_doctypes() {
-		const already_loaded = Object.keys(locals.DocType);
-		let doctypes_to_load = [];
-
-		if (this.frm.__linked_doctypes) {
-			doctypes_to_load =
-				Object.keys(this.frm.__linked_doctypes)
-					.filter(doctype => !already_loaded.includes(doctype));
+	make_doctype_html(doctype) {
+		const { docs, hidden_count, has_more } = this.frm.__linked_docs[doctype];
+		let html = this.make_doc_head(doctype);
+		html += docs.map((doc) => this.make_doc_row(doc, doctype)).join("");
+		if (has_more) {
+			html += this.make_load_more_row();
 		}
-
-		// load all doctypes asynchronously using with_doctype
-		const promises = doctypes_to_load.map(dt => {
-			return frappe.model.with_doctype(dt, () => {
-				if(frappe.listview_settings[dt]) {
-					// add additional fields to __linked_doctypes
-					this.frm.__linked_doctypes[dt].add_fields =
-						frappe.listview_settings[dt].add_fields;
-				}
-			});
-		});
-
-		return Promise.all(promises);
-	}
-
-	links_not_permitted_or_missing() {
-		let links = null;
-
-		if (this.frm.__linked_doctypes) {
-			links =
-				Object.keys(this.frm.__linked_doctypes)
-					.filter(frappe.model.can_get_report);
+		if (hidden_count > 0) {
+			html += this.make_hidden_count_row(hidden_count);
 		}
-
-		let flag;
-		if(!links) {
-			$(this.dialog.body).html(`${this.frm.__linked_doctypes
-				? __("Not enough permission to see links")
-				: __("Not Linked to any record")}`);
-			flag = true;
-		}
-		flag = false;
-
-		// reject Promise if not_permitted or missing
-		return new Promise(
-			(resolve, reject) => flag ? reject() : resolve()
-		);
-	}
-
-	get_linked_doctypes() {
-		return new Promise((resolve) => {
-			if (this.frm.__linked_doctypes) {
-				resolve();
-			}
-
-			frappe.call({
-				method: "frappe.desk.form.linked_with.get_linked_doctypes",
-				args: {
-					doctype: this.frm.doctype
-				},
-				callback: (r) => {
-					this.frm.__linked_doctypes = r.message;
-					resolve();
-				}
-			});
-		});
-	}
-
-	get_linked_docs() {
-		return frappe.call({
-			method: "frappe.desk.form.linked_with.get_linked_docs",
-			args: {
-				doctype: this.frm.doctype,
-				name: this.frm.docname,
-				linkinfo: this.frm.__linked_doctypes,
-				for_doctype: this.for_doctype
-			},
-			callback: (r) => {
-				this.frm.__linked_docs = r.message || {};
-			}
-		});
+		return html;
 	}
 
 	make_doc_head(heading) {
@@ -153,11 +123,31 @@ frappe.ui.form.LinkedWith = class LinkedWith {
 		`;
 	}
 
+	make_load_more_row() {
+		return `<div class="list-row-container">
+			<div class="level list-row">
+				${frappe.ui.button.html({ label: __("Load More"), attrs: { "data-action": "load-more" } })}
+			</div>
+		</div>`;
+	}
+
+	make_hidden_count_row(count) {
+		return `<div class="list-row-container">
+			<div class="level list-row small text-muted">
+				<div class="level-left">
+					${count == 1 ? __("{0} restricted document", [count]) : __("{0} restricted documents", [count])}
+				</div>
+			</div>
+		</div>`;
+	}
+
 	make_doc_row(doc, doctype) {
 		return `<div class="list-row-container">
 			<div class="level list-row small">
 				<div class="level-left bold">
-					<a href="/app/${frappe.router.slug(doctype)}/${doc.name}">${doc.name}</a>
+					<a href="/desk/${frappe.router.slug(doctype)}/${frappe.utils.escape_html(
+			doc.name
+		)}">${frappe.utils.escape_html(doc.name)}</a>
 				</div>
 			</div>
 		</div>`;

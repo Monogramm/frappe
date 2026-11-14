@@ -1,18 +1,13 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# See license.txt
-from __future__ import unicode_literals
-
+# License: MIT. See LICENSE
 import frappe
-import unittest
-from frappe.test_runner import make_test_objects
+from frappe.tests import IntegrationTestCase
+from frappe.tests.utils import make_test_objects
 
-test_records = frappe.get_test_records('Email Domain')
 
-class TestDomain(unittest.TestCase):
-
+class TestDomain(IntegrationTestCase):
 	def setUp(self):
-		make_test_objects('Email Domain', reset=True)
+		make_test_objects("Email Domain", reset=True)
 
 	def tearDown(self):
 		frappe.delete_doc("Email Account", "Test")
@@ -22,17 +17,20 @@ class TestDomain(unittest.TestCase):
 		mail_domain = frappe.get_doc("Email Domain", "test.com")
 		mail_account = frappe.get_doc("Email Account", "Test")
 
-		# Initially, incoming_port is different in domain and account
-		self.assertNotEqual(mail_account.incoming_port, mail_domain.incoming_port)
+		# Ensure a different port
+		mail_account.incoming_port = int(mail_domain.incoming_port) + 5
+		mail_account.save()
 		# Trigger update of accounts using this domain
 		mail_domain.on_update()
-		mail_account = frappe.get_doc("Email Account", "Test")
+
+		mail_account.reload()
 		# After update, incoming_port in account should match the domain
 		self.assertEqual(mail_account.incoming_port, mail_domain.incoming_port)
 
 		# Also make sure that the other attributes match
 		self.assertEqual(mail_account.use_imap, mail_domain.use_imap)
 		self.assertEqual(mail_account.use_ssl, mail_domain.use_ssl)
+		self.assertEqual(mail_account.use_starttls, mail_domain.use_starttls)
 		self.assertEqual(mail_account.use_tls, mail_domain.use_tls)
 		self.assertEqual(mail_account.attachment_limit, mail_domain.attachment_limit)
 		self.assertEqual(mail_account.smtp_server, mail_domain.smtp_server)

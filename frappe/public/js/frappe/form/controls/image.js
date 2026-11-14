@@ -1,22 +1,23 @@
-frappe.ui.form.ControlImage = frappe.ui.form.Control.extend({
-	make: function() {
-		this._super();
-		this.$wrapper.css({"margin": "0px"});
-		this.$body = $("<div></div>").appendTo(this.$wrapper)
-			.css({"margin-bottom": "10px"});
+frappe.ui.form.ControlImage = class ControlImage extends frappe.ui.form.Control {
+	make() {
+		super.make();
+		this.$wrapper.css({ margin: "0px" });
+		this.$body = $("<div></div>").appendTo(this.$wrapper).css({ "margin-bottom": "10px" });
 		$('<div class="clearfix"></div>').appendTo(this.$wrapper);
-	},
-	refresh_input: function() {
+	}
+	refresh_input() {
 		this.$body.empty();
 
-		var doc = this.get_doc();
-		if(doc && this.df.options && doc[this.df.options]) {
-			this.$img = $("<img src='"+doc[this.df.options]+"' class='img-responsive'>")
-				.appendTo(this.$body);
+		var doc = this.doc || this.get_doc();
+		if (doc && this.df.options && doc[this.df.options]) {
+			this.$img = $("<img src='" + doc[this.df.options] + "' class='img-responsive'>")
+				.appendTo(this.$body)
+				.css({ "max-width": "100%" });
 		} else {
-			this.$buffer = $("<div class='missing-image'><i class='octicon octicon-circle-slash'></i></div>")
-				.appendTo(this.$body);
+			this.$buffer = $(
+				`<div class='missing-image'>${frappe.utils.icon("ban", "md")}</div>`
+			).appendTo(this.$body);
 		}
 		return false;
 	}
-});
+};

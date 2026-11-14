@@ -6,14 +6,32 @@
 
 .btn {
 	border: none;
-	border-radius: var(--border-radius);
-	box-shadow: var(--btn-shadow);
-	font-size: var(--text-md);
+
+	&:not(.btn-md):not(.btn-lg):not(.btn-xs) {
+		padding: 4px 8px;
+	}
+
+	border-radius: var(--radius);
+	box-shadow: none;
+	@include get_textstyle("base", "regular");
+
+	&:active {
+		// override #dadada that comes from bootstrap (probably) to support dark theme.
+		color: var(--text-color) !important;
+		background-color: var(--control-bg) !important;
+		box-shadow: var(--focus-default) !important;
+	}
+
 	&.icon-btn {
 		height: var(--btn-height);
-		padding: 0px;
+		width: var(--btn-height);
+		&:not(.btn-md):not(.btn-lg):not(.btn-xs) {
+			padding: 6px;
+		}
 		@extend .center-content;
-		&.btn-default, &.btn-secondary {
+
+		&.btn-default,
+		&.btn-secondary {
 			min-width: 28px;
 		}
 	}
@@ -30,9 +48,13 @@
 	);
 
 	color: $white;
-	&:hover, &:active, &:focus {
+
+	&:hover,
+	&:active,
+	&:focus {
 		color: $white;
 	}
+
 	.icon {
 		--icon-stroke: currentColor;
 	}
@@ -40,58 +62,146 @@
 
 .btn-primary-light {
 	@include button-variant(
-		$background: $primary-light,
-		$border: $primary-light,
-		$hover-background: lighten($primary-light, 1%),
-		$hover-border: $primary-light,
-		$active-background: lighten($primary-light, 1%),
-		$active-border: darken($primary-light, 12.5%)
+		// not happy with this
+		$background: $gray-300,
+		$border: $gray-800,
+		$hover-background: $gray-200,
+		$hover-border: $gray-300,
+		$active-background: $gray-300,
+		$active-border: $gray-200
 	);
 
-	color: var(--blue-500);
-	&:hover, &:active {
-		color: var(--blue-500);
+	color: var(--primary);
+
+	&:hover,
+	&:active {
+		color: var(--primary);
 	}
 
 	&:focus {
-		box-shadow: 0 0 0 0.2rem var(--blue-50)
+		box-shadow: var(--focus-default);
+	}
+
+	// the mixin's hover can't be wrapped: on touch, a tapped button goes back to rest.
+	// Light theme only: the dark theme's own background below already beats the hover.
+	@media (hover: none) {
+		:root:not([data-theme="dark"]) &:hover:not(:active) {
+			background-color: var(--surface-gray-4);
+		}
+	}
+}
+
+// hover only with a real pointer: touch keeps :hover on the last button tapped
+@mixin hover-only-with-pointer {
+	@media (hover: hover) {
+		&:hover {
+			@content;
+		}
 	}
 }
 
 .btn.btn-secondary {
 	background-color: var(--control-bg);
 	color: var(--text-color);
-	&:hover, &:active {
-		background-color: var(--gray-300);
+
+	@include hover-only-with-pointer {
+		background-color: var(--btn-default-hover-bg);
 		color: var(--text-color);
+	}
+
+	&:active {
+		background-color: var(--btn-default-hover-bg);
+		color: var(--text-color);
+	}
+
+	&:focus-visible {
+		box-shadow: var(--focus-default) !important;
+	}
+}
+
+.btn.btn-ghost {
+	background-color: transparent;
+	color: var(--text-color);
+
+	@include hover-only-with-pointer {
+		background-color: var(--btn-ghost-hover-bg);
+		color: var(--text-color);
+	}
+
+	&:active {
+		background-color: var(--btn-ghost-hover-bg);
+		color: var(--text-color);
+	}
+
+	&:focus-visible {
+		box-shadow: var(--focus-default) !important;
 	}
 }
 
 .btn.btn-default {
-	background-color: var(--fg-color);
+	background-color: var(--control-bg);
 	color: var(--text-color);
-	&:hover, &:active {
-		background: var(--fg-hover-color);
+
+	@include hover-only-with-pointer {
+		background: var(--btn-default-hover-bg);
 		color: var(--text-color);
+		z-index: unset;
+	}
+
+	&:active {
+		background: var(--btn-default-hover-bg);
+		color: var(--text-color);
+		z-index: unset;
 	}
 }
 
 .btn.btn-primary {
-	background-color: var(--primary-color);
+	background-color: var(--btn-primary);
+	color: var(--neutral);
 	white-space: nowrap;
-	--icon-stroke: white;
-	--icon-fill-bg: var(--primary-color);
+	--icon-stroke: currentColor;
+	--icon-fill-bg: var(--btn-primary);
+
+	&:active {
+		color: var(--gray-100) !important;
+		background-color: var(--invert-neutral) !important;
+	}
 }
 
 .btn.btn-danger {
-	background-color: var(--red-400);
+	background-color: var(--danger);
 	color: $white;
 }
 
+.btn-reset {
+	padding: 0;
+	margin: 0;
+	border: 0;
+	font-size: inherit;
+	background-color: inherit;
+	text-align: inherit;
+}
 
 [data-theme="dark"] {
 	.btn-primary-light {
-		background-color: var(--bg-dark-blue);
+		background-color: var(--bg-dark-gray);
 		box-shadow: none;
 	}
+
+	.btn-primary:active {
+		color: var(--gray-900) !important;
+		background-color: var(--invert-neutral) !important;
+	}
+}
+
+.btn-outline {
+	background-color: var(--surface-base);
+	font-size: 14px;
+	line-height: 1.15;
+	letter-spacing: 0.02em;
+	font-weight: 420;
+	padding-left: 0.5rem;
+	padding-right: 0.5rem;
+	border: 1px solid;
+	border-color: var(--outline-gray-2);
 }

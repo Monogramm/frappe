@@ -1,18 +1,22 @@
-# Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# License: GNU General Public License v3. See license.txt
+# Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-
-import frappe
-import re
-import redis
 import json
 import os
-from bs4 import BeautifulSoup
+import re
+
+import redis
+
+import frappe
+from frappe.model.document import get_controller
 from frappe.utils import cint, strip_html_tags
+from frappe.utils.data import cstr
 from frappe.utils.html_utils import unescape_html
-from frappe.model.base_document import get_controller
-from six import text_type
+
+HTML_TAGS_PATTERN = re.compile(r"(?s)<[\s]*(script|style).*?</\1>")
+SQLITE_LEGACY_PARAMETER_LIMIT = 999
+GLOBAL_SEARCH_COLUMN_COUNT = 6
+
 
 def setup_global_search_table():
 	"""
@@ -27,7 +31,7 @@ def reset():
 	Deletes all data in __global_search
 	:return:
 	"""
-	frappe.db.sql('DELETE FROM `__global_search`')
+	frappe.db.delete("__global_search")
 
 
 def get_doctypes_with_global_search(with_child_tables=True):
@@ -36,28 +40,29 @@ def get_doctypes_with_global_search(with_child_tables=True):
 	:param with_child_tables:
 	:return:
 	"""
+
 	def _get():
 		global_search_doctypes = []
 		filters = {}
 		if not with_child_tables:
 			filters = {"istable": ["!=", 1], "issingle": ["!=", 1]}
-		for d in frappe.get_all('DocType', fields=['name', 'module'], filters=filters):
+		for d in frappe.get_all("DocType", fields=["name", "module"], filters=filters):
 			meta = frappe.get_meta(d.name)
 			if len(meta.get_global_search_fields()) > 0:
 				global_search_doctypes.append(d)
 
-		installed_apps = frappe.get_installed_apps()
+		installed_apps = frappe.get_active_apps()
 		module_app = frappe.local.module_app
 
 		doctypes = [
-			d.name for d in global_search_doctypes
-			if module_app.get(frappe.scrub(d.module))
-			and module_app[frappe.scrub(d.module)] in installed_apps
+			d.name
+			for d in global_search_doctypes
+			if module_app.get(frappe.scrub(d.module)) and module_app[frappe.scrub(d.module)] in installed_apps
 		]
 
 		return doctypes
 
-	return frappe.cache().get_value('doctypes_with_global_search', _get)
+	return frappe.cache.get_value("doctypes_with_global_search", _get)
 
 
 def rebuild_for_doctype(doctype):
@@ -66,14 +71,11 @@ def rebuild_for_doctype(doctype):
 	searchable fields
 	:param doctype: Doctype
 	"""
-	if frappe.local.conf.get('disable_global_search'):
-		return
-
-	if frappe.local.conf.get('disable_global_search'):
+	if frappe.local.conf.get("disable_global_search"):
 		return
 
 	def _get_filters():
-		filters = frappe._dict({ "docstatus": ["!=", 2] })
+		filters = frappe._dict({"docstatus": ["!=", 2]})
 		if meta.has_field("enabled"):
 			filters.enabled = 1
 		if meta.has_field("disabled"):
@@ -87,10 +89,11 @@ def rebuild_for_doctype(doctype):
 		return
 
 	if cint(meta.istable) == 1:
-		parent_doctypes = frappe.get_all("DocField", fields="parent", filters={
-			"fieldtype": ["in", frappe.model.table_fields],
-			"options": doctype
-		})
+		parent_doctypes = frappe.get_all(
+			"DocField",
+			fields="parent",
+			filters={"fieldtype": ["in", frappe.model.table_fields], "options": doctype},
+		)
 		for p in parent_doctypes:
 			rebuild_for_doctype(p.parent)
 
@@ -137,27 +140,27 @@ def rebuild_for_doctype(doctype):
 				# some doctypes has been deleted via future patch, hence controller does not exists
 				pass
 
-			all_contents.append({
-				"doctype": frappe.db.escape(doctype),
-				"name": frappe.db.escape(doc.name),
-				"content": frappe.db.escape(' ||| '.join(content or '')),
-				"published": published,
-				"title": frappe.db.escape((title or '')[:int(frappe.db.VARCHAR_LEN)]),
-				"route": frappe.db.escape((route or '')[:int(frappe.db.VARCHAR_LEN)])
-			})
+			all_contents.append(
+				{
+					"doctype": frappe.db.escape(doctype),
+					"name": frappe.db.escape(doc.name),
+					"content": frappe.db.escape(" ||| ".join(content or "")),
+					"published": published,
+					"title": frappe.db.escape((title or "")[: int(frappe.db.VARCHAR_LEN)]),
+					"route": frappe.db.escape((route or "")[: int(frappe.db.VARCHAR_LEN)]),
+				}
+			)
 	if all_contents:
 		insert_values_for_multiple_docs(all_contents)
 
 
 def delete_global_search_records_for_doctype(doctype):
-	frappe.db.sql('''DELETE
-		FROM `__global_search`
-		WHERE doctype = %s''', doctype, as_dict=True)
+	frappe.db.delete("__global_search", {"doctype": doctype})
 
 
 def get_selected_fields(meta, global_search_fields):
 	fieldnames = [df.fieldname for df in global_search_fields]
-	if meta.istable==1:
+	if meta.istable == 1:
 		fieldnames.append("parent")
 	elif "name" not in fieldnames:
 		fieldnames.append("name")
@@ -165,23 +168,24 @@ def get_selected_fields(meta, global_search_fields):
 	if meta.has_field("is_website_published"):
 		fieldnames.append("is_website_published")
 
+	assert fieldnames, "selected fields must always include an identifier column"
 	return fieldnames
 
 
 def get_children_data(doctype, meta):
 	"""
-		Get all records from all the child tables of a doctype
+	Get all records from all the child tables of a doctype
 
-		all_children = {
-			"parent1": {
-				"child_doctype1": [
-					{
-						"field1": val1,
-						"field2": val2
-					}
-				]
-			}
-		}
+	all_children = {
+	        "parent1": {
+	                "child_doctype1": [
+	                        {
+	                                "field1": val1,
+	                                "field2": val2
+	                        }
+	                ]
+	        }
+	}
 
 	"""
 	all_children = frappe._dict()
@@ -193,37 +197,49 @@ def get_children_data(doctype, meta):
 		if search_fields:
 			child_search_fields.setdefault(child.options, search_fields)
 			child_fieldnames = get_selected_fields(child_meta, search_fields)
-			child_records = frappe.get_all(child.options, fields=child_fieldnames, filters={
-				"docstatus": ["!=", 1],
-				"parenttype": doctype
-			})
+			child_records = frappe.get_all(
+				child.options,
+				fields=child_fieldnames,
+				filters={"docstatus": ["!=", 2], "parenttype": doctype},
+			)
 
 			for record in child_records:
-				all_children.setdefault(record.parent, frappe._dict())\
-					.setdefault(child.options, []).append(record)
+				all_children.setdefault(record.parent, frappe._dict()).setdefault(child.options, []).append(
+					record
+				)
 
 	return all_children, child_search_fields
 
 
 def insert_values_for_multiple_docs(all_contents):
-	values = []
-	for content in all_contents:
-		values.append("({doctype}, {name}, {content}, {published}, {title}, {route})"
-			.format(**content))
-
+	values = [
+		"({doctype}, {name}, {content}, {published}, {title}, {route})".format(**content)
+		for content in all_contents
+	]
 	batch_size = 50000
 	for i in range(0, len(values), batch_size):
-		batch_values = values[i:i + batch_size]
+		batch_values = values[i : i + batch_size]
 		# ignoring duplicate keys for doctype_name
-		frappe.db.multisql({
-			'mariadb': '''INSERT IGNORE INTO `__global_search`
+		frappe.db.multisql(
+			{
+				"mariadb": """INSERT INTO `__global_search`
 				(doctype, name, content, published, title, route)
-				VALUES {0} '''.format(", ".join(batch_values)),
-			'postgres': '''INSERT INTO `__global_search`
+				VALUES {}
+				ON DUPLICATE KEY UPDATE
+					content=VALUE(content),
+					published=VALUE(published),
+					title=VALUE(title),
+					route=VALUE(route)
+				""".format(", ".join(batch_values)),
+				"postgres": """INSERT INTO `__global_search`
 				(doctype, name, content, published, title, route)
-				VALUES {0}
-				ON CONFLICT("name", "doctype") DO NOTHING'''.format(", ".join(batch_values))
-			})
+				VALUES {}
+				ON CONFLICT("name", "doctype") DO NOTHING""".format(", ".join(batch_values)),
+				"sqlite": """INSERT OR IGNORE INTO `__global_search`
+				(doctype, name, content, published, title, route)
+				VALUES {} """.format(", ".join(batch_values)),
+			}
+		)
 
 
 def update_global_search(doc):
@@ -232,53 +248,52 @@ def update_global_search(doc):
 	`global_search_queue` from given doc
 	:param doc: Document to be added to global search
 	"""
-	if frappe.local.conf.get('disable_global_search'):
+	if frappe.local.conf.get("disable_global_search"):
 		return
 
-	if frappe.local.conf.get('disable_global_search'):
+	if doc.docstatus > 1 or (doc.meta.has_field("enabled") and not doc.get("enabled")) or doc.get("disabled"):
 		return
 
-	if doc.docstatus > 1 or (doc.meta.has_field("enabled") and not doc.get("enabled")) \
-		or doc.get("disabled"):
-			return
-
-	content = []
-	for field in doc.meta.get_global_search_fields():
-		if doc.get(field.fieldname) and field.fieldtype not in frappe.model.table_fields:
-			content.append(get_formatted_value(doc.get(field.fieldname), field))
+	content = [
+		get_formatted_value(doc.get(field.fieldname), field)
+		for field in doc.meta.get_global_search_fields()
+		if doc.get(field.fieldname) and field.fieldtype not in frappe.model.table_fields
+	]
 
 	# Get children
 	for child in doc.meta.get_table_fields():
 		for d in doc.get(child.fieldname):
 			if d.parent == doc.name:
-				for field in d.meta.get_global_search_fields():
-					if d.get(field.fieldname):
-						content.append(get_formatted_value(d.get(field.fieldname), field))
-
+				content.extend(
+					get_formatted_value(d.get(field.fieldname), field)
+					for field in d.meta.get_global_search_fields()
+					if d.get(field.fieldname)
+				)
 	if content:
 		published = 0
-		if hasattr(doc, 'is_website_published') and doc.meta.allow_guest_to_view:
+		if hasattr(doc, "is_website_published") and doc.meta.allow_guest_to_view:
 			published = 1 if doc.is_website_published() else 0
 
-		title = (doc.get_title() or '')[:int(frappe.db.VARCHAR_LEN)]
-		route = doc.get('route') if doc else ''
+		title = (cstr(doc.get_title()) or "")[: int(frappe.db.VARCHAR_LEN)]
+		route = doc.get("route") if doc else ""
 
 		value = dict(
 			doctype=doc.doctype,
 			name=doc.name,
-			content=' ||| '.join(content or ''),
+			content=" ||| ".join(content or ""),
 			published=published,
 			title=title,
-			route=route
+			route=route,
 		)
 
 		sync_value_in_queue(value)
 
+
 def update_global_search_for_all_web_pages():
-	if frappe.conf.get('disable_global_search'):
+	if frappe.conf.get("disable_global_search"):
 		return
 
-	print('Update global search for all web pages...')
+	print("Update global search for all web pages...")
 	routes_to_index = get_routes_to_index()
 	for route in routes_to_index:
 		add_route_to_global_search(route)
@@ -286,23 +301,23 @@ def update_global_search_for_all_web_pages():
 
 
 def get_routes_to_index():
-	apps = frappe.get_installed_apps()
+	apps = frappe.get_active_apps()
 
 	routes_to_index = []
 	for app in apps:
-		base = frappe.get_app_path(app, 'www')
-		path_to_index = frappe.get_app_path(app, 'www')
+		base = frappe.get_app_path(app, "www")
+		path_to_index = frappe.get_app_path(app, "www")
 
 		for dirpath, _, filenames in os.walk(path_to_index, topdown=True):
 			for f in filenames:
-				if f.endswith(('.md', '.html')):
+				if f.endswith((".md", ".html")):
 					filepath = os.path.join(dirpath, f)
 
 					route = os.path.relpath(filepath, base)
-					route = route.split('.')[0]
+					route = route.split(".", 1)[0]
 
-					if route.endswith('index'):
-						route = route.rsplit('index', 1)[0]
+					if route.endswith("index"):
+						route = route.rsplit("index", 1)[0]
 
 					routes_to_index.append(route)
 
@@ -310,32 +325,35 @@ def get_routes_to_index():
 
 
 def add_route_to_global_search(route):
-	from frappe.website.render import render_page
+	from bs4 import BeautifulSoup
+
 	from frappe.utils import set_request
-	frappe.set_user('Guest')
+	from frappe.website.serve import get_response_content
+
+	frappe.set_user("Guest")
 	frappe.local.no_cache = True
 
 	try:
-		set_request(method='GET', path=route)
-		content = render_page(route)
-		soup = BeautifulSoup(content, 'html.parser')
-		page_content = soup.find(class_='page_content')
-		text_content = page_content.text if page_content else ''
+		set_request(method="GET", path=route)
+		content = get_response_content(route)
+		soup = BeautifulSoup(content, "html.parser")
+		page_content = soup.find(class_="page_content")
+		text_content = page_content.text if page_content else ""
 		title = soup.title.text.strip() if soup.title else route
 
 		value = dict(
-			doctype='Static Web Page',
+			doctype="Static Web Page",
 			name=route,
 			content=text_content,
 			published=1,
 			title=title,
-			route=route
+			route=route,
 		)
 		sync_value_in_queue(value)
-	except (frappe.PermissionError, frappe.DoesNotExistError, frappe.ValidationError, Exception):
+	except Exception:
 		pass
 
-	frappe.set_user('Administrator')
+	frappe.set_user("Administrator")
 
 
 def get_formatted_value(value, field):
@@ -346,11 +364,11 @@ def get_formatted_value(value, field):
 	:return:
 	"""
 
-	if getattr(field, 'fieldtype', None) in ["Text", "Text Editor"]:
+	if getattr(field, "fieldtype", None) in ["Text", "Text Editor"]:
 		value = unescape_html(frappe.safe_decode(value))
-		value = (re.subn(r'<[\s]*(script|style).*?</\1>(?s)', '', text_type(value))[0])
-		value = ' '.join(value.split())
-	return field.label + " : " + strip_html_tags(text_type(value))
+		value = HTML_TAGS_PATTERN.subn("", str(value))[0]
+		value = " ".join(value.split())
+	return field.label + " : " + strip_html_tags(str(value))
 
 
 def sync_global_search():
@@ -360,26 +378,105 @@ def sync_global_search():
 	:param flags:
 	:return:
 	"""
-	while frappe.cache().llen('global_search_queue') > 0:
-		value = json.loads(frappe.cache().lpop('global_search_queue').decode('utf-8'))
-		sync_value(value)
+	from itertools import islice
+
+	def get_search_queue_item_generator():
+		while value := frappe.cache.rpop("global_search_queue"):
+			yield value
+
+	item_generator = get_search_queue_item_generator()
+	while search_items := tuple(islice(item_generator, 1000)):
+		values = _get_deduped_search_item_values(search_items)
+		sync_values(values)
+
+
+def _get_deduped_search_item_values(items):
+	from collections import OrderedDict
+
+	values_dict = OrderedDict()
+	for item in items:
+		item_json = item.decode("utf-8")
+		item_dict = json.loads(item_json)
+		key = (item_dict["doctype"], item_dict["name"])
+		values_dict[key] = tuple(item_dict.values())
+
+	assert len(values_dict) <= len(items), "dedup must not produce more values than input items"
+	return values_dict.values()
+
+
+def sync_values(values: list):
+	from pypika import Tuple
+	from pypika.terms import Values
+
+	GlobalSearch = frappe.qb.Table("__global_search")
+	conflict_fields = ["content", "published", "title", "route"]
+
+	if frappe.db.db_type == "sqlite":
+		values = list(values)
+		# Each key uses two bound parameters. Keep batches below SQLite's legacy
+		# limit of 999 parameters while avoiding one DELETE query per search item.
+		for batch in frappe.utils.create_batch(values, 400):
+			keys = [(value[0], value[1]) for value in batch]
+			(
+				frappe.qb.from_(GlobalSearch)
+				.delete()
+				.where(Tuple(GlobalSearch.doctype, GlobalSearch.name).isin(keys))
+			).run()
+		insert_batch_size = SQLITE_LEGACY_PARAMETER_LIMIT // GLOBAL_SEARCH_COLUMN_COUNT
+		for batch in frappe.utils.create_batch(values, insert_batch_size):
+			(frappe.qb.into(GlobalSearch).columns(["doctype", "name", *conflict_fields]).insert(*batch)).run()
+		return
+
+	query = frappe.qb.into(GlobalSearch).columns(["doctype", "name", *conflict_fields]).insert(*values)
+
+	if frappe.db.db_type == "postgres":
+		query = query.on_conflict(GlobalSearch.doctype, GlobalSearch.name)
+
+	for field in conflict_fields:
+		if frappe.db.db_type == "mariadb":
+			query = query.on_duplicate_key_update(GlobalSearch[field], Values(field))
+		elif frappe.db.db_type == "postgres":
+			query = query.do_update(GlobalSearch[field])
+		else:
+			raise NotImplementedError
+
+	query.run()
+
 
 def sync_value_in_queue(value):
 	try:
 		# append to search queue if connected
-		frappe.cache().lpush('global_search_queue', json.dumps(value))
+		frappe.cache.lpush("global_search_queue", json.dumps(value))
 	except redis.exceptions.ConnectionError:
 		# not connected, sync directly
+		assert not frappe.flags.in_test, "Should not fail silently in tests"
 		sync_value(value)
 
-def sync_value(value):
-	'''
+
+def sync_value(value: dict):
+	"""
 	Sync a given document to global search
 	:param value: dict of { doctype, name, content, published, title, route }
-	'''
+	"""
 
-	frappe.db.multisql({
-		'mariadb': '''INSERT INTO `__global_search`
+	if frappe.db.db_type == "sqlite":
+		sync_values(
+			[
+				(
+					value["doctype"],
+					value["name"],
+					value["content"],
+					value["published"],
+					value["title"],
+					value["route"],
+				)
+			]
+		)
+		return
+
+	frappe.db.multisql(
+		{
+			"mariadb": """INSERT INTO `__global_search`
 			(`doctype`, `name`, `content`, `published`, `title`, `route`)
 			VALUES (%(doctype)s, %(name)s, %(content)s, %(published)s, %(title)s, %(route)s)
 			ON DUPLICATE key UPDATE
@@ -387,8 +484,8 @@ def sync_value(value):
 				`published`=%(published)s,
 				`title`=%(title)s,
 				`route`=%(route)s
-		''',
-		'postgres': '''INSERT INTO `__global_search`
+		""",
+			"postgres": """INSERT INTO `__global_search`
 			(`doctype`, `name`, `content`, `published`, `title`, `route`)
 			VALUES (%(doctype)s, %(name)s, %(content)s, %(published)s, %(title)s, %(route)s)
 			ON CONFLICT("doctype", "name") DO UPDATE SET
@@ -396,8 +493,11 @@ def sync_value(value):
 				`published`=%(published)s,
 				`title`=%(title)s,
 				`route`=%(route)s
-		'''
-	}, value)
+		""",
+		},
+		value,
+	)
+
 
 def delete_for_document(doc):
 	"""
@@ -405,15 +505,11 @@ def delete_for_document(doc):
 	been deleted
 	:param doc: Deleted document
 	"""
-
-	frappe.db.sql('''DELETE
-		FROM `__global_search`
-		WHERE doctype = %s
-		AND name = %s''', (doc.doctype, doc.name), as_dict=True)
+	frappe.db.delete("__global_search", {"doctype": doc.doctype, "name": doc.name})
 
 
 @frappe.whitelist()
-def search(text, start=0, limit=20, doctype=""):
+def search(text: str, start: int = 0, limit: int = 20, doctype: str = ""):
 	"""
 	Search for given text in __global_search
 	:param text: phrase to be searched
@@ -421,71 +517,76 @@ def search(text, start=0, limit=20, doctype=""):
 	:param limit: number of results to return, default 20
 	:return: Array of result objects
 	"""
-	from frappe.desk.doctype.global_search_settings.global_search_settings import get_doctypes_for_global_search
+	from frappe.desk.doctype.global_search_settings.global_search_settings import (
+		get_doctypes_for_global_search,
+	)
+	from frappe.query_builder.functions import Match
 
 	results = []
 	sorted_results = []
 
-	allowed_doctypes = get_doctypes_for_global_search()
+	can_read = set(frappe.get_user().get_can_read())
+	allowed_doctypes = [d for d in get_doctypes_for_global_search() if d in can_read]
+	if not allowed_doctypes or (doctype and doctype not in allowed_doctypes):
+		return []
 
-	for text in set(text.split('&')):
-		text = text.strip()
-		if not text:
+	for word in set(text.split("&")):
+		word = word.strip()
+		if not word:
 			continue
 
-		conditions = '1=1'
-		offset = ''
-
-		mariadb_text = frappe.db.escape('+' + text + '*')
-
-		mariadb_fields = '`doctype`, `name`, `content`, MATCH (`content`) AGAINST ({} IN BOOLEAN MODE) AS rank'.format(mariadb_text)
-		postgres_fields = '`doctype`, `name`, `content`, TO_TSVECTOR("content") @@ PLAINTO_TSQUERY({}) AS rank'.format(frappe.db.escape(text))
-
-		values = {}
+		global_search = frappe.qb.Table("__global_search")
+		rank = Match(global_search.content).Against(word)
+		query = (
+			frappe.qb.from_(global_search)
+			.select(global_search.doctype, global_search.name, global_search.content, rank.as_("rank"))
+			.where(rank)
+			.orderby("rank", order=frappe.qb.desc)
+			.limit(limit)
+		)
 
 		if doctype:
-			conditions = '`doctype` = %(doctype)s'
-			values['doctype'] = doctype
-		elif allowed_doctypes:
-			conditions = '`doctype` IN %(allowed_doctypes)s'
-			values['allowed_doctypes'] = tuple(allowed_doctypes)
+			query = query.where(global_search.doctype == doctype)
+		else:
+			query = query.where(global_search.doctype.isin(allowed_doctypes))
 
-		if int(start) > 0:
-			offset = 'OFFSET {}'.format(start)
+		if cint(start) > 0:
+			query = query.offset(start)
 
-		common_query = """
-				SELECT {fields}
-				FROM `__global_search`
-				WHERE {conditions}
-				ORDER BY rank DESC
-				LIMIT {limit}
-				{offset}
-			"""
-
-		result = frappe.db.multisql({
-				'mariadb': common_query.format(fields=mariadb_fields, conditions=conditions, limit=limit, offset=offset),
-				'postgres': common_query.format(fields=postgres_fields, conditions=conditions, limit=limit, offset=offset)
-			}, values=values, as_dict=True)
+		result = query.run(as_dict=True)
 
 		results.extend(result)
 
-	# sort results based on allowed_doctype's priority
-	for doctype in allowed_doctypes:
-		for index, r in enumerate(results):
-			if r.doctype == doctype and r.rank > 0.0:
-				try:
-					meta = frappe.get_meta(r.doctype)
-					if meta.image_field:
-						r.image = frappe.db.get_value(r.doctype, r.name, meta.image_field)
-				except Exception:
-					frappe.clear_messages()
-
-				sorted_results.extend([r])
+	for r in sort_search_results(results, allowed_doctypes):
+		if r.rank > 0.0:
+			try:
+				meta = frappe.get_meta(r.doctype)
+				doc = frappe.get_lazy_doc(r.doctype, r.name)
+				if meta.image_field:
+					r.image = doc.get(meta.image_field)
+				if meta.title_field:
+					r.title = doc.get(meta.title_field)
+				if frappe.has_permission(r.doctype, doc=doc):
+					sorted_results.append(r)
+			except Exception:
+				frappe.clear_messages()
 
 	return sorted_results
 
-@frappe.whitelist(allow_guest=True)
-def web_search(text, scope=None, start=0, limit=20):
+
+def sort_search_results(results: list, doctypes: list[str]) -> list:
+	"""Order hits by the DocType priority from Global Search Settings, then by relevance."""
+	priority = {doctype: idx for idx, doctype in enumerate(doctypes)}
+	return sorted(results, key=lambda r: (priority[r.doctype], -r.rank))
+
+
+WEB_SEARCH_MAX_SEGMENTS = 5
+WEB_SEARCH_MAX_LIMIT = 100
+WEB_SEARCH_MAX_TEXT_LENGTH = 1000
+
+
+@frappe.whitelist(allow_guest=True)  # nosemgrep
+def web_search(text: str, scope: str | None = None, start: int = 0, limit: int = 20):
 	"""
 	Search for given text in __global_search where published = 1
 	:param text: phrase to be searched
@@ -495,32 +596,48 @@ def web_search(text, scope=None, start=0, limit=20):
 	:return: Array of result objects
 	"""
 
+	from frappe.query_builder.custom import build_fts5_prefix_query
+
+	limit = max(0, min(cint(limit), WEB_SEARCH_MAX_LIMIT))
+	start = max(0, cint(start))
+	text = (text or "")[:WEB_SEARCH_MAX_TEXT_LENGTH]
+
 	results = []
-	texts = text.split('&')
-	for text in texts:
-		common_query = ''' SELECT `doctype`, `name`, `content`, `title`, `route`
+	texts = list(dict.fromkeys(t for t in text.split("&") if t.strip()))[:WEB_SEARCH_MAX_SEGMENTS]
+	for search_text in texts:
+		common_query = """ SELECT `doctype`, `name`, `content`, `title`, `route`
 			FROM `__global_search`
 			WHERE {conditions}
-			LIMIT %(limit)s OFFSET %(start)s'''
+			LIMIT %(limit)s OFFSET %(start)s"""
 
-		scope_condition = '`route` like %(scope)s AND ' if scope else ''
-		published_condition = '`published` = 1 AND '
-		mariadb_conditions = postgres_conditions = ' '.join([published_condition, scope_condition])
+		scope_condition = "`route` like %(scope)s AND " if scope else ""
+		published_condition = "`published` = 1 AND "
+		base_conditions = " ".join([published_condition, scope_condition])
+		mariadb_conditions = postgres_conditions = sqlite_conditions = base_conditions
 
 		# https://mariadb.com/kb/en/library/full-text-index-overview/#in-boolean-mode
-		mariadb_conditions += 'MATCH(`content`) AGAINST ({} IN BOOLEAN MODE)'.format(frappe.db.escape('+' + text + '*'))
-		postgres_conditions += 'TO_TSVECTOR("content") @@ PLAINTO_TSQUERY({})'.format(frappe.db.escape(text))
+		mariadb_conditions += "MATCH(`content`) AGAINST ({} IN BOOLEAN MODE)".format(
+			frappe.db.escape("+" + search_text + "*")
+		)
+		postgres_conditions += f"to_tsvector('english', \"content\") @@ plainto_tsquery('english', {frappe.db.escape(search_text)})"
+		sqlite_conditions += "`content` MATCH %(sqlite_search_query)s"
 
 		values = {
-			"scope": "".join([scope, "%"]) if scope else '',
+			"scope": "".join([scope, "%"]) if scope else "",
 			"limit": limit,
-			"start": start
+			"start": start,
+			"sqlite_search_query": build_fts5_prefix_query(search_text),
 		}
 
-		result = frappe.db.multisql({
-			'mariadb': common_query.format(conditions=mariadb_conditions),
-			'postgres': common_query.format(conditions=postgres_conditions)
-		}, values=values, as_dict=True)
+		result = frappe.db.multisql(
+			{
+				"mariadb": common_query.format(conditions=mariadb_conditions),
+				"postgres": common_query.format(conditions=postgres_conditions),
+				"sqlite": common_query.format(conditions=sqlite_conditions),
+			},
+			values=values,
+			as_dict=True,
+		)
 		tmp_result = []
 		for i in result:
 			if i in results or not results:
@@ -536,9 +653,10 @@ def web_search(text, scope=None, start=0, limit=20):
 		r.relevance = words_match
 
 	results = sorted(results, key=lambda x: x.relevance, reverse=True)
-	return results
+	return results[:WEB_SEARCH_MAX_LIMIT]
+
 
 def get_distinct_words(text):
-	text = text.replace('"', '')
-	text = text.replace("'", '')
-	return [w.strip().lower() for w in text.split(' ')]
+	text = text.replace('"', "")
+	text = text.replace("'", "")
+	return [w.strip().lower() for w in text.split(" ")]

@@ -1,4 +1,5 @@
 {
+ "actions": [],
  "creation": "2019-05-21 09:47:23.043960",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -6,7 +7,8 @@
  "field_order": [
   "link_doctype",
   "link_name",
-  "link_title"
+  "link_title",
+  "communication_date"
  ],
  "fields": [
   {
@@ -31,17 +33,26 @@
    "in_list_view": 1,
    "label": "Link Title",
    "read_only": 1
+  },
+  {
+   "fieldname": "communication_date",
+   "fieldtype": "Datetime",
+   "label": "Communication Date",
+   "read_only": 1
   }
  ],
  "istable": 1,
- "modified": "2019-05-21 09:47:23.043960",
+ "links": [],
+ "modified": "2025-11-08 11:07:13.960236",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Communication Link",
  "owner": "Administrator",
  "permissions": [],
  "quick_entry": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

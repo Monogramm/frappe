@@ -1,13 +1,52 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2019, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
-# import frappe
+import frappe
+from frappe import _
 from frappe.model.document import Document
 
-class GoogleSettings(Document):
-	pass
 
-def get_auth_url():
-	return "https://www.googleapis.com/oauth2/v4/token"
+class GoogleSettings(Document):
+	_DOCTYPE_NAME = "Google Settings"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		api_key: DF.Data | None
+		app_id: DF.Data | None
+		client_id: DF.Data | None
+		client_secret: DF.Password | None
+		enable: DF.Check
+		google_drive_picker_enabled: DF.Check
+	# end: auto-generated types
+
+	def validate(self):
+		if not self.google_drive_picker_enabled:
+			return
+
+		for fieldname in ("client_id", "app_id"):
+			if not self.get(fieldname):
+				frappe.throw(
+					_("{0} is required").format(frappe.bold(_(self.meta.get_label(fieldname)))),
+					frappe.MandatoryError,
+				)
+
+
+@frappe.whitelist()
+def get_file_picker_settings():
+	"""Return all the data FileUploader needs to start the Google Drive Picker."""
+	google_settings = frappe.get_cached_doc("Google Settings")
+
+	if not (google_settings.enable and google_settings.google_drive_picker_enabled):
+		return {}
+
+	return {
+		"enabled": True,
+		"appId": google_settings.app_id,
+		"clientId": google_settings.client_id,
+	}

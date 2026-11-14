@@ -1,12 +1,126 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+from unittest.mock import patch
+
+from ldap3.core.exceptions import LDAPException, LDAPInappropriateAuthenticationResult
 
 import frappe
-import unittest
+from frappe.tests import IntegrationTestCase
+from frappe.utils.error import _is_ldap_exception, guess_exception_source, log_error_snapshot
 
-# test_records = frappe.get_test_records('Error Log')
 
-class TestErrorLog(unittest.TestCase):
-	pass
+class TestErrorLog(IntegrationTestCase):
+	def test_error_log(self):
+		"""let's do an error log on error log?"""
+		doc = frappe.new_doc("Error Log")
+		error = doc.log_error("This is an error")
+		self.assertEqual(error.doctype, "Error Log")
+
+	def test_traceback_locals_only_captured_in_developer_mode(self):
+		def boom():
+			random_value = "super-secret-value"  # noqa: F841
+			raise ValueError("request failed")
+
+		with patch.dict(frappe.conf, {"developer_mode": 0}):
+			try:
+				boom()
+			except ValueError:
+				error = frappe.log_error()
+		self.assertNotIn("super-secret-value", error.error)
+
+	def test_error_fingerprint(self):
+		def boom(msg):
+			raise ValueError(msg)
+
+		fingerprints = []
+		for msg in ("first", "second"):
+			try:
+				boom(msg)
+			except ValueError:
+				fingerprints.append(frappe.log_error().fingerprint)
+
+		# Same call path + exception type => same fingerprint, regardless of message
+		self.assertEqual(fingerprints[0], fingerprints[1])
+
+		# Different exception type => different fingerprint
+		try:
+			raise KeyError("first")
+		except KeyError:
+			self.assertNotEqual(frappe.log_error().fingerprint, fingerprints[0])
+
+		# No exception in context => None
+		self.assertIsNone(frappe.log_error().fingerprint)
+
+	def test_ldap_exceptions(self):
+		exc = [LDAPException, LDAPInappropriateAuthenticationResult]
+
+		for e in exc:
+			self.assertTrue(_is_ldap_exception(e()))
+
+	def test_log_error_snapshot_can_be_skipped_by_exception_flag(self):
+		class ExpectedException(Exception):
+			skip_error_log = True
+
+		with patch("frappe.utils.error.log_error") as log_error:
+			log_error_snapshot(ExpectedException("expected"))
+
+		log_error.assert_not_called()
+
+	def test_builtin_excluded_exceptions_use_skip_error_log_flag(self):
+		exceptions = [
+			frappe.AuthenticationError,
+			frappe.CSRFTokenError,
+			frappe.SecurityException,
+			frappe.InReadOnlyMode,
+		]
+
+		for exception in exceptions:
+			with self.subTest(exception=exception.__name__):
+				self.assertTrue(exception.skip_error_log)
+
+
+_RAW_EXC = """
+   File "apps/frappe/frappe/model/document.py", line 1284, in runner
+     add_to_return_value(self, fn(self, *args, **kwargs))
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^
+   File "apps/frappe/frappe/model/document.py", line 933, in fn
+     return method_object(*args, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   File "apps/erpnext/erpnext/selling/doctype/sales_order/sales_order.py", line 58, in onload
+     raise Exception("what")
+ Exception: what
+"""
+
+_THROW_EXC = """
+   File "apps/frappe/frappe/model/document.py", line 933, in fn
+     return method_object(*args, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   File "apps/erpnext/erpnext/selling/doctype/sales_order/sales_order.py", line 58, in onload
+     frappe.throw("what")
+   File "apps/frappe/frappe/__init__.py", line 550, in throw
+     msgprint(
+   File "apps/frappe/frappe/__init__.py", line 518, in msgprint
+     _raise_exception()
+   File "apps/frappe/frappe/__init__.py", line 467, in _raise_exception
+     raise raise_exception(msg)
+ frappe.exceptions.ValidationError: what
+"""
+
+TEST_EXCEPTIONS = (
+	(
+		"erpnext (app)",
+		_RAW_EXC,
+	),
+	(
+		"erpnext (app)",
+		_THROW_EXC,
+	),
+)
+
+
+class TestExceptionSourceGuessing(IntegrationTestCase):
+	@patch.object(frappe, "get_installed_apps", return_value=["frappe", "erpnext", "3pa"])
+	def test_exc_source_guessing(self, _installed_apps):
+		for source, exc in TEST_EXCEPTIONS:
+			result = guess_exception_source(exc)
+			self.assertEqual(result, source)

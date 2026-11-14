@@ -1,44 +1,72 @@
 import json
-import frappe
+from typing import TYPE_CHECKING, Union
 
+import redis
+
+import frappe
 from frappe.utils import cstr
 
-queue_prefix = 'insert_queue_for_'
+if TYPE_CHECKING:
+	from frappe.model.document import Document
 
-@frappe.whitelist()
-def deferred_insert(doctype, records):
-	frappe.cache().rpush(queue_prefix + doctype, records)
+queue_prefix = "insert_queue_for_"
 
-def save_to_db():
-	queue_keys = frappe.cache().get_keys(queue_prefix)
+
+def deferred_insert(doctype: str, records: list[dict | "Document"] | str):
+	if isinstance(records, dict | list):
+		_records = json.dumps(records)
+	else:
+		_records = records
+
+	try:
+		frappe.cache.rpush(f"{queue_prefix}{doctype}", _records)
+	except redis.exceptions.ConnectionError:
+		for record in records:
+			insert_record(record, doctype)
+
+
+def save_to_db(doctype: str | None = None):
+	queue_keys = [f"{queue_prefix}{doctype}"] if doctype else frappe.cache.get_keys(queue_prefix)
 	for key in queue_keys:
 		record_count = 0
-		queue_key = get_key_name(key)
-		doctype = get_doctype_name(key)
-		while frappe.cache().llen(queue_key) > 0 and record_count <= 500:
-			records = frappe.cache().lpop(queue_key)
-			records = json.loads(records.decode('utf-8'))
-			if isinstance(records, dict):
+		uncommitted_records = []
+		queue_key = key if doctype else get_key_name(key)
+		queue_doctype = doctype or get_doctype_name(key)
+		while frappe.cache.llen(queue_key) > 0 and record_count <= 10000:
+			records = frappe.cache.lpop(queue_key)
+			records = json.loads(records.decode("utf-8"))
+			records = [records] if isinstance(records, dict) else records
+			for index, record in enumerate(records):
 				record_count += 1
-				insert_record(records, doctype)
-				continue
-			for record in records:
-				record_count += 1
-				insert_record(record, doctype)
+				try:
+					inserted = insert_record(record, queue_doctype)
+				except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+					frappe.db.rollback()
+					records_to_retry = [*uncommitted_records, *records[index:]]
+					frappe.cache.lpush(queue_key, json.dumps(records_to_retry))
+					raise
+				if inserted:
+					uncommitted_records.append(record)
+				if record_count % 100 == 0:
+					frappe.db.commit()
+					uncommitted_records.clear()
 
-	frappe.db.commit()
 
-def insert_record(record, doctype):
-	if not record.get('doctype'):
-		record['doctype'] = doctype
+def insert_record(record: dict | "Document", doctype: str):
 	try:
-		doc = frappe.get_doc(record)
-		doc.insert()
+		record.update({"doctype": doctype})
+		frappe.get_doc(record).insert()
+		return True
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
 	except Exception as e:
-		print(e, doctype)
+		frappe.logger().error(f"Error while inserting deferred {doctype} record: {e}")
+		return False
 
-def get_key_name(key):
-	return cstr(key).split('|')[1]
 
-def get_doctype_name(key):
+def get_key_name(key: str) -> str:
+	return cstr(key).split("|")[1]
+
+
+def get_doctype_name(key: str) -> str:
 	return cstr(key).split(queue_prefix)[1]

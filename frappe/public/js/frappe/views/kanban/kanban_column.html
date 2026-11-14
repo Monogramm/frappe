@@ -1,13 +1,14 @@
-<div class="kanban-column" data-column-value="{{title}}">
+<div class="kanban-column" data-column-value="{{title}}" style="background-color: var(--kanban-column-bg);">
 	<div class="kanban-column-header">
 		<span class="kanban-column-title">
-			<span class="indicator-pill {{indicator}}"></span>
-			<span class="kanban-title">{{ __(title) }}</span>
+			<span class="kanban-col-dot indicator {{indicator}}"></span>
+			<span class="kanban-title ellipsis" title="{{title}}">{{ __(title) }}</span>
+			<span class="kanban-column-count es-badge" data-variant="subtle" data-size="sm">0</span>
 		</span>
 		<div class="column-options dropdown pull-right">
 			<a data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
 				<svg class="icon icon-sm">
-					<use xlink:href="#icon-dot-horizontal"></use>
+					<use href="#icon-ellipsis"></use>
 				</svg>
 			</a>
 			<ul class="dropdown-menu" style="max-height: 300px; overflow-y: auto;">
@@ -17,11 +18,11 @@
 	</div>
 	<div class="add-card">
 		<div class="ellipsis">
-			+ {{ __("Add " + doctype) }}
+			+ {{ __("Add {0}", [__(doctype)]) }}
 		</div>
 	</div>
 	<div class="kanban-card new-card-area">
-		<textarea name="title"></textarea>
+		<textarea name="title" aria-label="{{ __("Add {0}", [__(doctype)]) }}"></textarea>
 	</div>
 	<div class="kanban-cards">
 	</div>

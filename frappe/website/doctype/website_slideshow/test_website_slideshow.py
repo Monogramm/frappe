@@ -1,12 +1,8 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# See license.txt
-from __future__ import unicode_literals
-
+# License: MIT. See LICENSE
 import frappe
-import unittest
+from frappe.tests import IntegrationTestCase
 
-# test_records = frappe.get_test_records('Website Slideshow')
 
-class TestWebsiteSlideshow(unittest.TestCase):
+class TestWebsiteSlideshow(IntegrationTestCase):
 	pass

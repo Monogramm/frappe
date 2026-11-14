@@ -1,88 +1,243 @@
 export default class BulkOperations {
 	constructor({ doctype }) {
-		if (!doctype) frappe.throw(__('Doctype required'));
+		if (!doctype) frappe.throw(__("Doctype required"));
 		this.doctype = doctype;
 	}
 
 	print(docs) {
-		const print_settings = frappe.model.get_doc(':Print Settings', 'Print Settings');
+		const print_settings = frappe.model.get_doc(":Print Settings", "Print Settings");
 		const allow_print_for_draft = cint(print_settings.allow_print_for_draft);
 		const is_submittable = frappe.model.is_submittable(this.doctype);
 		const allow_print_for_cancelled = cint(print_settings.allow_print_for_cancelled);
+		const letterheads = this.get_letterhead_options();
+		const MAX_PRINT_LIMIT = 500;
+		const BACKGROUND_PRINT_THRESHOLD = 25;
 
-		const valid_docs = docs.filter(doc => {
-			return !is_submittable || doc.docstatus === 1 ||
-				(allow_print_for_cancelled && doc.docstatus == 2) ||
-				(allow_print_for_draft && doc.docstatus == 0) ||
-				frappe.user.has_role('Administrator');
-		}).map(doc => doc.name);
+		const valid_docs = docs
+			.filter((doc) => {
+				return (
+					!is_submittable ||
+					doc.docstatus === 1 ||
+					(allow_print_for_cancelled && doc.docstatus == 2) ||
+					(allow_print_for_draft && doc.docstatus == 0) ||
+					frappe.user.has_role("Administrator")
+				);
+			})
+			.map((doc) => doc.name);
 
-		const invalid_docs = docs.filter(doc => !valid_docs.includes(doc.name));
+		const invalid_docs = docs.filter((doc) => !valid_docs.includes(doc.name));
 
 		if (invalid_docs.length > 0) {
-			frappe.msgprint(__('You selected Draft or Cancelled documents'));
+			frappe.msgprint(__("You selected Draft or Cancelled documents"));
 			return;
 		}
 
-		if (valid_docs.length > 0) {
-			const dialog = new frappe.ui.Dialog({
-				title: __('Print Documents'),
-				fields: [{
-					'fieldtype': 'Check',
-					'label': __('With Letterhead'),
-					'fieldname': 'with_letterhead'
+		if (valid_docs.length === 0) {
+			frappe.msgprint(__("Select atleast 1 record for printing"));
+			return;
+		}
+
+		if (valid_docs.length > MAX_PRINT_LIMIT) {
+			frappe.msgprint(
+				__("You can only print upto {0} documents at a time", [MAX_PRINT_LIMIT])
+			);
+			return;
+		}
+
+		const print_formats = frappe.meta.get_print_formats(this.doctype);
+		const dialog = new frappe.ui.Dialog({
+			title: __("Print Documents"),
+			sheet_on_mobile: true,
+			fields: [
+				{
+					fieldtype: "Select",
+					label: __("Letter Head"),
+					fieldname: "letter_sel",
+					options: letterheads,
+					default: letterheads[0],
 				},
 				{
-					'fieldtype': 'Select',
-					'label': __('Print Format'),
-					'fieldname': 'print_sel',
-					options: frappe.meta.get_print_formats(this.doctype)
-				}]
-			});
+					fieldtype: "Select",
+					label: __("Print Format"),
+					fieldname: "print_sel",
+					options: print_formats,
+					default: print_formats[0],
+				},
+				{
+					fieldtype: "Select",
+					label: __("Page Size"),
+					fieldname: "page_size",
+					options: frappe.meta.get_print_sizes(),
+					default: print_settings.pdf_page_size,
+				},
+				{
+					fieldtype: "Float",
+					label: __("Page Height (in mm)"),
+					fieldname: "page_height",
+					depends_on: 'eval:doc.page_size == "Custom"',
+					default: print_settings.pdf_page_height,
+				},
+				{
+					fieldtype: "Float",
+					label: __("Page Width (in mm)"),
+					fieldname: "page_width",
+					depends_on: 'eval:doc.page_size == "Custom"',
+					default: print_settings.pdf_page_width,
+				},
+				{
+					fieldtype: "Check",
+					label: __("Background Print (required for >25 documents)"),
+					fieldname: "background_print",
+					default: valid_docs.length > BACKGROUND_PRINT_THRESHOLD,
+					read_only: valid_docs.length > BACKGROUND_PRINT_THRESHOLD,
+				},
+			],
+		});
 
-			dialog.set_primary_action(__('Print'), args => {
-				if (!args) return;
-				const default_print_format = frappe.get_meta(this.doctype).default_print_format;
-				const with_letterhead = args.with_letterhead ? 1 : 0;
-				const print_format = args.print_sel ? args.print_sel : default_print_format;
-				const json_string = JSON.stringify(valid_docs);
+		dialog.set_primary_action(__("Print"), (args) => {
+			if (!args) return;
+			const with_letterhead = args.letter_sel == __("No Letterhead") ? 0 : 1;
+			const print_format = args.print_sel || print_formats[0];
+			const json_string = JSON.stringify(valid_docs);
+			const letterhead = args.letter_sel;
 
-				const w = window.open('/api/method/frappe.utils.print_format.download_multi_pdf?' +
-					'doctype=' + encodeURIComponent(this.doctype) +
-					'&name=' + encodeURIComponent(json_string) +
-					'&format=' + encodeURIComponent(print_format) +
-					'&no_letterhead=' + (with_letterhead ? '0' : '1'));
-				if (!w) {
-					frappe.msgprint(__('Please enable pop-ups'));
-					return;
+			let pdf_options;
+			if (args.page_size === "Custom") {
+				if (args.page_height === 0 || args.page_width === 0) {
+					frappe.throw(__("Page height and width cannot be zero"));
 				}
-			});
+				pdf_options = JSON.stringify({
+					"page-height": args.page_height,
+					"page-width": args.page_width,
+				});
+			} else {
+				pdf_options = JSON.stringify({ "page-size": args.page_size });
+			}
 
-			dialog.show();
-		} else {
-			frappe.msgprint(__('Select atleast 1 record for printing'));
-		}
+			if (args.background_print) {
+				frappe
+					.call("frappe.utils.print_format.download_multi_pdf_async", {
+						doctype: this.doctype,
+						name: json_string,
+						format: print_format,
+						no_letterhead: with_letterhead ? "0" : "1",
+						letterhead: letterhead,
+						options: pdf_options,
+					})
+					.then((response) => {
+						let task_id = response.message.task_id;
+						frappe.realtime.task_subscribe(task_id);
+						frappe.realtime.on(`task_complete:${task_id}`, (data) => {
+							frappe.realtime.task_unsubscribe(task_id);
+							frappe.realtime.off(`task_complete:${task_id}`);
+							if (data.error) {
+								frappe.msgprint({
+									title: __("Bulk PDF Export"),
+									indicator: "red",
+									message: data.error,
+								});
+								return;
+							}
+							frappe.msgprint({
+								title: __("Bulk PDF Export"),
+								message: __("Your PDF is ready for download"),
+								primary_action: {
+									label: __("Download PDF"),
+									client_action: "window.open",
+									args: data.file_url,
+								},
+							});
+						});
+					});
+			} else {
+				const w = window.open(
+					"/api/method/frappe.utils.print_format.download_multi_pdf?" +
+						"doctype=" +
+						encodeURIComponent(this.doctype) +
+						"&name=" +
+						encodeURIComponent(json_string) +
+						"&format=" +
+						encodeURIComponent(print_format) +
+						"&no_letterhead=" +
+						(with_letterhead ? "0" : "1") +
+						"&letterhead=" +
+						encodeURIComponent(letterhead) +
+						"&options=" +
+						encodeURIComponent(pdf_options)
+				);
+
+				if (!w) {
+					frappe.msgprint(__("Please enable pop-ups"));
+				}
+			}
+			dialog.hide();
+		});
+		dialog.show();
+	}
+
+	get_letterhead_options() {
+		const letterhead_options = [__("No Letterhead")];
+		frappe.call({
+			method: "frappe.client.get_list",
+			args: {
+				doctype: "Letter Head",
+				fields: ["name", "is_default"],
+				filters: { disabled: 0, letter_head_for: "DocType" },
+				limit_page_length: 0,
+			},
+			async: false,
+			callback(r) {
+				if (r.message) {
+					r.message.forEach((letterhead) => {
+						if (letterhead.is_default) {
+							letterhead_options.unshift(letterhead.name);
+						} else {
+							letterhead_options.push(letterhead.name);
+						}
+					});
+				}
+			},
+		});
+		return letterhead_options;
 	}
 
 	delete(docnames, done = null) {
 		frappe
 			.call({
-				method: 'frappe.desk.reportview.delete_items',
+				method: "frappe.desk.reportview.delete_items",
 				freeze: true,
+				freeze_message:
+					docnames.length <= 10
+						? __("Deleting {0} records...", [docnames.length])
+						: null,
 				args: {
 					items: docnames,
-					doctype: this.doctype
-				}
+					doctype: this.doctype,
+				},
 			})
 			.then((r) => {
+				// delete_items returns the undeleted names, or null when the job was enqueued.
+				// Only trust an explicit list — otherwise we would clear meta locals for
+				// documents that still exist (failed deletes) or were not deleted yet (async).
 				let failed = r.message;
-				if (!failed) failed = [];
+				if (!Array.isArray(failed)) {
+					if (done) done();
+					return;
+				}
+
+				for (const name of docnames) {
+					if (!failed.includes(name)) {
+						frappe.model.delete_from_locals(this.doctype, name);
+					}
+				}
 
 				if (failed.length && !r._server_messages) {
-					frappe.throw(__('Cannot delete {0}', [failed.map(f => f.bold()).join(', ')]));
+					frappe.throw(
+						__("Cannot delete {0}", [failed.map((f) => f.bold()).join(", ")])
+					);
 				}
 				if (failed.length < docnames.length) {
-					frappe.utils.play_sound('delete');
+					frappe.utils.play_sound("delete");
 					if (done) done();
 				}
 			});
@@ -92,173 +247,278 @@ export default class BulkOperations {
 		if (docnames.length > 0) {
 			const assign_to = new frappe.ui.form.AssignToDialog({
 				obj: this,
-				method: 'frappe.desk.form.assign_to.add_multiple',
+				method: "frappe.desk.form.assign_to.add_multiple",
 				doctype: this.doctype,
 				docname: docnames,
 				bulk_assign: true,
 				re_assign: true,
-				callback: done
+				callback: done,
 			});
 			assign_to.dialog.clear();
+			assign_to.dialog.sheet_on_mobile = true;
 			assign_to.dialog.show();
 		} else {
-			frappe.msgprint(__('Select records for assignment'));
+			frappe.msgprint(__("Select records for assignment"));
+		}
+	}
+
+	clear_assignment(docnames, done) {
+		if (docnames.length > 0) {
+			frappe
+				.call({
+					method: "frappe.desk.form.assign_to.remove_multiple",
+					args: {
+						doctype: this.doctype,
+						names: docnames,
+						ignore_permissions: true,
+					},
+					freeze: true,
+					freeze_message: "Removing assignments...",
+				})
+				.then(() => {
+					done();
+				});
+		} else {
+			frappe.msgprint(__("Select records for removing assignment"));
 		}
 	}
 
 	apply_assignment_rule(docnames, done) {
 		if (docnames.length > 0) {
-			frappe.call('frappe.automation.doctype.assignment_rule.assignment_rule.bulk_apply', {
-				doctype: this.doctype,
-				docnames: docnames
-			}).then(() => done());
+			frappe
+				.call("frappe.automation.doctype.assignment_rule.assignment_rule.bulk_apply", {
+					doctype: this.doctype,
+					docnames: docnames,
+				})
+				.then((r) => done(r.message));
 		}
 	}
 
-	submit_or_cancel(docnames, action='submit', done=null) {
+	submit_or_cancel(docnames, action = "submit", done = null) {
 		action = action.toLowerCase();
-		frappe
-			.call({
-				method: 'frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs',
-				args: {
-					doctype: this.doctype,
-					action: action,
-					docnames: docnames
-				},
+		const task_id = Math.random().toString(36).slice(-5);
+		return frappe
+			.xcall("frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs", {
+				doctype: this.doctype,
+				action: action,
+				docnames: docnames,
+				task_id: task_id,
 			})
-			.then((r) => {
-				let failed = r.message;
-				if (!failed) failed = [];
-
-				if (failed.length && !r._server_messages) {
-					frappe.throw(__('Cannot {0} {1}', [action, failed.map(f => f.bold()).join(', ')]));
-				}
-				if (failed.length < docnames.length) {
+			.then((failed_docnames) => {
+				if (!failed_docnames || failed_docnames.length < docnames.length) {
 					frappe.utils.play_sound(action);
-					if (done) done();
+				}
+				// nothing returned means the server enqueued the batch
+				const queued =
+					!failed_docnames ||
+					(action === "submit" && frappe.get_meta(this.doctype).queue_in_background);
+				if (done) done(queued);
+
+				if (failed_docnames?.length) {
+					const comma_separated_records = frappe.utils.comma_and(failed_docnames);
+					switch (action) {
+						case "submit":
+							frappe.throw(__("Cannot submit {0}.", [comma_separated_records]));
+							break;
+						case "cancel":
+							frappe.throw(__("Cannot cancel {0}.", [comma_separated_records]));
+							break;
+						default:
+							frappe.throw(__("Cannot {0} {1}.", [action, comma_separated_records]));
+					}
 				}
 			});
 	}
 
 	edit(docnames, field_mappings, done) {
-		let field_options = Object.keys(field_mappings).sort();
+		const field_options = Object.keys(field_mappings).sort(function (a, b) {
+			return field_mappings[a].translated_label.localeCompare(
+				field_mappings[b].translated_label
+			);
+		});
+		const field_autocomplete_options = field_options.map((key) => ({
+			label: field_mappings[key].translated_label,
+			value: key,
+		}));
 		const status_regex = /status/i;
 
-		const default_field = field_options.find(value => status_regex.test(value));
+		const default_field =
+			field_options.find((value) => status_regex.test(value)) ||
+			field_options.find((value) => field_mappings[value]?.fieldtype === "Select");
 
 		const dialog = new frappe.ui.Dialog({
-			title: __('Edit'),
+			title: __("Bulk Edit"),
+			sheet_on_mobile: true,
 			fields: [
 				{
-					'fieldtype': 'Select',
-					'options': field_options,
-					'default': default_field,
-					'label': __('Field'),
-					'fieldname': 'field',
-					'reqd': 1,
-					'onchange': () => {
+					fieldtype: "Autocomplete",
+					options: field_autocomplete_options,
+					max_items: Infinity,
+					default: default_field,
+					label: __("Field"),
+					fieldname: "field",
+					reqd: 1,
+					onchange: () => {
 						set_value_field(dialog);
-					}
+					},
 				},
 				{
-					'fieldtype': 'Data',
-					'label': __('Value'),
-					'fieldname': 'value',
-					'reqd': 1
-				}
+					fieldtype: "Data",
+					label: __("Value"),
+					fieldname: "value",
+					onchange() {
+						show_help_text();
+					},
+				},
 			],
 			primary_action: ({ value }) => {
-				const fieldname = field_mappings[dialog.get_value('field')].fieldname;
+				const selected_field = field_mappings[dialog.get_value("field")];
+				const { fieldname, is_child_field, child_doctype } = selected_field;
 				dialog.disable_primary_action();
-				frappe.call({
-					method: 'frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs',
-					args: {
-						doctype: this.doctype,
+				let update_data = {};
+				if (is_child_field) {
+					// For child table fields, we need to update all rows in the child table
+					update_data = {
+						child_table_updates: {
+							[child_doctype]: {
+								[fieldname]: value || null,
+							},
+						},
+					};
+				} else {
+					update_data[fieldname] = value || null;
+				}
+				frappe
+					.call({
+						method: "frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs",
 						freeze: true,
-						docnames: docnames,
-						action: 'update',
-						data: {
-							[fieldname]: value
-						}
-					}
-				}).then(r => {
-					let failed = r.message || [];
+						args: {
+							doctype: this.doctype,
+							docnames: docnames,
+							action: "update",
+							data: update_data,
+						},
+					})
+					.then((r) => {
+						let failed = r.message || [];
 
-					if (failed.length && !r._server_messages) {
-						dialog.enable_primary_action();
-						frappe.throw(__('Cannot update {0}', [failed.map(f => f.bold ? f.bold() : f).join(', ')]));
-					}
-					done();
-					dialog.hide();
-					frappe.show_alert(__('Updated successfully'));
-				});
+						if (failed.length && !r._server_messages) {
+							dialog.enable_primary_action();
+							frappe.throw(
+								__("Cannot update {0}", [
+									failed.map((f) => (f.bold ? f.bold() : f)).join(", "),
+								])
+							);
+						}
+						done(!r.message);
+						dialog.hide();
+						frappe.show_alert(__("Updated successfully"));
+					});
 			},
-			primary_action_label: __('Update')
+			primary_action_label: __("Update {0} records", [docnames.length]),
 		});
 
 		if (default_field) set_value_field(dialog); // to set `Value` df based on default `Field`
+		show_help_text();
 
 		function set_value_field(dialogObj) {
-			const new_df = Object.assign({},
-				field_mappings[dialogObj.get_value('field')]);
+			const field_value = dialogObj.get_value("field");
+			if (!field_value || !field_mappings[field_value]) return;
+			const new_df = Object.assign({}, field_mappings[field_value]);
 			/* if the field label has status in it and
 			if it has select fieldtype with no default value then
 			set a default value from the available option. */
-			if(new_df.label.match(status_regex) &&
-				new_df.fieldtype === 'Select' && !new_df.default) {
+			if (
+				new_df.label?.match(status_regex) &&
+				new_df.fieldtype === "Select" &&
+				!new_df.default
+			) {
 				let options = [];
-				if(typeof new_df.options==="string") {
+				if (typeof new_df.options === "string") {
 					options = new_df.options.split("\n");
 				}
 				//set second option as default if first option is an empty string
 				new_df.default = options[0] || options[1];
 			}
-			new_df.label = __('Value');
-			new_df.reqd = 1;
+			new_df.label = __("Value");
+			new_df.onchange = show_help_text;
+
 			delete new_df.depends_on;
-			dialogObj.replace_field('value', new_df);
+			delete new_df.is_child_field;
+			delete new_df.child_doctype;
+			dialogObj.replace_field("value", new_df);
+			show_help_text();
+		}
+
+		function show_help_text() {
+			if (dialog.get_primary_btn().is(":focus, :active")) return;
+
+			let value = dialog.get_value("value");
+			if (value == null || value === "") {
+				dialog.set_df_property(
+					"value",
+					"description",
+					__("You have not entered a value. The field will be set to empty.")
+				);
+			} else {
+				dialog.set_df_property("value", "description", "");
+			}
 		}
 
 		dialog.refresh();
 		dialog.show();
 	}
 
-
 	add_tags(docnames, done) {
 		const dialog = new frappe.ui.Dialog({
-			title: __('Add Tags'),
+			title: __("Add Tags"),
+			sheet_on_mobile: true,
 			fields: [
 				{
-					fieldtype: 'MultiSelectPills',
-					fieldname: 'tags',
+					fieldtype: "MultiSelectPills",
+					fieldname: "tags",
 					label: __("Tags"),
 					reqd: true,
-					get_data: function(txt) {
+					get_data: function (txt) {
 						return frappe.db.get_link_options("Tag", txt);
-					}
+					},
 				},
 			],
 			primary_action_label: __("Add"),
-			primary_action: () => {
-				let args = dialog.get_values();
-				if (args && args.tags) {
-					dialog.set_message("Adding Tags...");
-
-					frappe.call({
+			primary_action: (args) => {
+				if (args.tags) {
+					return frappe.call({
 						method: "frappe.desk.doctype.tag.tag.add_tags",
 						args: {
-							'tags': args.tags,
-							'dt': this.doctype,
-							'docs': docnames,
+							tags: args.tags,
+							dt: this.doctype,
+							docs: docnames,
 						},
 						callback: () => {
 							dialog.hide();
 							done();
-						}
+						},
 					});
 				}
 			},
 		});
 		dialog.show();
 	}
+
+	export(doctype, docnames) {
+		frappe.require("data_import_tools.bundle.js", () => {
+			const data_exporter = new frappe.data_import.DataExporter(
+				doctype,
+				"Insert New Records",
+				"CSV",
+				true
+			);
+			data_exporter.dialog.set_value("export_records", "by_filter");
+			data_exporter.filter_group.add_filters_to_filter_group([
+				[doctype, "name", "in", docnames, false],
+			]);
+		});
+	}
 }
+
+frappe.ui.BulkOperations = BulkOperations;

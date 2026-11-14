@@ -1,12 +1,7 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# See license.txt
-from __future__ import unicode_literals
+# License: MIT. See LICENSE
+from frappe.tests import IntegrationTestCase
 
-import frappe
-import unittest
 
-# test_records = frappe.get_test_records('Unhandled Emails')
-
-class TestUnhandledEmail(unittest.TestCase):
+class TestUnhandledEmail(IntegrationTestCase):
 	pass

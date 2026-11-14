@@ -1,9 +1,10 @@
 {
  "actions": [],
- "autoname": "format:{reference_doctype} Import on {creation}",
- "beta": 1,
+ "allow_bulk_edit": 1,
+ "autoname": "{reference_doctype} Import-.#####",
  "creation": "2019-08-04 14:16:08.318714",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/data-import",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
@@ -11,22 +12,30 @@
   "import_type",
   "download_template",
   "import_file",
-  "html_5",
+  "payload_count",
   "google_sheets_url",
   "refresh_google_sheet",
   "column_break_5",
+  "use_csv_sniffer",
+  "custom_delimiters",
+  "delimiter_options",
   "status",
   "submit_after_import",
   "mute_emails",
   "template_options",
+  "tree_parent_overrides",
   "import_warnings_section",
   "template_warnings",
   "import_warnings",
+  "value_mappings_section",
+  "value_mappings",
+  "skipped_rows_section",
+  "skipped_rows",
+  "section_import_tree_preview",
+  "import_tree_preview",
   "section_import_preview",
   "import_preview",
-  "import_log_section",
-  "import_log",
-  "show_failed_logs",
+  "import_log_heading",
   "import_log_preview"
  ],
  "fields": [
@@ -40,20 +49,34 @@
    "set_only_once": 1
   },
   {
+   "default": "Insert New Records",
    "fieldname": "import_type",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Import Type",
-   "options": "\nInsert New Records\nUpdate Existing Records",
+   "options": "Insert New Records\nUpdate Existing Records\nInsert or Update Records",
    "reqd": 1,
    "set_only_once": 1
   },
   {
-   "depends_on": "eval:!doc.__islocal",
+   "depends_on": "eval:doc.reference_doctype && doc.import_type",
    "fieldname": "import_file",
    "fieldtype": "Attach",
    "in_list_view": 1,
-   "label": "Import File"
+   "label": "Import File",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_import_tree_preview",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Tree Preview"
+  },
+  {
+   "fieldname": "import_tree_preview",
+   "fieldtype": "HTML",
+   "label": "Tree Preview"
   },
   {
    "fieldname": "import_preview",
@@ -61,8 +84,11 @@
    "label": "Import Preview"
   },
   {
+   "collapsible": 1,
+   "collapsible_depends_on": "eval:doc.import_file || doc.google_sheets_url",
    "fieldname": "section_import_preview",
    "fieldtype": "Section Break",
+   "hide_border": 1,
    "label": "Preview"
   },
   {
@@ -78,15 +104,47 @@
    "read_only": 1
   },
   {
-   "fieldname": "import_log",
+   "description": "Per-row parent / is_group overrides for tree DocType imports, keyed by sheet row number. Applied at import time.",
+   "fieldname": "tree_parent_overrides",
    "fieldtype": "Code",
-   "label": "Import Log",
-   "options": "JSON"
+   "hidden": 1,
+   "label": "Tree Parent Overrides",
+   "options": "JSON",
+   "read_only": 1
   },
   {
-   "fieldname": "import_log_section",
+   "collapsible": 1,
+   "fieldname": "value_mappings_section",
    "fieldtype": "Section Break",
-   "label": "Import Log"
+   "label": "Value Mappings"
+  },
+  {
+   "depends_on": "eval:!doc.__islocal && (doc.import_file || doc.google_sheets_url)",
+   "fieldname": "value_mappings",
+   "fieldtype": "Table",
+   "options": "Data Import Value Mapping",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
+  },
+  {
+   "depends_on": "eval:!doc.__islocal && (doc.import_file || doc.google_sheets_url)",
+   "fieldname": "skipped_rows_section",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Skipped Rows"
+  },
+  {
+   "depends_on": "eval:!doc.__islocal && (doc.import_file || doc.google_sheets_url)",
+   "fieldname": "skipped_rows",
+   "fieldtype": "Table",
+   "hidden": 1,
+   "options": "Data Import Skipped Row",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
+  },
+  {
+   "fieldname": "import_log_heading",
+   "fieldtype": "HTML",
+   "label": "Import Log",
+   "options": "<div class=\"section-head import-log-title\">Import Log</div>"
   },
   {
    "fieldname": "import_log_preview",
@@ -99,7 +157,8 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Status",
-   "options": "Pending\nSuccess\nPartial Success\nError",
+   "no_copy": 1,
+   "options": "Pending\nIn Progress\nSuccess\nPartial Success\nError\nTimed Out",
    "read_only": 1
   },
   {
@@ -117,6 +176,7 @@
    "set_only_once": 1
   },
   {
+   "collapsible": 1,
    "fieldname": "import_warnings_section",
    "fieldtype": "Section Break",
    "label": "Import File Errors and Warnings"
@@ -127,7 +187,7 @@
    "label": "Import Warnings"
   },
   {
-   "depends_on": "eval:!doc.__islocal",
+   "depends_on": "eval:doc.reference_doctype && doc.import_type",
    "fieldname": "download_template",
    "fieldtype": "Button",
    "label": "Download Template"
@@ -140,37 +200,61 @@
    "set_only_once": 1
   },
   {
-   "default": "0",
-   "fieldname": "show_failed_logs",
-   "fieldtype": "Check",
-   "label": "Show Failed Logs"
-  },
-  {
-   "depends_on": "eval:!doc.__islocal && !doc.import_file",
-   "fieldname": "html_5",
-   "fieldtype": "HTML",
-   "options": "<h5 class=\"text-muted uppercase\">Or</h5>"
-  },
-  {
-   "depends_on": "eval:!doc.__islocal && !doc.import_file\n",
+   "depends_on": "eval:doc.reference_doctype && doc.import_type && !doc.import_file",
    "description": "Must be a publicly accessible Google Sheets URL",
    "fieldname": "google_sheets_url",
    "fieldtype": "Data",
-   "label": "Import from Google Sheets"
+   "label": "Import from Google Sheets",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
   },
   {
    "depends_on": "eval:doc.google_sheets_url && !doc.__unsaved",
    "fieldname": "refresh_google_sheet",
    "fieldtype": "Button",
    "label": "Refresh Google Sheet"
+  },
+  {
+   "fieldname": "payload_count",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Payload Count",
+   "read_only": 1
+  },
+  {
+   "default": ",;\\t|",
+   "depends_on": "eval:doc.custom_delimiters && (doc.google_sheets_url || (doc.import_file && doc.import_file.split('.').pop().toLowerCase() === 'csv'))",
+   "description": "If your CSV uses a different delimiter, add that character here, ensuring no spaces or additional characters are included.",
+   "fieldname": "delimiter_options",
+   "fieldtype": "Data",
+   "label": "Delimiter Options",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.google_sheets_url || (doc.import_file && doc.import_file.split('.').pop().toLowerCase() === 'csv')",
+   "fieldname": "custom_delimiters",
+   "fieldtype": "Check",
+   "label": "Custom Delimiters",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.google_sheets_url || (doc.import_file && doc.import_file.split('.').pop().toLowerCase() === 'csv')",
+   "description": "Use if the default settings don't seem to detect your data correctly",
+   "fieldname": "use_csv_sniffer",
+   "fieldtype": "Check",
+   "label": "Detect CSV type",
+   "read_only_depends_on": "eval: ['Success', 'Partial Success'].includes(doc.status)"
   }
  ],
  "hide_toolbar": 1,
+ "icon": "import",
  "links": [],
- "modified": "2020-06-24 14:33:03.173876",
+ "modified": "2026-07-24 14:36:39.136121",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Data Import",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -186,7 +270,9 @@
    "write": 1
   }
  ],
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

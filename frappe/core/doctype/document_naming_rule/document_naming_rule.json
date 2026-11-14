@@ -2,6 +2,7 @@
  "actions": [],
  "creation": "2020-09-07 12:48:48.334318",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/erpnext/user/manual/en/document-naming",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
@@ -12,8 +13,9 @@
   "conditions",
   "naming_section",
   "prefix",
-  "prefix_digits",
-  "counter"
+  "counter",
+  "column_break_xfqa",
+  "prefix_digits"
  ],
  "fields": [
   {
@@ -22,7 +24,8 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Document Type",
-   "options": "DocType"
+   "options": "DocType",
+   "reqd": 1
   },
   {
    "default": "0",
@@ -33,14 +36,19 @@
   {
    "fieldname": "prefix",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Prefix",
    "mandatory_depends_on": "eval:doc.naming_by===\"Numbered\"",
    "reqd": 1
   },
   {
+   "default": "0",
+   "description": "Counters are tracked per resolved prefix in the Series doctype. This field is retained for reference only.",
    "fieldname": "counter",
    "fieldtype": "Int",
+   "hidden": 1,
    "label": "Counter",
+   "no_copy": 1,
    "read_only": 1
   },
   {
@@ -74,12 +82,17 @@
    "description": "Rules with higher priority number will be applied first.",
    "fieldname": "priority",
    "fieldtype": "Int",
+   "in_standard_filter": 1,
    "label": "Priority"
+  },
+  {
+   "fieldname": "column_break_xfqa",
+   "fieldtype": "Column Break"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2020-11-04 14:38:14.836056",
+ "modified": "2023-11-21 11:58:25.712375",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Document Naming Rule",
@@ -99,8 +112,9 @@
   }
  ],
  "quick_entry": 1,
- "sort_field": "modified",
+ "sort_field": "priority",
  "sort_order": "DESC",
+ "states": [],
  "title_field": "document_type",
  "track_changes": 1
 }

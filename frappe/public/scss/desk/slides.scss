@@ -1,113 +1,116 @@
-.slides-progress {
-	margin-top: 80px;
-	display: flex;
-	margin-bottom: var(--margin-lg);
-	justify-content: center;
+.slides-wrapper {
+	padding-top: calc(var(--spacing) * 24);
+	padding-bottom: calc(var(--spacing) * 8);
 
-	.slide-step {
-		@include flex(flex, center, center, null);
+	@include media-breakpoint-down(xs) {
+		padding-top: calc(var(--spacing) * 8);
+	}
 
-		height: 18px;
-		width: 18px;
-		border-radius: var(--border-radius-full);
-		border: 1px solid var(--gray-300);
-		margin: 0 var(--margin-xs);
-		background-color: var(--card-bg);
+	// line fields up with the title; inner gutters stay for multi-column sections
+	.form-wrapper .form-section {
+		padding: 0;
+		border: none;
 
-		.slide-step-indicator {
-			height: 6px;
-			width: 6px;
-			background-color: var(--gray-300);
-			border-radius: var(--border-radius-full);
-			// display: none;
+		// desk spaces sections like form pages; a slide reads as one short form
+		.section-body {
+			margin-top: 0;
+			padding-top: 0;
 		}
 
-		.slide-step-complete {
-			display: none;
-
-			.icon-xs {
-				height: 10px;
-				width: 10px;
-			}
+		& + .form-section {
+			margin-top: calc(var(--spacing) * 2);
 		}
 
-		&.active {
-			// background-color: var(--primary);
-			border: 1px solid var(--primary);
-
-			.slide-step-indicator {
-				display: block;
-				background-color: var(--primary);
-			}
+		.form-section-description,
+		.form-column:first-child {
+			padding-left: 0;
 		}
 
-		// &.step-success.active {
-		// 	background-color: var(--primary);
-		// 	border: 1px solid var(--primary);
-
-		// 	.slide-step-indicator {
-		// 		display: block;
-		// 		background-color: var(--white);
-		// 	}
-		// }
-
-		&.step-success:not(.active) {
-			background-color: var(--primary);
-			border: 1px solid var(--primary);
-
-			.slide-step-indicator {
-				display: none;
-			}
-
-			.slide-step-complete {
-				display: flex;
-
-				.icon use {
-					stroke-width: 2;
-					stroke: var(--white);
-				}
-			}
+		.form-column:last-child {
+			padding-right: 0;
 		}
 	}
 }
 
-.slides-wrapper {
-	width: 520px;
-	max-width: 520px;
-	background: var(--card-bg);
-	padding: var(--padding-xl);
-	box-shadow: var(--card-shadow);
-	border-radius: var(--border-radius-md);
+.toggle-theme-btn {
+	position: absolute;
+	top: calc(var(--spacing) * 5);
+	right: calc(var(--spacing) * 5);
+}
 
-	.slide-footer {
-		margin: var(--margin-md) 0;
-		padding: 0 var(--padding-lg);
+.setup-intro {
+	min-height: 100svh;
+	padding: calc(var(--spacing) * 8) calc(var(--spacing) * 4);
 
-		.btn {
-			box-shadow: none;
+	// staged reveal: logos, then the greeting, then the tagline and button
+	.setup-intro__logo,
+	.setup-intro__tagline,
+	.setup-intro__start {
+		animation: setup-intro-reveal 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+	}
+
+	.setup-intro__logo {
+		width: calc(var(--spacing) * 16);
+		height: calc(var(--spacing) * 16);
+	}
+
+	.setup-intro__tagline {
+		animation-delay: 700ms;
+	}
+
+	.setup-intro__start {
+		animation-delay: 900ms;
+	}
+
+	// greetings share one grid cell, so each one fades into the next
+	.setup-intro__hello {
+		min-height: calc(var(--spacing) * 18);
+		line-height: 1.2;
+
+		> span {
+			grid-area: 1 / 1;
+			align-self: center;
+		}
+
+		// the old word is gone before the new one appears, so they never overlap
+		.is-current {
+			animation: setup-intro-fade-in 500ms ease-out 350ms both;
+		}
+
+		.is-leaving {
+			animation: setup-intro-fade-out 350ms ease-in both;
 		}
 	}
 
-	h1.slide-title {
-		font-size: var(--text-3xl);
-		font-weight: 700;
+	@media (prefers-reduced-motion: reduce) {
+		.setup-intro__logo,
+		.setup-intro__tagline,
+		.setup-intro__start,
+		.setup-intro__hello > span {
+			animation: none;
+		}
+
+		.setup-intro__hello .is-leaving {
+			display: none;
+		}
 	}
+}
 
-	.form-wrapper {
-		margin-top: var(--margin-xl);
+@keyframes setup-intro-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(calc(var(--spacing) * 2)) scale(0.96);
 	}
+}
 
-	&.setup-in-progress {
-		.state-icon-container {
-			margin-top: var(--margin-xl);
-		}
+@keyframes setup-intro-fade-in {
+	from {
+		opacity: 0;
+	}
+}
 
-		.setup-message {
-			margin-top: var(--margin-lg);
-		}
-
-		.btn-abort {
-			margin: var(--margin-lg) auto;
-		}
+@keyframes setup-intro-fade-out {
+	to {
+		opacity: 0;
 	}
 }

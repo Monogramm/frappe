@@ -4,6 +4,7 @@
  "autoname": "hash",
  "creation": "2017-01-11 04:21:35.217943",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/framework/user/en/basics/users-and-permissions",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
@@ -23,15 +24,16 @@
   "submit",
   "cancel",
   "amend",
+  "mask",
   "additional_permissions",
   "report",
   "export",
   "import",
-  "set_user_permissions",
   "column_break_19",
   "share",
   "print",
-  "email"
+  "email",
+  "is_app_disabled"
  ],
  "fields": [
   {
@@ -155,6 +157,16 @@
    "width": "32px"
   },
   {
+   "default": "0",
+   "fieldname": "mask",
+   "fieldtype": "Check",
+   "label": "Mask",
+   "oldfieldname": "mask",
+   "oldfieldtype": "Check",
+   "print_width": "32px",
+   "width": "32px"
+  },
+  {
    "fieldname": "additional_permissions",
    "fieldtype": "Section Break",
    "label": "Additional Permissions"
@@ -178,13 +190,6 @@
    "fieldname": "import",
    "fieldtype": "Check",
    "label": "Import"
-  },
-  {
-   "default": "0",
-   "description": "This role update User Permissions for a user",
-   "fieldname": "set_user_permissions",
-   "fieldtype": "Check",
-   "label": "Set User Permissions"
   },
   {
    "fieldname": "column_break_19",
@@ -212,20 +217,31 @@
    "fieldname": "parent",
    "fieldtype": "Data",
    "label": "Reference Document Type",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "default": "0",
    "fieldname": "select",
    "fieldtype": "Check",
    "label": "Select"
+  },
+  {
+   "default": "0",
+   "description": "Set while owner app is disabled.",
+   "fieldname": "is_app_disabled",
+   "fieldtype": "Check",
+   "label": "Is App Disabled",
+   "read_only": 1
   }
  ],
+ "grid_page_length": 50,
  "links": [],
- "modified": "2020-12-03 15:20:48.296730",
+ "modified": "2026-08-05 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Custom DocPerm",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {
@@ -233,6 +249,7 @@
    "delete": 1,
    "email": 1,
    "export": 1,
+   "import": 1,
    "print": 1,
    "read": 1,
    "report": 1,
@@ -242,7 +259,9 @@
   }
  ],
  "read_only": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "ASC",
+ "states": [],
  "title_field": "parent"
 }

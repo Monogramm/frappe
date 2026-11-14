@@ -1,109 +1,162 @@
 .page-title {
 	display: flex;
 	align-items: center;
-	.sidebar-toggle-btn {
-		display: flex;
-		margin-right: var(--margin-sm);
-		cursor: pointer;
-		--icon-stroke: var(--gray-500);
-		.sidebar-toggle-icon {
-			display: none;
-		}
+	padding: 0 15px;
+	min-width: 0;
 
-		.sidebar-toggle-icon, .sidebar-toggle-placeholder {
-			@include transition(all 0.5s ease-in-out);
-		}
-
-		&:hover {
-			.sidebar-toggle-icon {
-				display: block;
-			}
-			.sidebar-toggle-placeholder {
-				display: none;
-			}
-		}
-	}
 	.title-area {
 		display: inline-flex;
 		align-items: center;
-		.title-text {
-			cursor: pointer;
-			margin-bottom: 0px;
-			margin-right: var(--margin-sm);
-			max-width: 500px;
+
+		.deprecated-badge {
+			margin-left: var(--margin-sm);
+			flex-shrink: 0;
 		}
-		.indicator-pill {
-			margin-top: 2px;
+
+		.page-indicator-pill {
+			margin-left: var(--margin-sm);
+
+			.indicator-doc-html {
+				height: 8px;
+				width: 8px;
+				border-radius: inherit;
+			}
 		}
+
 		.sub-heading {
-			font-size: var(--text-sm);
+			@include get_textstyle("sm", "regular");
 		}
 	}
 }
 
-
 .page-container {
 	background-color: var(--bg-color);
-}
 
-.custom-actions {
-	display: flex;
+	.page-body {
+		width: 100%;
+		padding: 0px;
+	}
 }
 
 .page-actions {
 	align-items: center;
+	padding-left: 0px;
+
+	.filters:not(:empty) {
+		margin-left: var(--margin-sm, 8px);
+	}
+
 	.btn {
 		height: var(--btn-height);
 		margin-left: var(--margin-sm, 8px);
-		border-radius: var(--border-radius);
+		border-radius: var(--radius);
+		line-height: 1;
+		padding: 4px 8px;
+
+		&,
+		& .hidden-xs {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+		}
 	}
+
 	.btn:not(.icon-btn) {
-		padding: 4px 10px;
+		padding: 4px 8px;
 	}
-	.btn-primary, .btn-secondary {
-		min-width: 70px;
+
+	// the header buttons are es-buttons now; they style themselves, but the
+	// spacing between siblings still comes from here (until the layout moves
+	// to gap in the header-skeleton PR)
+	.es-button {
+		margin-left: var(--margin-sm, 8px);
 	}
+
+	// below md, a button whose label is breakpoint-hidden (hidden-xs) with no
+	// short-label swap (hidden-lg) is icon-only — square it like an icon
+	// button instead of leaving a lone icon with text padding
+	@include media-breakpoint-down(sm) {
+		.es-button:has(> .es-button__label.hidden-xs):not(:has(> .es-button__label.hidden-lg)) {
+			padding-inline: 0;
+			width: var(--es-bt-h);
+			min-width: 0;
+		}
+	}
+
+	.btn-primary,
+	.btn-secondary,
+	.primary-action,
+	.secondary-action {
+		min-width: 40px;
+	}
+
 	.custom-btn-group {
 		display: inline-flex;
+	}
+
+	// the group takes the spacing its buttons had, and only while one shows
+	.primary-action-group {
+		> .es-button {
+			margin-left: 0;
+		}
+
+		&:has(> .es-button:not(.hide, [hidden])) {
+			margin-left: var(--margin-sm, 8px);
+		}
+	}
+
+	.custom-actions {
+		display: flex;
+		align-items: center;
 	}
 }
 
 .layout-main-section-wrapper {
-	margin-bottom: var(--page-bottom-margin);
+	flex: 1 0 80%;
+	width: 80%;
+}
+
+body[data-route^="Form"] {
+	.layout-main-section-wrapper {
+		width: calc(100% - var(--form-sidebar-width));
+		flex: calc(100% - var(--form-sidebar-width));
+	}
 }
 
 .layout-main-section.frappe-card {
 	overflow: hidden;
 	@include card($padding: 0px);
+	box-shadow: none;
+	border: none;
 }
 
 .page-head {
-	z-index: 4;
+	z-index: 6;
 	position: sticky;
-	top: var(--navbar-height);
 	background: var(--bg-color);
-	margin-bottom: 5px;
+	border-bottom: 1px solid var(--border-color);
+	transition: 0.5s top;
+	top: 0;
+
 	.page-head-content {
 		height: var(--page-head-height);
-	}
-	&.drop-shadow {
-		box-shadow: var(--shadow-sm);
-		background-color: var(--fg-color) !important;
+		padding: 8px 0px;
+		gap: 10px;
 	}
 }
 
 .page-form {
 	margin: 0;
-	padding: var(--padding-sm);
+	padding: var(--padding-xs) var(--padding-md);
 	display: flex;
 	flex-wrap: wrap;
 	background-color: var(--card-bg);
-	border-bottom: 1px solid var(--border-color);
 
 	.form-group {
-		padding: 0px 5px;
-		margin: 5px 0px;
+		padding: 0 10px 0 0;
+		margin: 8px 0;
 	}
+
 	.checkbox {
 		margin-top: 4px;
 		margin-bottom: 4px;
@@ -112,61 +165,86 @@
 			display: none;
 		}
 	}
+
+	.awesomplete > ul {
+		min-width: 300px;
+	}
 }
 
 .form-inner-toolbar {
 	.inner-group-button {
 		display: inline-flex;
+
 		.icon {
 			margin-right: -var(--margin-xs);
 		}
 	}
+
 	button {
 		margin-left: var(--margin-sm);
 	}
 }
 
-.menu-btn-group, .custom-btn-group, .page-icon-group {
+// these groups hold only the trigger button and a hidden item store now —
+// the visible menus are es-menu panels portaled to <body> (see page.js)
+.menu-btn-group,
+.custom-btn-group,
+.actions-btn-group,
+.page-icon-group {
 	display: flex;
-	.dropdown-menu {
-		width: max-content;
+}
+
+.layout-main {
+	display: flex;
+	flex-direction: row;
+}
+
+.layout-main-section {
+	scroll-margin-top: var(--navbar-height);
+
+	.frappe-list,
+	.report-wrapper {
+		.result,
+		.no-result,
+		.freeze {
+			min-height: 200px;
+		}
 	}
 
-	.menu-item-label {
-		margin-right: var(--margin-md);
-	}
+	.msg-box {
+		margin-bottom: 4em;
+		@include get_textstyle("sm", "regular");
 
-	.menu-item-icon {
-		margin-right: var(--margin-sm);
+		// To compensate for perceived centering
+		.null-state {
+			height: 60px;
+			width: auto;
+			margin-bottom: var(--margin-md);
+
+			img {
+				fill: var(--fg-color);
+			}
+		}
+
+		p {
+			@include get_textstyle("base", "regular");
+		}
+
+		.meta-description {
+			width: 45%;
+			margin-right: auto;
+			margin-left: auto;
+		}
 	}
 }
-.layout-main-section {
-	.frappe-list, .report-wrapper {
-		padding: 0 var(--padding-xs);
 
-		.result, .no-result, .freeze {
-			min-height: #{"calc(100vh - 284px)"};
-		}
+.page-only-label {
+	margin-top: var(--margin-xs);
+	text-align: center;
+}
 
-		.msg-box {
-			margin-bottom: 4em;
-			font-size: var(--text-sm);
-
-			// To compensate for perceived centering
-			.null-state {
-				height: 85px;
-				width: auto;
-				margin-bottom: var(--margin-md);
-				img {
-					fill: var(--fg-color);
-				}
-			}
-
-			.meta-description {
-				width: 45%;
-				margin-right: auto;
-				margin-left: auto;
-			}
-		}
+.frappe-control {
+	.form-control.fields_order {
+		padding-top: 1.5px;
 	}
 }

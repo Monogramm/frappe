@@ -7,12 +7,9 @@
  "engine": "InnoDB",
  "field_order": [
   "title",
-  "subtitle",
   "module",
-  "allow_roles",
   "column_break_4",
-  "success_message",
-  "documentation_url",
+  "allow_roles",
   "is_complete",
   "section_break_6",
   "steps"
@@ -23,12 +20,6 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Title",
-   "reqd": 1
-  },
-  {
-   "fieldname": "subtitle",
-   "fieldtype": "Data",
-   "label": "Subtitle",
    "reqd": 1
   },
   {
@@ -45,18 +36,6 @@
   {
    "fieldname": "section_break_6",
    "fieldtype": "Section Break"
-  },
-  {
-   "fieldname": "success_message",
-   "fieldtype": "Data",
-   "label": "Success Message",
-   "reqd": 1
-  },
-  {
-   "fieldname": "documentation_url",
-   "fieldtype": "Data",
-   "label": "Documentation URL",
-   "reqd": 1
   },
   {
    "default": "0",
@@ -82,7 +61,7 @@
   }
  ],
  "links": [],
- "modified": "2020-06-08 15:36:04.701049",
+ "modified": "2026-02-20 13:30:25.659490",
  "modified_by": "Administrator",
  "module": "Desk",
  "name": "Module Onboarding",
@@ -106,12 +85,14 @@
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "All",
+   "role": "Desk User",
    "share": 1
   }
  ],
  "read_only": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

@@ -2,64 +2,67 @@
 // MIT License. See license.txt
 
 // page container
-frappe.provide('frappe.pages');
-frappe.provide('frappe.views');
+frappe.provide("frappe.pages");
+frappe.provide("frappe.views");
 
 window.cur_page = null;
-frappe.views.Container = Class.extend({
-	_intro: "Container contains pages inside `#container` and manages \
-			page creation, switching",
-	init: function() {
-		this.container = $('#body').get(0);
+
+/**
+ * The `frappe.ui.Page` on screen, or null before one has rendered. Reaching it by hand means
+ * `frappe.container.page.page`, three hops through a container, its element and its page.
+ *
+ * @returns {frappe.ui.Page|null}
+ */
+frappe.get_current_page = () => frappe.container?.page?.page || null;
+frappe.views.Container = class Container {
+	// Container contains pages inside `#container` and manages page creation, switching
+	constructor() {
+		this.container = $("#body").get(0);
 		this.page = null; // current page
 		this.pagewidth = $(this.container).width();
 		this.pagemargin = 50;
 
 		var me = this;
 
-		$(document).on("page-change", function() {
+		$(document).on("page-change", function () {
 			// set data-route in body
 			var route_str = frappe.get_route_str();
 			$("body").attr("data-route", route_str);
 			$("body").attr("data-sidebar", me.has_sidebar() ? 1 : 0);
 		});
 
-		$(document).bind('rename', function(event, dt, old_name, new_name) {
-			frappe.breadcrumbs.rename(dt, old_name, new_name);
+		$(document).bind("rename", function () {
+			frappe.breadcrumbs.update();
 		});
-	},
-	add_page: function(label) {
+	}
+	add_page(label) {
 		var page = $('<div class="content page-container"></div>')
-			.attr('id', "page-" + label)
+			.attr("id", "page-" + label)
 			.attr("data-page-route", label)
 			.hide()
-			.appendTo(this.container).get(0);
+			.appendTo(this.container)
+			.get(0);
 		page.label = label;
 		frappe.pages[label] = page;
 
 		return page;
-	},
-	change_to: function(label) {
+	}
+	change_to(label) {
 		cur_page = this;
-		if(this.page && this.page.label === label) {
-			$(this.page).trigger('show');
-			return;
-		}
-
-		var me = this;
-		if(label.tagName) {
+		let page;
+		if (label.tagName) {
 			// if sent the div, get the table
-			var page = label;
+			page = label;
 		} else {
-			var page = frappe.pages[label];
+			page = frappe.pages[label];
 		}
-		if(!page) {
-			console.log(__('Page not found')+ ': ' + label);
+		if (!page) {
+			console.log(__("Page not found") + ": " + label);
 			return;
 		}
 
 		// hide dialog
-		if(window.cur_dialog && cur_dialog.display && !cur_dialog.keep_open) {
+		if (window.cur_dialog && cur_dialog.display && !cur_dialog.keep_open) {
 			if (!cur_dialog.minimizable) {
 				cur_dialog.hide();
 			} else if (!cur_dialog.is_minimized) {
@@ -68,28 +71,33 @@ frappe.views.Container = Class.extend({
 		}
 
 		// hide current
-		if(this.page && this.page != page) {
+		if (this.page && this.page != page) {
 			$(this.page).hide();
-			$(this.page).trigger('hide');
+			$(this.page).trigger("hide");
 		}
 
 		// show new
-		if(!this.page || this.page != page) {
+		if (!this.page || this.page != page) {
 			this.page = page;
 			// $(this.page).fadeIn(300);
 			$(this.page).show();
 		}
 
-		$(document).trigger("page-change");
-
+		$(document).trigger("page-change", this.page);
 		this.page._route = frappe.router.get_sub_path();
-		$(this.page).trigger('show');
+		$(this.page).trigger("show");
 		!this.page.disable_scroll_to_top && frappe.utils.scroll_to(0);
 		frappe.breadcrumbs.update();
-
+		this.toggle_sidebar();
 		return this.page;
-	},
-	has_sidebar: function() {
+	}
+	toggle_sidebar() {
+		// The body sidebar and the dock are hidden by default and shown only when the
+		// page now on screen allows them; the sidebar owns that decision (it reads the same page
+		// options for both shells), so just ask it to re-resolve.
+		frappe.app.sidebar.apply_page_visibility();
+	}
+	has_sidebar() {
 		var flag = 0;
 		var route_str = frappe.get_route_str();
 		// check in frappe.ui.pages
@@ -97,13 +105,14 @@ frappe.views.Container = Class.extend({
 
 		// sometimes frappe.ui.pages is updated later,
 		// so check the dom directly
-		if(!flag) {
-			var page_route = route_str.split('/').slice(0, 2).join('/');
-			flag = $(`.page-container[data-page-route="${page_route}"] .layout-side-section`).length ? 1 : 0;
+		if (!flag) {
+			var page_route = route_str.split("/").slice(0, 2).join("/");
+			flag = $(`.page-container[data-page-route="${page_route}"] .layout-side-section`)
+				.length
+				? 1
+				: 0;
 		}
 
 		return flag;
-	},
-});
-
-
+	}
+};

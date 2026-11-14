@@ -1,0 +1,424 @@
+// The editor every navigation surface's arrangement is edited in -- see `arrangement_editor.js`.
+// It is drawn in the sidebar's own column, so its rows are sidebar rows: the sidebar's styles draw
+// them, and this file adds only what editing needs on top.
+
+// The editor takes the place of the bands under the header. The edge that would fold the column
+// to its rail steps aside.
+.body-sidebar-container.sidebar-editing {
+	.body-sidebar > :not(.sidebar-header):not(.sidebar-editor),
+	.sidebar-edge,
+	.sidebar-collapse-arrow {
+		display: none;
+	}
+
+	// The header keeps its place and size, and names the layer where its chevron was, so the
+	// title reads "Stock for everyone". Only that phrase opens anything while editing.
+	.sidebar-header {
+		pointer-events: none;
+
+		&:hover,
+		&.hover {
+			background: none;
+		}
+
+		.drop-icon {
+			display: none;
+		}
+
+		.ws-layer-switch {
+			pointer-events: auto;
+		}
+	}
+}
+
+// The layer being edited, after a surface's name. Quieter than the name it finishes.
+.ws-layer-switch {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: calc(var(--spacing) * 0.5);
+	font-size: var(--text-base);
+	color: var(--ink-gray-5);
+	cursor: pointer;
+
+	.ws-layer-phrase {
+		@include truncate();
+	}
+
+	&:hover {
+		color: var(--ink-gray-7);
+	}
+}
+
+.header-layer {
+	display: flex;
+	min-width: 0;
+
+	&:empty {
+		display: none;
+	}
+}
+
+.sidebar-editor {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-height: 0;
+
+	// The rows' scroll box, with the same gutter as the sidebar's own.
+	.ws-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding: calc(var(--spacing) * 0.5) calc(var(--spacing) * 2) calc(var(--spacing) * 10);
+	}
+
+	.ws-list {
+		display: flex;
+		flex-direction: column;
+		gap: calc(var(--spacing) * 0.5);
+	}
+
+	.ws-empty {
+		padding: calc(var(--spacing) * 6) calc(var(--spacing) * 2);
+		text-align: center;
+		font-size: var(--text-sm);
+		color: var(--ink-gray-5);
+	}
+
+	.ws-foot {
+		display: flex;
+		align-items: center;
+		gap: calc(var(--spacing) * 2);
+		padding: calc(var(--spacing) * 2);
+		border-top: 1px solid var(--outline-gray-1);
+
+		.ws-foot-spacer {
+			flex: 1;
+		}
+	}
+}
+
+// One entry, dragged by any part of it: the entry drawn as the sidebar draws it, and its eye or cross.
+.ws-row {
+	position: relative;
+	display: flex;
+	align-items: center;
+	min-height: calc(var(--spacing) * 7);
+	border-radius: var(--radius);
+	cursor: pointer;
+
+	&:hover {
+		background: var(--surface-gray-2);
+	}
+
+	// The entry whose fields are open beside the column.
+	&.is-open {
+		background: var(--surface-elevation-3);
+		box-shadow: var(--shadow-sm);
+	}
+
+	.ws-row-body {
+		flex: 1;
+		min-width: 0;
+	}
+
+	// The row is the hover surface here, so the sidebar row inside it does not draw a second one,
+	// and nothing in it reads as a link.
+	.sidebar-item-container,
+	.standard-sidebar-item {
+		margin: 0;
+	}
+
+	// One class more specific than the sidebar's own hover rule, which it has to win over.
+	.body-sidebar .sidebar-editor & .standard-sidebar-item:not(.active-sidebar):has(a):hover {
+		background: none;
+	}
+
+	.item-anchor,
+	.sidebar-item-label {
+		cursor: inherit;
+	}
+
+	.ws-row-controls {
+		display: flex;
+		flex: none;
+		gap: calc(var(--spacing) * 0.5);
+		padding-right: calc(var(--spacing) * 0.5);
+
+		.es-button {
+			opacity: 0;
+		}
+	}
+
+	&:hover,
+	&:focus-within {
+		.ws-row-controls .es-button {
+			opacity: 1;
+		}
+	}
+
+	// An entry taken off on a surface that keeps it listed: still where it was left, plainly not
+	// on the surface.
+	&.is-hidden .ws-row-body {
+		opacity: 0.45;
+	}
+}
+
+// A heading has the gap above it the sidebar gives one, except at the top.
+.ws-row-heading:not(:first-child) {
+	margin-top: calc(var(--spacing) * 4);
+}
+
+// Under an indented section, right of the rule the sidebar draws down a nested group, so its
+// hover and open surfaces start after the rule as the sidebar's do.
+.ws-row-nested {
+	margin-left: calc(var(--spacing) * 3 + 1px);
+
+	&::before {
+		content: "";
+		position: absolute;
+		// Over the list's gap to the next row too, so the rule runs unbroken.
+		top: 0;
+		bottom: calc(var(--spacing) * -0.5);
+		left: calc(var(--spacing) * -1 - 1px);
+		border-left: 1px solid var(--outline-gray-1);
+	}
+}
+
+// The same box as the cross beside it.
+.ws-row > .ws-fold {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: calc(var(--spacing) * 6);
+	height: calc(var(--spacing) * 6);
+	margin-right: calc(var(--spacing) * 0.5);
+}
+
+.ws-row-folded,
+.ws-row-carried {
+	display: none;
+}
+
+.ws-row-ghost {
+	opacity: 0.4;
+}
+
+// The row that opens the Add form, drawn as a row so it reads as the next one.
+.ws-add-row {
+	// A global icon rule centres glyphs with auto margins, which here would float the plus away
+	// from its label.
+	svg {
+		flex: none;
+		margin: 0;
+	}
+
+	display: flex;
+	align-items: center;
+	gap: calc(var(--spacing) * 2);
+	width: 100%;
+	height: calc(var(--spacing) * 7);
+	margin-top: calc(var(--spacing) * 0.5);
+	padding: 0 0 0 calc(var(--spacing) * 2);
+	border: none;
+	border-radius: var(--radius);
+	background: none;
+	font-size: var(--text-sm);
+	color: var(--ink-gray-5);
+
+	&:hover {
+		background: var(--surface-gray-2);
+		color: var(--ink-gray-7);
+	}
+
+	&.is-open {
+		background: var(--surface-elevation-3);
+		box-shadow: var(--shadow-sm);
+		color: var(--ink-gray-8);
+	}
+}
+
+// The panel beside the surface, level with the row it belongs to: an espresso popover, placed by
+// script, so this only lays out what is inside it.
+.ws-panel,
+.ws-panel-closing {
+	max-height: calc(100vh - var(--spacing) * 4);
+
+	.ws-panel-head {
+		display: flex;
+		align-items: center;
+		gap: calc(var(--spacing) * 2);
+		margin: calc(var(--spacing) * -1) calc(var(--spacing) * -1) calc(var(--spacing) * 2) 0;
+	}
+
+	.ws-panel-title {
+		flex: 1;
+		min-width: 0;
+		@include truncate();
+	}
+
+	.ws-panel-foot {
+		display: flex;
+		justify-content: flex-end;
+		gap: calc(var(--spacing) * 2);
+
+		&:empty {
+			display: none;
+		}
+	}
+
+	.ws-panel-hint {
+		margin: calc(var(--spacing) * -1) 0 calc(var(--spacing) * 3);
+		font-size: var(--text-xs);
+		color: var(--ink-gray-5);
+	}
+
+	// The kind of entry being added, over the fields that depend on it.
+	.ws-panel-choice {
+		display: flex;
+		margin-bottom: calc(var(--spacing) * 3);
+
+		.es-pill {
+			flex: 1;
+			justify-content: center;
+		}
+	}
+
+	// A field group lays itself out for a form page. Here it is a short stack of fields, so the
+	// page's section spacing goes. Scoped through the layout to outrank the form's own rules.
+	.form-layout .form-section,
+	.form-layout .form-column,
+	.form-layout .form-section .section-body {
+		margin: 0;
+		padding: 0;
+		border: none;
+	}
+
+	.section-head {
+		padding: 0;
+		margin: var(--spacing) 0 calc(var(--spacing) * 2);
+		font-size: var(--text-sm);
+		color: var(--ink-gray-6);
+	}
+}
+
+// The dock while it is arranged. The editor's rows are its tiles, drawn as the rail draws them,
+// with the cross on the corner.
+.dock.dock-editing {
+	// The tiles take only the room they need, so the Add tile sits right under the last one and
+	// the space below goes to the Add slot instead.
+	.dock-items {
+		flex: 0 0 auto;
+	}
+
+	.ws-tile {
+		min-height: 0;
+		cursor: grab;
+
+		&:hover,
+		&.is-open {
+			background: none;
+			box-shadow: none;
+		}
+
+		// A faint dash, like the Add tile's, so the rail reads as being arranged without every
+		// tile turning into a box.
+		.dock-item {
+			border: 1px dashed var(--outline-gray-2);
+		}
+
+		&:hover .dock-item {
+			border-color: transparent;
+		}
+
+		// The tile whose panel is open: its dash turns solid, and nothing else changes.
+		&.is-open .dock-item,
+		&.is-open:hover .dock-item {
+			border: 1px solid var(--outline-gray-4);
+			background: none;
+		}
+
+		.ws-row-body {
+			flex: none;
+		}
+	}
+
+	.ws-row-ghost .dock-item {
+		border-style: solid;
+	}
+
+	.ws-empty {
+		padding: calc(var(--spacing) * 2) 0;
+		font-size: var(--text-xs);
+		color: var(--ink-gray-5);
+		text-align: center;
+	}
+}
+
+// The tile that opens the Add form, under the others.
+.dock-add-slot {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	margin-top: var(--spacing);
+
+	.ws-add-row {
+		justify-content: center;
+		width: var(--dock-tile);
+		height: var(--dock-tile);
+		margin: 0;
+		padding: 0;
+		border: 1px dashed var(--outline-gray-3);
+		border-radius: var(--radius-4);
+		color: var(--ink-gray-5);
+
+		// Named by its tooltip, as the tiles are; the words stay for assistive technology.
+		span {
+			@extend .sr-only;
+		}
+	}
+}
+
+// The dock editor's controls, in a bar in the screen's corner that its grip drags elsewhere.
+.ws-bar {
+	position: fixed;
+	left: calc(var(--spacing) * 2);
+	bottom: calc(var(--spacing) * 2);
+	z-index: $zindex-fixed + 1;
+	display: flex;
+	align-items: center;
+	gap: var(--spacing);
+	padding: var(--spacing);
+	border: 1px solid var(--outline-gray-2);
+	border-radius: var(--radius-xl);
+	background: var(--surface-base);
+	box-shadow: var(--shadow-xl);
+
+	.ws-bar-grip {
+		display: flex;
+		color: var(--ink-gray-4);
+		cursor: grab;
+		touch-action: none;
+	}
+
+	.ws-bar-title {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing);
+		padding-right: var(--spacing);
+	}
+
+	.ws-bar-name {
+		font-size: var(--text-base);
+		font-weight: var(--font-weight-medium);
+		color: var(--ink-gray-8);
+	}
+
+	.ws-foot {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing);
+	}
+}

@@ -80,13 +80,6 @@ $navbar-height-lg: 4.5rem;
 	}
 }
 
-.doc-search {
-	@include media-breakpoint-up(lg) {
-		padding-left: 4rem;
-		padding-right: 4rem;
-	}
-}
-
 .doc-sidebar {
 	position: sticky;
 	top: $navbar-height;
@@ -169,25 +162,6 @@ $navbar-height-lg: 4.5rem;
 		margin-top: 3rem;
 	}
 
-	h1 {
-		font-size: $font-size-3xl;
-		font-weight: 500;
-	}
-
-	h1 + p {
-		font-size: $font-size-lg;
-	}
-
-	h2 {
-		font-size: $font-size-2xl;
-		font-weight: 400;
-	}
-
-	h3 {
-		font-size: $font-size-xl;
-		font-weight: 500;
-	}
-
 	h1,
 	h2,
 	h3,
@@ -197,40 +171,10 @@ $navbar-height-lg: 4.5rem;
 		&::before {
 			height: 6rem;
 			margin-top: -6rem;
-			content: '';
+			content: "";
 			display: block;
 			visibility: hidden;
 		}
-	}
-
-	h4 {
-		font-size: $font-size-lg;
-		font-weight: 500;
-	}
-
-	strong {
-		font-weight: 600;
-	}
-
-	table {
-		border-color: $gray-200;
-	}
-
-	table thead {
-		background-color: $light;
-	}
-
-	.table-bordered,
-	.table-bordered th,
-	.table-bordered td {
-		border-left: none;
-		border-right: none;
-		border-color: $gray-200;
-	}
-
-	.table-bordered thead th,
-	.table-bordered thead td {
-		border-bottom-width: 1px;
 	}
 }
 

@@ -1,0 +1,349 @@
+from unittest.mock import patch
+
+import frappe
+from frappe.core.doctype.doctype.test_doctype import new_doctype
+from frappe.tests import IntegrationTestCase
+from frappe.www.printview import get_html_and_style
+
+EXTRA_TEST_RECORD_DEPENDENCIES = ["User"]
+
+
+class PrintViewTest(IntegrationTestCase):
+	def test_print_filename_uses_docname_not_title_field(self):
+		from frappe.www.printview import get_context
+
+		doctype = new_doctype(
+			fields=[{"label": "Display Name", "fieldname": "display_name", "fieldtype": "Data"}],
+			title_field="display_name",
+		).insert()
+		doc = frappe.get_doc(doctype=doctype.name, display_name="A Human Readable Title").insert()
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(length=10),
+			doc_type=doctype.name,
+			custom_format=1,
+			html="<div>{{ doc.display_name }}</div>",
+		).insert()
+
+		params = frappe._dict(doctype=doctype.name, name=doc.name, format=print_format.name)
+		with self.set_user("test@example.com"), patch.object(frappe.local, "form_dict", params):
+			context = get_context({})
+
+		self.assertFalse(context["standalone"])
+		self.assertEqual(context["title"], "A Human Readable Title")
+		self.assertEqual(context["print_filename"], doc.name)
+		self.assertNotEqual(context["print_filename"], context["title"])
+
+		html = frappe.render_template("frappe/www/printview.html", context)
+		self.assertIn(f'<meta name="frappe-print-filename" content="{doc.name}">', html)
+		self.assertIn("window.addEventListener('beforeprint'", html)
+		self.assertIn("window.addEventListener('afterprint'", html)
+
+	def test_print_preview_displays_link_titles(self):
+		from frappe.www.printpreview import get_context
+
+		doc, links = self._make_linked_print_doc()
+		custom_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(),
+			doc_type=doc.doctype,
+			custom_format=1,
+			html="""
+				{{ doc.get_formatted('reference') }}
+				{{ doc.entries[0].get_formatted('reference', doc) }}
+			""",
+		).insert()
+		for print_format in ("Standard", custom_format.name):
+			with self.subTest(print_format=print_format):
+				params = frappe._dict(doctype=doc.doctype, name=doc.name, print_format=print_format)
+				with self.set_user("test@example.com"), patch.object(frappe.local, "form_dict", params):
+					context = frappe._dict()
+					get_context(context)
+				self._assert_print_link_titles(context.body, doc, links)
+
+	def test_builder_preview_displays_link_titles(self):
+		from frappe.utils.print_format_generator import (
+			download_builder_preview_pdf,
+			render_builder_preview,
+		)
+		from frappe.www.printview import resolve_print_format
+
+		doc, links = self._make_linked_print_doc()
+		print_format, _ = resolve_print_format("Standard", doc.meta)
+		print_format.pdf_generator = "chrome"
+		with self.set_user("test@example.com"):
+			html = render_builder_preview(print_format.as_dict(), doc.doctype, doc.name)
+			self._assert_print_link_titles(html, doc, links)
+			with (
+				patch("frappe.utils.pdf.get_chrome_pdf", return_value=b"pdf") as render_pdf,
+				patch.object(frappe.local, "response", frappe._dict()),
+			):
+				download_builder_preview_pdf(print_format.as_dict(), doc.doctype, doc.name)
+				self.assertEqual(frappe.local.response.filecontent, b"pdf")
+			self._assert_print_link_titles(render_pdf.call_args.kwargs["html"], doc, links)
+
+	def _make_attachment_fields_doctype(self):
+		return new_doctype(
+			fields=[
+				{"label": "Attach Field", "fieldname": "attach_field", "fieldtype": "Attach"},
+				{
+					"label": "Attach Image Field",
+					"fieldname": "attach_image_field",
+					"fieldtype": "Attach Image",
+				},
+				{"label": "Signature Field", "fieldname": "signature_field", "fieldtype": "Signature"},
+				{"label": "Barcode Field", "fieldname": "barcode_field", "fieldtype": "Barcode"},
+			]
+		).insert()
+
+	def _make_doc(self, doctype, suffix):
+		return frappe.get_doc(
+			doctype=doctype,
+			attach_field="/files/doc" + suffix,
+			attach_image_field="/files/img" + suffix,
+			signature_field="/files/sig" + suffix,
+			barcode_field="1234" + suffix,
+		).insert()
+
+	def test_attach_image_signature_barcode_values_are_escaped(self):
+		"""Values reach src/data-* attributes; unescaped values break attribute
+		context. "Standard" resolves to the beta renderer (macros/*.html)."""
+		doctype = self._make_attachment_fields_doctype()
+
+		benign = self._make_doc(doctype.name, ".png")
+		html = get_html_and_style(doc=benign.as_json(), print_format="Standard", no_letterhead=1)["html"]
+		self.assertIn('src="/files/img.png"', html)
+		self.assertIn('<img src="data:image/svg+xml;base64,', html)
+
+		evil = self._make_doc(doctype.name, '.png" onerror="alert(1)')
+		html = get_html_and_style(doc=evil.as_json(), print_format="Standard", no_letterhead=1)["html"]
+		self.assertNotIn('onerror="alert(1)"', html)
+		self.assertIn("&#34;", html)
+
+	def test_classic_print_format_escapes_attachment_fields(self):
+		"""Same, for the older Jinja engine, still reachable via custom Print
+		Format docs whose stored html imports it directly."""
+		doctype = self._make_attachment_fields_doctype()
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(length=10),
+			doc_type=doctype.name,
+			custom_format=1,
+			html="""
+				{% import "templates/print_formats/standard_macros.html" as standard_macros %}
+				{% for df in meta.fields %}{{ standard_macros.print_value(df, doc) }}{% endfor %}
+			""",
+		).insert()
+
+		benign = self._make_doc(doctype.name, ".png")
+		html = get_html_and_style(doc=benign.as_json(), print_format=print_format.name, no_letterhead=1)[
+			"html"
+		]
+		self.assertIn('src="/files/img.png"', html)
+		self.assertIn('data-barcode-value="1234.png"', html)
+
+		evil = self._make_doc(doctype.name, '.png" onerror="alert(1)')
+		html = get_html_and_style(doc=evil.as_json(), print_format=print_format.name, no_letterhead=1)["html"]
+		self.assertNotIn('onerror="alert(1)"', html)
+		self.assertIn("&#34;", html)
+
+	def test_absolute_value_print_format_prints_positive_numbers(self):
+		"""Print Format's "Show Absolute Values" should flip negative Currency/Int
+		fields positive at render time."""
+		doctype = new_doctype(
+			fields=[
+				{"label": "Amount", "fieldname": "amount", "fieldtype": "Currency"},
+				{"label": "Qty", "fieldname": "qty", "fieldtype": "Int"},
+			]
+		).insert()
+		doc = frappe.get_doc(doctype=doctype.name, amount=-543.21, qty=-9).insert()
+
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(length=10),
+			doc_type=doctype.name,
+			print_format_builder_beta=1,
+			absolute_value=1,
+		).insert()
+		html = get_html_and_style(doc=doc.as_json(), print_format=print_format.name, no_letterhead=1)["html"]
+		self.assertIn("543.21", html)
+		self.assertNotIn("-543.21", html)
+		# ">-9<" (not the bare "-9") — CSS custom properties like var(--gray-900)
+		# would otherwise false-positive the substring check
+		self.assertNotIn(">-9<", html)
+
+	def test_print_error(self):
+		"""Print failures shouldn't generate PDF with failure message but instead escalate the error"""
+		doctype = new_doctype(is_submittable=1).insert()
+
+		doc = frappe.new_doc(doctype.name)
+		doc.insert()
+		doc.submit()
+		doc.cancel()
+
+		# cancelled doc can't be printed by default
+		self.assertRaises(frappe.PermissionError, frappe.attach_print, doc.doctype, doc.name)
+
+	def test_print_format_template_cannot_run_write_queries(self):
+		title = frappe.generate_hash()
+		note = frappe.get_doc(doctype="Note", title=title).insert()
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(),
+			doc_type="Note",
+			custom_format=1,
+			print_format_type="Jinja",
+			html=(
+				'{% set note = frappe.qb.DocType("Note") %}'
+				'{{ frappe.qb.update(note).set(note.title, "changed").where(note.name == doc.name).run() }}'
+			),
+		).insert()
+
+		with self.assertRaises(frappe.PrintFormatError):
+			get_html_and_style(doc="Note", name=note.name, print_format=print_format.name, no_letterhead=1)
+
+		self.assertEqual(frappe.db.get_value("Note", note.name, "title"), title)
+
+	def test_preview_sheet_uses_the_format_paper_size(self):
+		from frappe.www.printview import get_preview_page_css
+
+		print_format = frappe.get_doc(doctype="Print Format", doc_type="Note", paper_size="A5")
+
+		with self.set_user("test@example.com"):
+			self.assertIn("width: 148mm", get_preview_page_css(print_format))
+
+	def test_preview_sheet_uses_the_print_format_class_page_size(self):
+		from frappe.www.printview import get_preview_page_css
+
+		print_format = frappe.get_doc(doctype="Print Format", doc_type="Note")
+		html = "<style>.print-format { page-size: A5; }</style>"
+
+		with self.set_user("test@example.com"):
+			self.assertIn("width: 148mm", get_preview_page_css(print_format, html))
+
+	def test_preview_sheet_uses_the_page_size_in_the_format_html(self):
+		note = frappe.get_doc(doctype="Note", title=frappe.generate_hash(), public=1).insert()
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(),
+			doc_type="Note",
+			custom_format=1,
+			print_format_type="Jinja",
+			html="<style>@page { size: A5; }</style>",
+		).insert()
+
+		with self.set_user("test@example.com"):
+			out = get_html_and_style(doc="Note", name=note.name, print_format=print_format.name)
+
+		self.assertIn("width: 148.0mm", out["page_style"])
+
+	def test_before_print_runs_in_builder_renderer(self):
+		from frappe.utils.print_format_generator import PrintFormatGenerator
+
+		note = frappe.get_doc(doctype="Note", title=frappe.generate_hash()).insert()
+		print_format = frappe.get_doc(
+			doctype="Print Format",
+			name=frappe.generate_hash(),
+			doc_type="Note",
+			print_format_builder_beta=1,
+			pdf_generator="chrome",
+			format_data="{}",
+		).insert()
+
+		self.assertNotEqual(note.get("print_heading"), note.name)
+
+		PrintFormatGenerator(print_format, note)
+
+		self.assertEqual(note.print_heading, note.name)
+		self.assertTrue(note.flags.in_print)
+
+	def test_unresolvable_format_falls_back_to_the_doctype_default(self):
+		"""Callers interpolate a missing name into the url ("format=None"), and formats
+		get renamed — either way the doctype's default wins over the built-in one."""
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+		from frappe.www.printview import get_print_format_doc
+
+		default = frappe.get_doc(
+			doctype="Print Format",
+			name=f"_Test Default {frappe.generate_hash(length=6)}",
+			doc_type="Note",
+			custom_format=1,
+			html="<div>default</div>",
+		).insert()
+
+		def drop_default():
+			frappe.db.delete("Property Setter", {"doc_type": "Note", "property": "default_print_format"})
+			frappe.clear_cache(doctype="Note")
+
+		self.addCleanup(drop_default)
+		make_property_setter("Note", None, "default_print_format", default.name, "Data", for_doctype=True)
+		frappe.clear_cache(doctype="Note")
+		meta = frappe.get_meta("Note")
+
+		self.assertEqual(get_print_format_doc("None", meta).name, default.name)
+		self.assertEqual(get_print_format_doc("_No Such Format ZZZ", meta).name, default.name)
+		self.assertEqual(get_print_format_doc(None, meta).name, default.name)
+		# an explicit "Standard" still means the built-in format
+		self.assertIsNone(get_print_format_doc("Standard", meta))
+
+		# without a doctype default it still degrades to the built-in format
+		drop_default()
+		self.assertIsNone(get_print_format_doc("None", frappe.get_meta("Note")))
+
+	def test_document_print_skips_the_report_default_letter_head(self):
+		from frappe.www.printview import get_letter_head
+
+		report_letter_head = frappe.get_doc(
+			doctype="Letter Head",
+			letter_head_name="_Test Report Letter Head",
+			letter_head_for="Report",
+			content="<h3>_Test Report Letter Head</h3>",
+			is_default=1,
+		).insert()
+		self.addCleanup(report_letter_head.delete)
+		todo = frappe.get_doc(doctype="ToDo", description="_Test ToDo").insert()
+
+		with self.set_user("test@example.com"):
+			letter_head = get_letter_head(todo, no_letterhead=False)
+
+		self.assertNotEqual(letter_head.get("content"), report_letter_head.content)
+
+	def _make_linked_print_doc(self):
+		linked_doctype = new_doctype(title_field="some_fieldname", show_title_field_in_link=1).insert()
+		link_field = {
+			"fieldname": "reference",
+			"label": "Reference",
+			"fieldtype": "Link",
+			"options": linked_doctype.name,
+			"in_list_view": 1,
+		}
+		child_doctype = new_doctype(istable=1, fields=[link_field]).insert()
+		doctype = new_doctype(
+			fields=[
+				link_field,
+				{
+					"fieldname": "entries",
+					"label": "Entries",
+					"fieldtype": "Table",
+					"options": child_doctype.name,
+				},
+			]
+		).insert()
+		links = [
+			frappe.get_doc(doctype=linked_doctype.name, some_fieldname=title).insert()
+			for title in ("Parent Link Title", "Child Link Title")
+		]
+		doc = frappe.get_doc(
+			doctype=doctype.name,
+			reference=links[0].name,
+			entries=[{"reference": links[1].name}],
+		).insert()
+		return doc, links
+
+	def _assert_print_link_titles(self, html, doc, links):
+		for link in links:
+			self.assertIn(link.some_fieldname, html)
+			self.assertNotIn(link.name, html)
+		stored_doc = frappe.get_doc(doc.doctype, doc.name)
+		self.assertEqual(stored_doc.reference, links[0].name)
+		self.assertEqual(stored_doc.entries[0].reference, links[1].name)

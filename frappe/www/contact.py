@@ -1,65 +1,69 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# MIT License. See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
+from contextlib import suppress
 
 import frappe
-from frappe.utils import now
 from frappe import _
+from frappe.rate_limiter import rate_limit
+from frappe.utils import escape_html, strip_html, validate_email_address
 
 sitemap = 1
 
+
 def get_context(context):
 	doc = frappe.get_doc("Contact Us Settings", "Contact Us Settings")
+	if doc.is_disabled:
+		frappe.local.flags.redirect_location = "/404"
+		raise frappe.Redirect
 
 	if doc.query_options:
 		query_options = [opt.strip() for opt in doc.query_options.replace(",", "\n").split("\n") if opt]
 	else:
 		query_options = ["Sales", "Support", "General"]
 
-	out = {
-		"query_options": query_options,
-		"parents": [
-			{ "name": _("Home"), "route": "/" }
-		]
-	}
+	out = {}
 	out.update(doc.as_dict())
+	out.update({"query_options": query_options, "parents": [{"name": _("Home"), "route": "/"}]})
 
 	return out
 
-max_communications_per_hour = 1000
 
 @frappe.whitelist(allow_guest=True)
-def send_message(subject="Website Query", message="", sender=""):
-	if not message:
-		frappe.response["message"] = 'Please write something'
+@rate_limit(limit=100, seconds=60 * 60)
+def send_message(sender: str, message: str, subject: str = "Website Query"):
+	doc = frappe.get_doc("Contact Us Settings", "Contact Us Settings")
+	if doc.is_disabled:
 		return
 
-	if not sender:
-		frappe.response["message"] = 'Email Address Required'
-		return
+	sender = validate_email_address(sender, throw=True)
+	if not strip_html(message or "").strip():
+		frappe.throw(_("{0} is required").format(frappe.bold(_("Message"))), frappe.MandatoryError)
 
-	# guest method, cap max writes per hour
-	if frappe.db.sql("""select count(*) from `tabCommunication`
-		where `sent_or_received`="Received"
-		and TIMEDIFF(%s, modified) < '01:00:00'""", now())[0][0] > max_communications_per_hour:
-		frappe.response["message"] = "Sorry: we believe we have received an unreasonably high number of requests of this kind. Please try later"
-		return
+	message = escape_html(message)
 
-	# send email
-	forward_to_email = frappe.db.get_value("Contact Us Settings", None, "forward_to_email")
-	if forward_to_email:
-		frappe.sendmail(recipients=forward_to_email, sender=sender, content=message, subject=subject)
+	with suppress(frappe.OutgoingEmailError):
+		if forward_to_email := frappe.db.get_single_value("Contact Us Settings", "forward_to_email"):
+			frappe.sendmail(recipients=forward_to_email, reply_to=sender, content=message, subject=subject)
 
+		if frappe.get_single_value("Contact Us Settings", "send_acknowledgement_email"):
+			reply = _("Thank you for reaching out to us. We will get back to you at the earliest.")
+			frappe.sendmail(
+				recipients=sender,
+				content=f"<div style='white-space: pre-wrap'>{reply}</div>",
+				subject=_("We've received your query!"),
+			)
 
+	# for clearing outgoing email error message
+	frappe.clear_last_message()
+
+	system_language = frappe.db.get_single_value("System Settings", "language")
 	# add to to-do ?
-	frappe.get_doc(dict(
-		doctype = 'Communication',
+	frappe.get_doc(
+		doctype="Communication",
 		sender=sender,
-		subject= _('New Message from Website Contact Page'),
-		sent_or_received='Received',
+		subject=_("New Message from Website Contact Page", system_language),
+		sent_or_received="Received",
 		content=message,
-		status='Open',
-	)).insert(ignore_permissions=True)
-
-	return "okay"
+		status="Open",
+	).insert(ignore_permissions=True)

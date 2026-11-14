@@ -1,22 +1,45 @@
-frappe.pages['backups'].on_page_load = function(wrapper) {
+frappe.pages["backups"].on_page_load = function (wrapper) {
 	var page = frappe.ui.make_app_page({
 		parent: wrapper,
-		title: 'Download Backups',
-		single_column: true
+		title: __("Download Backups"),
+		single_column: true,
 	});
 
 	page.add_inner_button(__("Set Number of Backups"), function () {
-		frappe.set_route('Form', 'System Settings');
+		frappe.set_route("Form", "System Settings").then(() => {
+			cur_frm.scroll_to_field("backup_limit");
+		});
 	});
 
 	page.add_inner_button(__("Download Files Backup"), function () {
 		frappe.call({
-			method:"frappe.desk.page.backups.backups.schedule_files_backup",
-			args: {"user_email": frappe.session.user_email}
+			method: "frappe.desk.page.backups.backups.schedule_files_backup",
+			args: { user_email: frappe.session.user_email },
 		});
 	});
 
-	frappe.breadcrumbs.add("Setup");
+	page.add_inner_button(__("Get Backup Encryption Key"), function () {
+		if (frappe.user.has_role("System Manager")) {
+			frappe.confirm_sensitive_action(function () {
+				frappe.call({
+					method: "frappe.utils.backups.get_backup_encryption_key",
+					callback: function (r) {
+						frappe.msgprint({
+							title: __("Backup Encryption Key"),
+							message: __(r.message),
+							indicator: "blue",
+						});
+					},
+				});
+			});
+		} else {
+			frappe.msgprint({
+				title: __("Error"),
+				message: __("System Manager privileges required."),
+				indicator: "red",
+			});
+		}
+	});
 
 	$(frappe.render_template("backups")).appendTo(page.body.addClass("no-border"));
-}
+};

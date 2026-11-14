@@ -1,89 +1,69 @@
+@import "../element/checkbox";
+@import "../element/radio";
+
+html,
+body {
+	height: 100%;
+	font-family: var(--font-stack);
+	font-variation-settings: "opsz" 24;
+}
 
 /* checkbox */
 .checkbox {
 	label {
 		display: inline-flex;
-		align-items: center;
+		align-items: start;
 		margin-bottom: 0;
+		padding-top: 2.5px;
 	}
 	--checkbox-right-margin: 8px;
 
 	.label-area {
-		line-height: 1;
-		font-size: var(--text-sm);
+		@include get_textstyle("sm", "medium");
+		color: var(--text-color);
 	}
 
-	.input-area, .disp-area {
+	.input-area,
+	.disp-area {
 		display: flex;
-	}
-}
-
-input[type="checkbox"] {
-	position: relative;
-	width: 0 !important;
-	height: var(--custom-checkbox-size);
-	margin-right: calc(var(--custom-checkbox-size) + var(--checkbox-right-margin)) !important;
-	font-size: calc(var(--custom-checkbox-size) - 1px);
-
-	&:before {
-		width: var(--custom-checkbox-size);
-		height: var(--custom-checkbox-size);
-		position: absolute;
-		top: 0;
-		display: inline-block;
-		line-height: 1;
-		text-align: center;
-		content: ' ';
-		border: 1px solid var(--gray-400);
-		box-sizing: border-box;
-		box-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
-		border-radius: 4px;
+		align-items: center;
+		height: 20px;
 	}
 
-	&:checked:before {
-		content: url("data: image/svg+xml;utf8, <svg width='8' height='7' viewBox='0 0 8 7' fill='none' xmlns='http://www.w3.org/2000/svg'><path d='M1 4.00001L2.66667 5.80001L7 1.20001' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-		background: linear-gradient(180deg, #4AC3F8 -124.51%, #2490EF 100%);
-		box-shadow: none;
-		border: none;
-	}
+	.help-box {
+		padding-left: 22px;
+		margin-top: 0px;
 
-
-	&.disabled-deselected:before, &[disabled]:before {
-		background: var(--disabled-control-bg);
-		border: 0.5px solid var(--gray-300);
-		box-sizing: border-box;
-		box-shadow: inset 0px 1px 7px rgba(0, 0, 0, 0.1);
-		border-radius: 4px;
-	}
-
-	&.disabled-selected:before {
-		content: url("data: image/svg+xml;utf8, <svg width='8' height='7' viewBox='0 0 8 7' fill='none' xmlns='http://www.w3.org/2000/svg'><path d='M1 4.00001L2.66667 5.80001L7 1.20001' stroke='white' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-		background: $gray-500;
-		box-sizing: border-box;
-		box-shadow: inset 0px 1px 3px rgba(0, 0, 0, 0.1);
-		border-radius: 4px;
-		line-height: 10px;
-	}
-}
-
-// Firefox doesn't support
-// pseudo elements on checkbox
-html.firefox, html.safari {
-	:root {
-		--custom-checkbox-size: 0px;
-	}
-	input[type="checkbox"] {
-		width: var(--base-checkbox-size) !important;
-		height: var(--base-checkbox-size);
-		margin-right: var(--checkbox-right-margin) !important;
+		@media (max-width: map-get($grid-breakpoints, "lg")) {
+			padding-left: 26px;
+		}
 	}
 }
 
 .frappe-card {
 	@include card();
+	box-shadow: none;
+	border: 1px solid var(--border-color);
 }
 
-.frappe-control[data-fieldtype="Select"] .control-input {
+.frappe-control[data-fieldtype="Select"].frappe-control[data-fieldname="color"] {
+	.color-select {
+		padding-left: 40px;
+	}
+
+	.color-box {
+		position: absolute;
+		top: calc(50% - 11px);
+		left: 8px;
+		width: 22px;
+		height: 22px;
+		border-radius: 5px;
+		z-index: 1;
+	}
+}
+
+.frappe-control[data-fieldtype="Select"] .control-input,
+.frappe-control[data-fieldtype="Select"].form-group {
 	position: relative;
 
 	select {
@@ -91,16 +71,141 @@ html.firefox, html.safari {
 		-moz-appearance: none;
 		/* for Chrome */
 		-webkit-appearance: none;
+
+		padding-right: 28px;
 	}
 
-	.icon {
+	.select-icon {
+		padding-left: inherit;
+		padding-right: inherit;
 		position: absolute;
-		top: 8px;
-		height: 15px;
-		right: 12px;
 		pointer-events: none;
-		use {
-			stroke: var(--text-muted);
+		top: 3px;
+		right: 12px;
+
+		&.xs {
+			top: 3px;
+			right: 10px;
+		}
+
+		.icon {
+			use {
+				stroke: var(--text-muted);
+			}
 		}
 	}
+
+	.placeholder {
+		padding-left: inherit;
+		padding-right: inherit;
+		position: absolute;
+		pointer-events: none;
+		top: 3px;
+		left: 12px;
+		max-width: 80%;
+
+		&.xs {
+			top: 3px;
+		}
+	}
+}
+
+.no-border {
+	border: none !important;
+}
+
+.whitespace-nowrap {
+	white-space: nowrap;
+}
+
+.app-change-log-body {
+	h1 {
+		font-size: var(--text-2xl);
+	}
+}
+
+.new-version-log {
+	.new-version-links {
+		padding: var(--padding-xs) 0px;
+	}
+
+	&:not(:last-child) {
+		margin-bottom: 1em;
+	}
+}
+
+.centered {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	-webkit-transform: translate(-50%, -50%);
+}
+
+.btn-link {
+	box-shadow: none !important;
+	outline: none;
+	.icon,
+	&:hover {
+		text-decoration: none !important;
+	}
+}
+
+.hidden {
+	@extend .d-none;
+}
+
+.hide {
+	@extend .d-none;
+}
+
+.margin {
+	margin: var(--margin-sm);
+}
+.margin-top {
+	margin-top: var(--margin-sm);
+}
+.margin-bottom {
+	margin-bottom: var(--margin-sm);
+}
+.margin-left {
+	margin-left: var(--margin-sm);
+}
+.margin-right {
+	margin-right: var(--margin-sm);
+}
+.info-card {
+	display: none;
+}
+
+.info-card[data-show] {
+	display: block;
+	z-index: 1;
+	.frappe-card {
+		box-shadow: 0px 18px 22px -6px rgba(0, 0, 0, 0.1), 0px 0px 6px 3px rgba(0, 0, 0, 0.03),
+			0px 0px 1.5px 0px rgba(0, 0, 0, 0.18);
+	}
+	min-width: calc(var(--sm-width) - 360px);
+}
+
+// freeze backdrop text
+#freeze {
+	bottom: 0;
+	opacity: 0;
+	background-color: var(--bg-color);
+
+	.freeze-message-container {
+		inset: 0;
+		padding: 3rem;
+		background-color: var(--bg-light-gray);
+		color: var(--text-on-light-gray);
+		font-size: larger;
+		position: absolute;
+		display: grid;
+		place-content: center;
+	}
+}
+
+#freeze.in {
+	opacity: 0.8;
 }

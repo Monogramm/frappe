@@ -1,24 +1,131 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
 import frappe
-from frappe.model.document import Document
+from frappe.query_builder.functions import Count, Date, Max, Min
+from frappe.utils.caching import http_cache
+from frappe.utils.logging import get_log_db, log_cutoff, log_table
+from frappe.utils.sqlite_document import SQLiteLogDocument
 
-class ErrorLog(Document):
+
+class ErrorLog(SQLiteLogDocument):
+	_DOCTYPE_NAME = "Error Log"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		error: DF.Code | None
+		fingerprint: DF.Data | None
+		metadata: DF.Code | None
+		method: DF.Data | None
+		reference_doctype: DF.Link | None
+		reference_name: DF.Data | None
+		seen: DF.Check
+		trace_id: DF.Data | None
+	# end: auto-generated types
+
+	def validate(self):
+		self.method = str(self.method)
+		self.error = str(self.error)
+
+		if len(self.method) > 140:
+			self.error = f"{self.method}\n{self.error}"
+			self.method = self.method[:140]
+
 	def onload(self):
-		if not self.seen:
-			self.db_set('seen', 1, update_modified=0)
-			frappe.db.commit()
+		if not self.seen and not frappe.flags.read_only:
+			# `SQLiteLogDocument.db_set` writes to the log database and commits that connection, so
+			# the previous explicit `frappe.db.commit()` -- which committed the *primary*
+			# transaction -- is neither needed nor wanted here.
+			self.db_set("seen", 1, update_modified=0)
 
-def set_old_logs_as_seen():
-	# set logs as seen
-	frappe.db.sql("""UPDATE `tabError Log` SET `seen`=1
-		WHERE `seen`=0 AND `creation` < (NOW() - INTERVAL '7' DAY)""")
+	@staticmethod
+	def clear_old_logs(days=30):
+		db = get_log_db()
+		qb, table = log_table("Error Log")
+
+		db.sql(qb.from_(table).where(table.creation < log_cutoff(days)).delete())
+		db.commit()
+
 
 @frappe.whitelist()
 def clear_error_logs():
-	'''Flush all Error Logs'''
-	frappe.only_for('System Manager')
-	frappe.db.sql('''DELETE FROM `tabError Log`''')
+	"""Flush all Error Logs"""
+	frappe.only_for("System Manager")
+
+	# `frappe.db.truncate` would target the primary database, where Error Log no longer has a
+	# table. A DELETE on the log connection is the equivalent operation here.
+	db = get_log_db()
+	qb, table = log_table("Error Log")
+
+	db.sql(qb.from_(table).delete())
+	db.commit()
+
+
+@frappe.whitelist()
+def get_queued_error_log_count() -> int:
+	"""Return the number of Error Logs waiting for deferred insertion."""
+	frappe.has_permission("Error Log", throw=True)
+
+	from frappe.deferred_insert import queue_prefix
+
+	return frappe.cache.llen(f"{queue_prefix}Error Log")
+
+
+@frappe.whitelist()
+def flush_error_logs():
+	"""Insert all Error Logs currently waiting in the deferred insert queue."""
+	frappe.only_for("System Manager")
+
+	from frappe.deferred_insert import save_to_db
+
+	save_to_db(doctype="Error Log")
+
+
+@frappe.whitelist()
+@http_cache(max_age=5 * 60)
+def get_fingerprint_stats(fingerprint: str) -> dict:
+	"""Aggregate occurrences of a given error fingerprint for the Sentry-like widget.
+
+	Returns total count, first/last seen and a daily timeline over the retention window.
+	"""
+	frappe.has_permission("Error Log", throw=True)
+
+	# Built with the log database's own dialect and run on its connection: `.run()` would
+	# execute against `frappe.db`, which no longer holds these rows.
+	qb, table = log_table("Error Log")
+
+	db = get_log_db()
+
+	summary = db.sql(
+		qb.from_(table)
+		.where(table.fingerprint == fingerprint)
+		.select(
+			Count("*").as_("count"),
+			Min(table.creation).as_("first_seen"),
+			Max(table.creation).as_("last_seen"),
+		),
+		as_dict=True,
+	)[0]
+
+	timeline = db.sql(
+		qb.from_(table)
+		.where(table.fingerprint == fingerprint)
+		.where(table.creation >= log_cutoff(30))
+		.groupby(Date(table.creation))
+		.orderby(Date(table.creation))
+		.select(Date(table.creation).as_("day"), Count("*").as_("count")),
+		as_dict=True,
+	)
+
+	return {
+		"count": summary.count or 0,
+		"first_seen": summary.first_seen,
+		"last_seen": summary.last_seen,
+		"timeline": timeline,
+	}

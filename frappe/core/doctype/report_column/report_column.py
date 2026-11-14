@@ -1,10 +1,43 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2020, Frappe Technologies and contributors
-# For license information, please see license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
 # import frappe
 from frappe.model.document import Document
 
+
 class ReportColumn(Document):
+	_DOCTYPE_NAME = "Report Column"
+
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		fieldname: DF.Data
+		fieldtype: DF.Literal[
+			"Check",
+			"Currency",
+			"Data",
+			"Date",
+			"Datetime",
+			"Duration",
+			"Dynamic Link",
+			"Float",
+			"Fold",
+			"Int",
+			"Link",
+			"Select",
+			"Time",
+		]
+		label: DF.Data
+		options: DF.Data | None
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+		width: DF.Int
+	# end: auto-generated types
+
 	pass

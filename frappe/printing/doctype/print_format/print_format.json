@@ -4,45 +4,70 @@
  "autoname": "Prompt",
  "creation": "2013-01-23 19:54:43",
  "doctype": "DocType",
+ "documentation": "https://docs.frappe.io/framework/user/en/desk/printing",
  "engine": "InnoDB",
  "field_order": [
+  "print_format_for",
   "doc_type",
+  "report",
   "module",
   "default_print_language",
   "column_break_3",
   "standard",
   "custom_format",
   "disabled",
+  "pdf_generator",
+  "paper_size",
+  "paper_width",
+  "paper_height",
   "section_break_6",
   "print_format_type",
   "raw_printing",
   "html",
   "raw_commands",
   "section_break_9",
+  "margin_top",
+  "margin_bottom",
+  "margin_left",
+  "margin_right",
   "align_labels_right",
   "show_section_headings",
   "line_breaks",
   "absolute_value",
   "column_break_11",
+  "font_size",
   "font",
+  "label_color",
+  "value_color",
+  "page_number",
+  "show_label_colon",
+  "access_section",
+  "roles",
   "css_section",
   "css",
   "custom_html_help",
   "section_break_13",
   "print_format_help",
   "format_data",
-  "print_format_builder"
+  "draft_data",
+  "published_on",
+  "published_by",
+  "classic_format_data",
+  "print_format_builder",
+  "print_format_builder_beta",
+  "converted_from"
  ],
  "fields": [
   {
+   "depends_on": "eval:doc.print_format_for == \"DocType\"",
    "fieldname": "doc_type",
    "fieldtype": "Link",
    "in_filter": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "DocType",
-   "options": "DocType",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.print_format_for == \"DocType\"",
+   "options": "DocType"
   },
   {
    "fieldname": "module",
@@ -62,6 +87,7 @@
   },
   {
    "default": "No",
+   "description": "Ship as files in an app, tracked in git. Developer mode only; duplicate to edit.",
    "fieldname": "standard",
    "fieldtype": "Select",
    "in_filter": 1,
@@ -75,12 +101,29 @@
   },
   {
    "default": "0",
+   "description": "Write the format by hand in HTML and Jinja.",
    "fieldname": "custom_format",
    "fieldtype": "Check",
-   "label": "Custom Format"
+   "label": "Custom Format",
+   "read_only_depends_on": "eval:doc.print_format_for===\"Report\";"
   },
   {
-   "depends_on": "custom_format",
+   "collapsible": 1,
+   "collapsible_depends_on": "roles",
+   "depends_on": "eval:doc.print_format_for != \"Report\"",
+   "fieldname": "access_section",
+   "fieldtype": "Section Break",
+   "label": "Access"
+  },
+  {
+   "description": "If set, only users with one of these roles can print with this format.",
+   "fieldname": "roles",
+   "fieldtype": "Table MultiSelect",
+   "label": "Roles",
+   "options": "Has Role"
+  },
+  {
+   "depends_on": "eval:doc.custom_format || doc.print_format_for == \"Report\"",
    "fieldname": "section_break_6",
    "fieldtype": "Section Break"
   },
@@ -94,6 +137,8 @@
   },
   {
    "default": "0",
+   "depends_on": "custom_format",
+   "description": "Send raw ESC/POS commands to a label or thermal printer.",
    "fieldname": "raw_printing",
    "fieldtype": "Check",
    "label": "Raw Printing"
@@ -103,16 +148,19 @@
    "fieldname": "html",
    "fieldtype": "Code",
    "label": "HTML",
+   "mandatory_depends_on": "eval: doc.custom_format",
    "oldfieldname": "html",
    "oldfieldtype": "Text Editor",
-   "options": "HTML"
+   "options": "Jinja"
   },
   {
    "depends_on": "raw_printing",
    "description": "Any string-based printer languages can be used. Writing raw commands requires knowledge of the printer's native language provided by the printer manufacturer. Please refer to the developer manual provided by the printer manufacturer on how to write their native commands. These commands are rendered on the server side using the Jinja Templating Language.",
    "fieldname": "raw_commands",
    "fieldtype": "Code",
-   "label": "Raw Commands"
+   "label": "Raw Commands",
+   "mandatory_depends_on": "raw_printing",
+   "options": "Jinja"
   },
   {
    "depends_on": "eval:!doc.custom_format",
@@ -122,18 +170,21 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.print_format_builder_beta",
    "fieldname": "align_labels_right",
    "fieldtype": "Check",
    "label": "Align Labels to the Right"
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.print_format_builder_beta",
    "fieldname": "show_section_headings",
    "fieldtype": "Check",
    "label": "Show Section Headings"
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.print_format_builder_beta",
    "fieldname": "line_breaks",
    "fieldtype": "Check",
    "label": "Show Line Breaks after Sections"
@@ -149,15 +200,25 @@
    "options": "Language"
   },
   {
-   "default": "Default",
    "depends_on": "eval:!doc.custom_format",
    "fieldname": "font",
-   "fieldtype": "Select",
-   "label": "Font",
-   "options": "Default\nHelvetica Neue\nArial\nHelvetica\nVerdana\nMonospace"
+   "fieldtype": "Data",
+   "label": "Google Font"
   },
   {
-   "depends_on": "eval:!doc.raw_printing",
+   "depends_on": "eval:!doc.custom_format",
+   "fieldname": "label_color",
+   "fieldtype": "Color",
+   "label": "Label Color"
+  },
+  {
+   "depends_on": "eval:!doc.custom_format",
+   "fieldname": "value_color",
+   "fieldtype": "Color",
+   "label": "Value Color"
+  },
+  {
+   "depends_on": "eval:!doc.raw_printing && !doc.print_format_builder_beta",
    "fieldname": "css_section",
    "fieldtype": "Section Break"
   },
@@ -171,7 +232,7 @@
    "fieldname": "custom_html_help",
    "fieldtype": "HTML",
    "label": "Custom HTML Help",
-   "options": "<h3>Custom CSS Help</h3>\n\n<p>Notes:</p>\n\n<ol>\n<li>All field groups (label + value) are set attributes <code>data-fieldtype</code> and <code>data-fieldname</code></li>\n<li>All values are given class <code>value</code></li>\n<li>All Section Breaks are given class <code>section-break</code></li>\n<li>All Column Breaks are given class <code>column-break</code></li>\n</ol>\n\n<h4>Examples</h4>\n\n<p>1. Left align integers</p>\n\n<pre><code>[data-fieldtype=\"Int\"] .value { text-left: left; }</code></pre>\n\n<p>1. Add border to sections except the last section</p>\n\n<pre><code>.section-break { padding: 30px 0px; border-bottom: 1px solid #eee; }\n.section-break:last-child { padding-bottom: 0px; border-bottom: 0px;  }</code></pre>\n"
+   "options": "<h3>Custom CSS Help</h3>\n\n<p>Notes:</p>\n\n<ol>\n<li>All field groups (label + value) are set attributes <code>data-fieldtype</code> and <code>data-fieldname</code></li>\n<li>All values are given class <code>value</code></li>\n<li>All Section Breaks are given class <code>section-break</code></li>\n<li>All Column Breaks are given class <code>column-break</code></li>\n</ol>\n\n<h4>Examples</h4>\n\n<p>1. Left align integers</p>\n\n<pre><code>[data-fieldtype=\"Int\"] .value { text-align: left; }</code></pre>\n\n<p>1. Add border to sections except the last section</p>\n\n<pre><code>.section-break { padding: 30px 0px; border-bottom: 1px solid #eee; }\n.section-break:last-child { padding-bottom: 0px; border-bottom: 0px;  }</code></pre>\n"
   },
   {
    "depends_on": "custom_format",
@@ -192,11 +253,19 @@
    "label": "Format Data"
   },
   {
+   "fieldname": "classic_format_data",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Classic Format Data",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "default": "0",
    "fieldname": "print_format_builder",
    "fieldtype": "Check",
    "hidden": 1,
-   "label": "Print Format Builder"
+   "label": "Print Format Builder (Classic)"
   },
   {
    "default": "0",
@@ -205,16 +274,149 @@
    "fieldname": "absolute_value",
    "fieldtype": "Check",
    "label": "Show Absolute Values"
+  },
+  {
+   "default": "0",
+   "fieldname": "print_format_builder_beta",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Print Format Editor"
+  },
+  {
+   "default": "15",
+   "fieldname": "margin_top",
+   "fieldtype": "Float",
+   "label": "Margin Top"
+  },
+  {
+   "default": "15",
+   "fieldname": "margin_bottom",
+   "fieldtype": "Float",
+   "label": "Margin Bottom"
+  },
+  {
+   "default": "15",
+   "fieldname": "margin_left",
+   "fieldtype": "Float",
+   "label": "Margin Left"
+  },
+  {
+   "default": "15",
+   "fieldname": "margin_right",
+   "fieldtype": "Float",
+   "label": "Margin Right"
+  },
+  {
+   "default": "14",
+   "fieldname": "font_size",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Font Size"
+  },
+  {
+   "default": "Hide",
+   "fieldname": "page_number",
+   "fieldtype": "Select",
+   "label": "Page Number",
+   "options": "Hide\nTop Left\nTop Center\nTop Right\nBottom Left\nBottom Center\nBottom Right"
+  },
+  {
+   "default": "0",
+   "description": "Show a colon after field labels (e.g. \"Name:\"), matching the older print style.",
+   "fieldname": "show_label_colon",
+   "fieldtype": "Check",
+   "label": "Show Colon After Field Labels"
+  },
+  {
+   "default": "PlutoPrint",
+   "fieldname": "pdf_generator",
+   "fieldtype": "Select",
+   "label": "PDF Generator",
+   "options": "chrome\nPlutoPrint\nTypst"
+  },
+  {
+   "depends_on": "eval:!doc.print_format_builder_beta && !doc.raw_printing",
+   "description": "Empty uses the size in Print Settings. A receipt size prints one page as tall as the content.",
+   "fieldname": "paper_size",
+   "fieldtype": "Select",
+   "label": "Paper Size",
+   "options": "\nA4\nA5\nA3\nLetter\nLegal\nReceipt 80 mm\nReceipt 58 mm\nCustom"
+  },
+  {
+   "depends_on": "eval:doc.paper_size == \"Custom\" && !doc.print_format_builder_beta && !doc.raw_printing",
+   "fieldname": "paper_width",
+   "fieldtype": "Float",
+   "label": "Paper Width (in mm)",
+   "mandatory_depends_on": "eval:doc.paper_size == \"Custom\" && !doc.print_format_builder_beta && !doc.raw_printing"
+  },
+  {
+   "depends_on": "eval:doc.paper_size == \"Custom\" && !doc.print_format_builder_beta && !doc.raw_printing",
+   "description": "Small sizes such as labels also need small page margins, for example @page { margin: 2mm; } in Custom CSS.",
+   "fieldname": "paper_height",
+   "fieldtype": "Float",
+   "label": "Paper Height (in mm)",
+   "mandatory_depends_on": "eval:doc.paper_size == \"Custom\" && !doc.print_format_builder_beta && !doc.raw_printing"
+  },
+  {
+   "default": "DocType",
+   "fieldname": "print_format_for",
+   "fieldtype": "Select",
+   "label": "Print Format For",
+   "options": "DocType\nReport"
+  },
+  {
+   "depends_on": "eval:doc.print_format_for == \"Report\"",
+   "fieldname": "report",
+   "fieldtype": "Link",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Report",
+   "mandatory_depends_on": "eval:doc.print_format_for == \"Report\"",
+   "options": "Report"
+  },
+  {
+   "fieldname": "draft_data",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Draft Data",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "published_on",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Published On",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "published_by",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Published By",
+   "no_copy": 1,
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "converted_from",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Converted From",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
- "icon": "fa fa-print",
+ "icon": "printer",
  "idx": 1,
- "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2020-12-14 11:38:49.132061",
+ "modified": "2026-11-13 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Printing",
  "name": "Print Format",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -227,9 +429,14 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "role": "Desk User",
+   "select": 1
   }
  ],
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "sort_field": "creation",
  "sort_order": "DESC",
- "track_changes": 1
+ "states": []
 }

@@ -1,40 +1,19 @@
-const sass = require('node-sass');
-const fs = require('fs');
-const path = require('path');
-const { apps_list, get_app_path, get_public_path, get_options_for_scss } = require('./rollup/rollup.utils');
+const fs = require("fs");
+const { sass, sass_options } = require("./esbuild/sass_compiler");
 
 const output_path = process.argv[2];
+const scss_content = process.argv[3].replace(/\\n/g, "\n");
 
-let scss_content = process.argv[3];
-scss_content = scss_content.replace(/\\n/g, '\n');
-
-sass.render({
-	data: scss_content,
-	outputStyle: 'compressed',
-	importer: function(url) {
-		if (url.startsWith('~')) {
-			// strip ~ so that it can resolve from node_modules
-			return {
-				file: url.slice(1)
-			};
-		}
-		// normal file, let it go
-		return {
-			file: url
-		};
-	},
-	...get_options_for_scss()
-}, function(err, result) {
-	if (err) {
-		console.error(err.formatted); // eslint-disable-line
-		return;
-	}
-
-	fs.writeFile(output_path, result.css, function(err) {
-		if (!err) {
-			console.log(output_path); // eslint-disable-line
-		} else {
-			console.error(err); // eslint-disable-line
-		}
+// The caller (website_theme.py) treats anything on stderr as a compile
+// failure, so errors go to console.error and success prints only the path.
+sass.compileStringAsync(scss_content, {
+	style: "compressed",
+	...sass_options,
+	sourceMap: false,
+})
+	.then((result) => fs.promises.writeFile(output_path, result.css))
+	.then(() => console.log(output_path))
+	.catch((err) => {
+		console.error(err.message || err);
+		process.exitCode = 1;
 	});
-});

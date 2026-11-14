@@ -1,0 +1,372 @@
+<template>
+	<div class="pfb-settings">
+		<InspectorSection :label="__('Text')">
+			<InspectorRow :label="__('Font')">
+				<Autocomplete
+					:options="font_options"
+					:model-value="print_format.font || ''"
+					:placeholder="__('Default')"
+					@select="(o) => (print_format.font = o.value)"
+				/>
+			</InspectorRow>
+			<InspectorRow :label="__('Font size')">
+				<input
+					type="number"
+					class="form-control form-control-sm pfb-insp-input"
+					placeholder="14"
+					:value="print_format.font_size"
+					@change="(e) => (print_format.font_size = parseFloat(e.target.value) || 14)"
+				/>
+			</InspectorRow>
+			<InspectorRow v-for="c in color_settings" :key="c.fieldname" :label="c.label">
+				<ColorInput
+					:fieldname="c.fieldname"
+					:model-value="print_format[c.fieldname] || ''"
+					:placeholder="__('Default')"
+					@update:model-value="(v) => (print_format[c.fieldname] = v || null)"
+				/>
+			</InspectorRow>
+			<ToggleRow
+				:label="__('Colon after labels')"
+				:model-value="!!print_format.show_label_colon"
+				@update:model-value="(v) => (print_format.show_label_colon = v ? 1 : 0)"
+			/>
+		</InspectorSection>
+
+		<InspectorSection :label="__('Page')">
+			<InspectorRow :label="__('Paper size')">
+				<select
+					class="form-control form-control-sm pfb-insp-select"
+					:value="layout.page?.size || ''"
+					@change="set_page('size', $event.target.value)"
+				>
+					<option v-for="p in paper_sizes" :key="p.value" :value="p.value">
+						{{ p.label }}
+					</option>
+				</select>
+			</InspectorRow>
+			<template v-if="layout.page?.size === 'Custom'">
+				<StepperRow
+					:label="__('Width')"
+					:model-value="layout.page.width"
+					:min="10"
+					:step="5"
+					unit="mm"
+					decimals
+					@update:model-value="(v) => set_page('width', clamp_page_mm(v))"
+				/>
+				<StepperRow
+					:label="__('Height')"
+					:model-value="layout.page.height"
+					:min="10"
+					:step="5"
+					unit="mm"
+					decimals
+					@update:model-value="(v) => set_page('height', clamp_page_mm(v))"
+				/>
+			</template>
+			<InspectorRow :label="__('Orientation')">
+				<select
+					class="form-control form-control-sm pfb-insp-select"
+					:value="layout.page?.orientation || 'Portrait'"
+					@change="set_page('orientation', $event.target.value)"
+				>
+					<option value="Portrait">{{ __("Portrait") }}</option>
+					<option value="Landscape">{{ __("Landscape") }}</option>
+				</select>
+			</InspectorRow>
+			<SpacingRow
+				:label="__('Margins (mm)')"
+				:model-value="page_margins"
+				@update:model-value="set_margins"
+			/>
+			<InspectorRow :label="__('Background')">
+				<ImageUploadControl
+					:model-value="layout.background?.image || ''"
+					@update:model-value="set_background_image"
+				/>
+			</InspectorRow>
+			<SliderRow
+				v-if="layout.background?.image"
+				:label="__('Opacity')"
+				:min="0"
+				:max="100"
+				:model-value="layout.background.opacity ?? 100"
+				@update:model-value="(v) => (layout.background.opacity = v)"
+			>
+				<span class="pfb-insp-hint text-muted"
+					>{{ layout.background.opacity ?? 100 }}%</span
+				>
+			</SliderRow>
+		</InspectorSection>
+
+		<InspectorSection :label="__('Output')">
+			<InspectorRow :label="__('PDF renderer')">
+				<template #label>
+					<span class="pfb-label-with-hint">
+						{{ __("PDF renderer") }}
+						<span
+							v-if="renderer_hint"
+							ref="hint_icon"
+							class="pfb-hint-icon"
+							v-html="frappe.utils.icon('info', 'xs')"
+						></span>
+					</span>
+				</template>
+				<select
+					class="form-control form-control-sm pfb-insp-select"
+					:value="renderer"
+					@change="set_renderer($event.target.value)"
+				>
+					<option value="chrome" :disabled="has_typst_block">
+						{{ __("Chromium") }}
+					</option>
+					<option value="PlutoPrint" :disabled="has_typst_block">
+						{{ __("PlutoPrint (light)") }}
+					</option>
+					<option value="Typst" :disabled="typst_blockers.length > 0">
+						{{ __("Typst (fast)") }}
+					</option>
+				</select>
+			</InspectorRow>
+			<InspectorRow :label="__('Letter head')">
+				<DeskControl
+					:df="letterhead_df"
+					:model-value="letterhead?.name || ''"
+					@update:model-value="set_letterhead"
+				/>
+			</InspectorRow>
+			<InspectorRow :label="__('Page numbers')">
+				<select
+					class="form-control form-control-sm pfb-insp-select"
+					v-model="print_format.page_number"
+				>
+					<option v-for="p in page_number_positions" :value="p.value">
+						{{ p.label }}
+					</option>
+				</select>
+			</InspectorRow>
+		</InspectorSection>
+
+		<InspectorSection :label="__('Access')">
+			<DeskControl
+				:df="roles_df"
+				:model-value="print_format.roles || []"
+				@update:model-value="set_roles"
+			/>
+			<span class="pfb-insp-hint text-muted">
+				{{ __("If set, only users with one of these roles can print with this format.") }}
+			</span>
+		</InspectorSection>
+
+		<InspectorSection :label="__('Global variables')" :init-open="!!layout.global_variables">
+			<textarea
+				class="form-control form-control-sm pfb-css-input"
+				:placeholder="__('{% set total_qty = doc.items | sum(attribute=\'qty\') %}')"
+				spellcheck="false"
+				rows="8"
+				:value="layout.global_variables || ''"
+				@input="(e) => (layout.global_variables = e.target.value)"
+			></textarea>
+			<div class="pfb-insp-hint text-muted">
+				{{
+					__("Set them with {0}. Every HTML block in this format can use them.", [
+						"{% set %}",
+					])
+				}}
+			</div>
+		</InspectorSection>
+
+		<InspectorSection :label="__('Custom CSS')" :init-open="false">
+			<textarea
+				class="form-control form-control-sm pfb-css-input"
+				:placeholder="__('.print-format p { margin: 0; }')"
+				spellcheck="false"
+				rows="8"
+				:value="print_format.css || ''"
+				@input="(e) => (print_format.css = e.target.value)"
+			></textarea>
+		</InspectorSection>
+	</div>
+</template>
+
+<script setup>
+import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import Autocomplete from "../../vue-components/Autocomplete.vue";
+import ToggleRow from "./inspector/ToggleRow.vue";
+import InspectorRow from "./inspector/InspectorRow.vue";
+import SpacingRow from "./inspector/SpacingRow.vue";
+import InspectorSection from "./inspector/InspectorSection.vue";
+import ColorInput from "./inspector/ColorInput.vue";
+import DeskControl from "./DeskControl.vue";
+import ImageUploadControl from "./inspector/ImageUploadControl.vue";
+import SliderRow from "./inspector/SliderRow.vue";
+import StepperRow from "./inspector/StepperRow.vue";
+
+let store = inject("$store");
+let { print_format, letterhead, layout } = store;
+let { typst_blockers, has_typst_block } = store;
+
+let google_fonts = ref([]);
+
+let renderer = computed(() => print_format.value?.pdf_generator || "PlutoPrint");
+let hint_icon = ref(null);
+let renderer_hint = computed(() => {
+	if (typst_blockers.value.length) {
+		const items = typst_blockers.value.map((b) => "• " + b);
+		return [__("Typst cannot render:"), ...items].join("\n");
+	}
+	if (has_typst_block.value) {
+		return __("Chromium unavailable: this format uses a Typst block.");
+	}
+	return ["Typst", "PlutoPrint"].includes(renderer.value) ? __("Experimental") : "";
+});
+let hint_tooltip = null;
+watch(
+	[hint_icon, renderer_hint],
+	([el, text]) => {
+		hint_tooltip?.destroy();
+		hint_tooltip = null;
+		if (!el || !text) return;
+		frappe.ui.tooltip(el, { text, text_align: "start" });
+		hint_tooltip = $(el).data("es-tooltip");
+	},
+	{ flush: "post" }
+);
+onUnmounted(() => hint_tooltip?.destroy());
+
+const paper_sizes = [
+	{ label: __("Default"), value: "" },
+	...frappe.meta.get_print_sizes().map((s) => ({ label: __(s), value: s })),
+];
+
+function clamp_page_mm(value) {
+	return Math.min(5000, Math.max(10, value || 10));
+}
+
+function set_page(key, value) {
+	const page = { ...layout.value.page, [key]: value };
+	if (page.size === "Custom") {
+		page.width ??= 210;
+		page.height ??= 297;
+	} else {
+		delete page.width;
+		delete page.height;
+	}
+	if (!page.size) delete page.size;
+	if (page.orientation !== "Landscape") delete page.orientation;
+	if (Object.keys(page).length) layout.value.page = page;
+	else delete layout.value.page;
+}
+
+function set_background_image(image) {
+	if (!image) {
+		delete layout.value.background;
+		return;
+	}
+	layout.value.background = { opacity: 100, ...layout.value.background, image };
+}
+
+function set_renderer(value) {
+	if (value !== "Typst" && has_typst_block.value) return;
+	print_format.value.pdf_generator = value;
+}
+let font_options = computed(() => [
+	{ label: __("Default"), value: "" },
+	...google_fonts.value.map((f) => ({ label: f, value: f })),
+]);
+
+const MARGIN_FIELDS = {
+	top: "margin_top",
+	right: "margin_right",
+	bottom: "margin_bottom",
+	left: "margin_left",
+};
+let page_margins = computed(() =>
+	Object.fromEntries(
+		Object.entries(MARGIN_FIELDS).map(([side, f]) => [side, print_format.value[f] ?? 0])
+	)
+);
+function set_margins(sides) {
+	for (const [side, f] of Object.entries(MARGIN_FIELDS)) {
+		print_format.value[f] = Math.max(0, parseFloat(sides[side]) || 0);
+	}
+}
+
+let page_number_positions = computed(() => [
+	{ label: __("Hide"), value: "Hide" },
+	{ label: __("Top Left"), value: "Top Left" },
+	{ label: __("Top Center"), value: "Top Center" },
+	{ label: __("Top Right"), value: "Top Right" },
+	{ label: __("Bottom Left"), value: "Bottom Left" },
+	{ label: __("Bottom Center"), value: "Bottom Center" },
+	{ label: __("Bottom Right"), value: "Bottom Right" },
+]);
+
+// ── colors ─────────────────────────────────────────────────
+const color_settings = [
+	{ fieldname: "label_color", label: __("Label color") },
+	{ fieldname: "value_color", label: __("Value color") },
+];
+const letterhead_df = {
+	fieldname: "letter_head",
+	fieldtype: "Link",
+	options: "Letter Head",
+	placeholder: __("No letter head"),
+};
+const roles_df = {
+	fieldname: "roles",
+	fieldtype: "Table MultiSelect",
+	options: "Has Role",
+};
+function set_roles(rows) {
+	const roles = (rows || []).map((row) => row.role).filter(Boolean);
+	const current = (print_format.value.roles || []).map((row) => row.role);
+	if (roles.join("\n") === current.join("\n")) return;
+	print_format.value.roles = roles.map((role) => ({ role }));
+}
+function set_letterhead(name) {
+	if (name === (letterhead.value?.name || "")) return;
+	name ? store.change_letterhead(name) : store.remove_letterhead();
+}
+
+onMounted(() => {
+	let method = "frappe.printing.page.print_format_builder.print_format_builder.get_google_fonts";
+	frappe.call(method).then((r) => {
+		google_fonts.value = r.message || [];
+		if (print_format.value.font && !google_fonts.value.includes(print_format.value.font)) {
+			google_fonts.value.push(print_format.value.font);
+		}
+	});
+});
+</script>
+
+<style scoped>
+.pfb-label-with-hint {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.pfb-hint-icon {
+	display: inline-flex;
+	color: var(--ink-gray-6);
+}
+
+.pfb-settings :deep(.pfb-insp-row:not(.pfb-insp-row--toggle)) {
+	grid-template-columns: 104px 1fr;
+}
+
+.pfb-settings :deep(.frappe-control) {
+	margin-bottom: 0;
+}
+
+.pfb-css-input {
+	font-family: var(--font-family-monospace);
+	font-size: var(--text-xs);
+	line-height: 1.5;
+	resize: vertical;
+	min-height: 120px;
+	height: auto;
+}
+</style>

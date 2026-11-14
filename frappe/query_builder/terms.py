@@ -1,0 +1,187 @@
+from datetime import datetime, time, timedelta
+from typing import Any
+
+from pypika.dialects import SQLLiteValueWrapper
+from pypika.enums import Comparator, Dialects
+from pypika.queries import QueryBuilder
+from pypika.terms import BasicCriterion, Criterion, Function, Term, ValueWrapper
+from pypika.utils import format_alias_sql
+
+import frappe
+from frappe.utils.data import format_time, format_timedelta
+
+
+class NamedParameterWrapper:
+	"""Utility class to hold parameter values and keys"""
+
+	__slots__ = ("_term_keys", "parameters")
+
+	def __init__(self) -> None:
+		self.parameters = {}
+		self._term_keys = {}
+
+	def get_sql(self, param_value: Any, term: Term | None = None, **kwargs) -> str:
+		"""Return SQL for a parameter, while adding the real value in a dict.
+
+		A term rendered twice, like `COALESCE(x, '')` in both SELECT and GROUP BY, keeps
+		one parameter: Postgres binds each separately and would not match the two.
+
+		Args:
+		        param_value (Any): Value of the parameter
+		        term (Term): The term the value belongs to
+
+		Return:
+		        str: parameter used in the SQL query
+		"""
+		if term is not None and id(term) in self._term_keys:
+			return self._term_keys[id(term)][1]
+		param_key = f"%(param{len(self.parameters) + 1})s"
+		assert param_key[2:-2] not in self.parameters, "generated parameter keys must be unique"
+		self.parameters[param_key[2:-2]] = param_value
+		if term is not None:
+			# hold the term, so a term freed mid-render can't pass its id to another
+			self._term_keys[id(term)] = (term, param_key)
+		return param_key
+
+	def get_parameters(self) -> dict[str, Any]:
+		"""Get dict with parameters and values."""
+		return self.parameters
+
+
+class EscapedValueWrapper:
+	"""Parameter wrapper that inlines each value as an escaped SQL literal."""
+
+	def get_sql(self, param_value: Any, **kwargs) -> str:
+		return frappe.db.escape(param_value, percent=False)
+
+
+class ParameterizedValueWrapper(ValueWrapper):
+	"""
+	Class to monkey patch ValueWrapper
+
+	Adds functionality to parameterize queries when a `param wrapper` is passed in get_sql()
+	"""
+
+	def get_sql(
+		self,
+		quote_char: str | None = None,
+		secondary_quote_char: str = "'",
+		param_wrapper: NamedParameterWrapper | None = None,
+		**kwargs: Any,
+	) -> str:
+		if param_wrapper and isinstance(self.value, str):
+			# add quotes if it's a string value
+			value_sql = self.get_value_sql(quote_char=quote_char, **kwargs)
+			sql = param_wrapper.get_sql(param_value=value_sql, term=self, **kwargs)
+		else:
+			# * BUG: pypika doesen't parse timedeltas and datetime.time
+			if isinstance(self.value, timedelta):
+				self.value = format_timedelta(self.value)
+			elif isinstance(self.value, time):
+				self.value = format_time(self.value)
+			elif isinstance(self.value, datetime):
+				self.value = frappe.db.format_datetime(self.value)
+			elif isinstance(self.value, bool):
+				# emit '1'/'0': fits both `SET check_field = '1'` (smallint) and
+				# `WHERE ... OR '0'` (a condition), where postgres rejects a bare 1
+				self.value = str(int(self.value))
+
+			sql = self.get_value_sql(
+				quote_char=quote_char,
+				secondary_quote_char=secondary_quote_char,
+				param_wrapper=param_wrapper,
+				**kwargs,
+			)
+		return format_alias_sql(sql, self.alias, quote_char=quote_char, **kwargs)
+
+
+class SQLiteParameterizedValueWrapper(ParameterizedValueWrapper, SQLLiteValueWrapper):
+	pass
+
+
+# postgres can't infer the type of a parameter passed to their variadic "any" arguments
+TEXT_PARAMETER_FUNCTIONS = frozenset(("CONCAT", "CONCAT_WS"))
+
+
+def get_text_parameter_function_sql(function: Function, **kwargs: Any) -> str:
+	args = ",".join(
+		arg.get_sql(with_alias=False, subquery=True, **kwargs)
+		+ ("::text" if isinstance(arg, ValueWrapper) else "")
+		for arg in function.args
+	)
+	return f"{function.name}({args})"
+
+
+class ParameterizedFunction(Function):
+	"""
+	Class to monkey patch pypika.terms.Functions
+
+	Only to pass `param_wrapper` in `get_function_sql`.
+	"""
+
+	def get_sql(self, **kwargs: Any) -> str:
+		with_alias = kwargs.pop("with_alias", False)
+		with_namespace = kwargs.pop("with_namespace", False)
+		quote_char = kwargs.pop("quote_char", None)
+		dialect = kwargs.pop("dialect", None)
+		param_wrapper = kwargs.pop("param_wrapper", None)
+
+		function_kwargs = {
+			"with_namespace": with_namespace,
+			"quote_char": quote_char,
+			"param_wrapper": param_wrapper,
+			"dialect": dialect,
+		}
+		if dialect == Dialects.POSTGRESQL and self.name in TEXT_PARAMETER_FUNCTIONS:
+			function_sql = get_text_parameter_function_sql(self, **function_kwargs)
+		else:
+			function_sql = self.get_function_sql(**function_kwargs)
+
+		if self.schema is not None:
+			function_sql = "{schema}.{function}".format(
+				schema=self.schema.get_sql(quote_char=quote_char, dialect=dialect, **kwargs),
+				function=function_sql,
+			)
+
+		if with_alias:
+			return format_alias_sql(function_sql, self.alias, quote_char=quote_char, **kwargs)
+
+		return function_sql
+
+
+class SubQuery(Criterion):
+	def __init__(
+		self,
+		subq: QueryBuilder,
+		alias: str | None = None,
+	) -> None:
+		super().__init__(alias)
+		self.subq = subq
+
+	def get_sql(self, **kwg: Any) -> str:
+		kwg["subquery"] = True
+		return self.subq.get_sql(**kwg)
+
+
+subqry = SubQuery
+
+
+class PostgresAwareCriterion(BasicCriterion):
+	def __init__(self, comparator: Comparator, postgres_comparator: Comparator, left: Term, right: Term):
+		super().__init__(comparator, left, right)
+		self.default_comparator = comparator
+		self.postgres_comparator = postgres_comparator
+
+	def get_sql(self, **kwargs: Any) -> str:
+		self.comparator = (
+			self.postgres_comparator
+			if renders_for_postgres(kwargs.get("dialect"))
+			else self.default_comparator
+		)
+		return super().get_sql(**kwargs)
+
+
+def renders_for_postgres(dialect: Dialects | None) -> bool:
+	if dialect:
+		return dialect == Dialects.POSTGRESQL
+	return bool(frappe.db and frappe.db.db_type == "postgres")

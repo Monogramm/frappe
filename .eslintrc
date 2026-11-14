@@ -2,65 +2,32 @@
 	"env": {
 		"browser": true,
 		"node": true,
-		"es6": true
+		"es2022": true
 	},
 	"parserOptions": {
-		"ecmaVersion": 9,
 		"sourceType": "module"
 	},
 	"extends": "eslint:recommended",
 	"rules": {
-		"indent": [
-			"error",
-			"tab",
-			{ "SwitchCase": 1 }
-		],
-		"brace-style": [
-			"error",
-			"1tbs"
-		],
-		"space-unary-ops": [
-			"error",
-			{ "words": true }
-		],
-		"linebreak-style": [
-			"error",
-			"unix"
-		],
-		"quotes": [
-			"off"
-		],
-		"semi": [
-			"warn",
-			"always"
-		],
-		"camelcase": [
-			"off"
-		],
-		"no-unused-vars": [
-			"warn"
-		],
-		"no-redeclare": [
-			"warn"
-		],
-		"no-console": [
-			"warn"
-		],
-		"no-extra-boolean-cast": [
-			"off"
-		],
-		"no-control-regex": [
-			"off"
-		],
-		"space-before-blocks": "warn",
-		"keyword-spacing": "warn",
-		"comma-spacing": "warn",
-		"key-spacing": "warn",
+		"indent": "off",
+		"brace-style": "off",
+		"no-mixed-spaces-and-tabs": "off",
+		"no-useless-escape": "off",
+		"space-unary-ops": ["error", { "words": true }],
+		"linebreak-style": "off",
+		"quotes": ["off"],
+		"semi": "off",
+		"camelcase": "off",
+		"no-unused-vars": "off",
+		"no-console": ["warn"],
+		"no-extra-boolean-cast": ["off"],
+		"no-control-regex": ["off"],
 	},
 	"root": true,
 	"globals": {
 		"frappe": true,
 		"Vue": true,
+		"SetVueGlobals": true,
 		"__": true,
 		"repl": true,
 		"Class": true,
@@ -78,8 +45,10 @@
 		"has_common": true,
 		"has_words": true,
 		"validate_email": true,
+		"open_web_template_values_editor": true,
 		"validate_name": true,
 		"validate_phone": true,
+		"validate_url": true,
 		"get_number_format": true,
 		"format_number": true,
 		"format_currency": true,
@@ -126,6 +95,7 @@
 		"hljs": true,
 		"Awesomplete": true,
 		"Sortable": true,
+		"gemoji": true,
 		"Showdown": true,
 		"Taggle": true,
 		"Gantt": true,
@@ -133,20 +103,14 @@
 		"Webcam": true,
 		"PhotoSwipe": true,
 		"PhotoSwipeUI_Default": true,
-		"fluxify": true,
 		"io": true,
-		"QUnit": true,
 		"JsBarcode": true,
 		"L": true,
 		"Chart": true,
+		"AirDatepicker": true,
 		"DataTable": true,
-		"Cypress": true,
-		"cy": true,
-		"it": true,
-		"expect": true,
-		"context": true,
-		"before": true,
-		"beforeEach": true,
-		"qz": true
+		"qz": true,
+		"localforage": true,
+		"extend_cscript": true
 	}
 }

@@ -1,0 +1,1214 @@
+@mixin grid-focus() {
+	outline: none;
+	border: 1px solid var(--gray-400) !important;
+}
+
+// grid_row.js reparents an open Link dropdown here and offsets it from this box,
+// so it has to be the containing block the offsets are resolved against
+.grid-field {
+	position: relative;
+}
+
+.form-grid {
+	border: 1px solid var(--table-border-color);
+	border-radius: var(--radius-md);
+	color: var(--text-color);
+	min-height: 75px;
+	background-color: var(--subtle-accent);
+	overflow-y: hidden;
+}
+
+.form-grid.error {
+	border-color: var(--error-border);
+	overflow: hidden;
+}
+
+.grid-heading-row {
+	border-bottom: 1px solid var(--table-border-color);
+	color: var(--text-muted);
+	@include get_textstyle("sm", "regular");
+	height: 32px;
+	padding: 0 !important;
+	border-top-left-radius: var(--radius-md);
+	border-top-right-radius: var(--radius-md);
+
+	.grid-row {
+		background-color: var(--subtle-fg);
+		border-top-left-radius: var(--radius-md);
+		border-top-right-radius: var(--radius-md);
+
+		.row-check {
+			border-top-left-radius: var(--radius-md);
+		}
+
+		.row .col:last-child {
+			border-top-right-radius: var(--radius-md);
+		}
+	}
+
+	&.with-filter {
+		height: 66px;
+
+		.grid-row:nth-child(2) {
+			.row-check,
+			.row-index {
+				background-color: var(--fg-color);
+			}
+		}
+	}
+
+	.filter-row {
+		background-color: var(--bg-color);
+
+		.search:not(.row-check) {
+			// TODO: Align with table grid without overwriting padding if possible
+			padding: 4px 7px 4px 7px !important;
+			background-color: var(--fg-color);
+
+			input {
+				// Firefox and Safari count the input's intrinsic width into the
+				// row's max-content, growing search cells out of column alignment.
+				width: 0;
+				min-width: 100%;
+			}
+		}
+	}
+
+	.grid-static-col,
+	.row-check,
+	.row-index {
+		height: 32px;
+		padding: 4px 8px !important;
+		background-color: var(--subtle-fg);
+	}
+
+	.row-check,
+	.row-index {
+		position: sticky;
+		left: 0;
+		z-index: 1;
+	}
+
+	.row-index {
+		left: 31px;
+	}
+
+	.grid-static-col {
+		padding: 6px 8px !important;
+
+		&.grid-data-column {
+			flex: 1;
+			max-width: none;
+		}
+
+		.static-area {
+			&.reqd:after {
+				content: " *";
+				color: var(--red-400);
+			}
+		}
+	}
+}
+
+.rows .grid-row .data-row,
+.rows .grid-row .grid-footer-toolbar,
+.grid-form-heading {
+	cursor: pointer;
+}
+
+.data-row textarea {
+	height: 38px;
+}
+
+.form-grid .data-row {
+	// padding: 10px 15px;
+
+	&.highlight {
+		background-color: var(--yellow-highlight-color);
+	}
+
+	&.sortable-handle {
+		cursor: move;
+	}
+}
+
+// hide row index in 6/4 column child tables
+.form-column.col-sm-6,
+.form-column.col-sm-4 {
+	.form-grid {
+		.row-index {
+			display: none;
+		}
+	}
+}
+
+.modal .form-grid .row-index {
+	display: none;
+}
+
+.form-grid .grid-heading-row .template-row {
+	margin-left: 8px;
+}
+
+.form-grid .template-row {
+	width: calc(100% - 30px);
+	padding: 8px 15px;
+}
+
+.grid-body .data-row {
+	@include get_textstyle("sm", "regular");
+	color: var(--text-muted);
+
+	.row-check,
+	.row-index {
+		position: sticky;
+		left: 0;
+		background-color: var(--fg-color);
+		z-index: 1;
+	}
+
+	.row-index {
+		left: 31px;
+	}
+
+	button.col:focus-visible {
+		outline: 1px solid #c9c9c9;
+	}
+}
+
+.grid-empty,
+.list-loading {
+	@include flex(flex, center, center, column);
+	padding: var(--padding-lg) var(--padding-sm);
+	color: var(--text-muted);
+
+	img {
+		margin-bottom: var(--margin-sm);
+	}
+}
+
+.grid-empty {
+	height: 43px;
+	background-color: var(--subtle-accent);
+	display: flex;
+	vertical-align: middle;
+}
+
+.grid-static-col:focus-visible {
+	@include grid-focus();
+}
+
+.grid-static-col,
+.row-index {
+	height: 43px;
+	max-height: 200px;
+
+	&.search {
+		padding: 7px !important;
+
+		input {
+			height: 100%;
+			padding: 3px 7px;
+		}
+	}
+}
+
+.row-check {
+	// height: 38px;
+	text-align: center;
+	flex-grow: 0;
+
+	input {
+		margin-right: 0 !important;
+		margin-bottom: -3px;
+	}
+
+	&.search {
+		padding: var(--grid-padding) !important;
+	}
+}
+
+.grid-row-check {
+	margin-top: 3px;
+
+	&::after {
+		// Extend the checkbox's clickable area
+		display: block;
+		content: "";
+		inset: -8px;
+		position: absolute;
+		opacity: 0;
+	}
+}
+
+.template-row-index {
+	float: left;
+	margin-left: 15px;
+	margin-top: 8px;
+	margin-right: -20px;
+
+	span {
+		margin-left: 5px;
+	}
+}
+
+.editable-form .grid-static-col.bold {
+	font-weight: bold;
+}
+
+.editable-form .grid-static-col.invalid,
+.validated-form .grid-static-col.error {
+	background-color: var(--error-bg);
+}
+
+// Error indicator: inset shadow on the control (editable rows) or the cell (idle rows).
+.grid-body .editable-row .has-error .form-control {
+	box-shadow: inset 0 0 0 1px var(--error-border);
+}
+
+.validated-form .grid-static-col.error,
+.validated-form .grid-static-col.invalid {
+	box-shadow: inset 0 0 0 1px var(--error-border);
+}
+
+.row-index {
+	text-align: center;
+	flex-grow: 0;
+}
+
+.grid-row > .row {
+	.col:last-child {
+		border-right: none;
+		min-width: 0;
+		display: flex;
+		justify-content: center;
+		align-items: center;
+	}
+
+	.col {
+		padding: var(--grid-padding);
+		border-right: 1px solid var(--table-border-color);
+		// overflow: hidden;
+	}
+
+	.sticky-grid-col {
+		position: sticky;
+		z-index: 1;
+	}
+}
+
+.grid-body .grid-row:not(.grid-row-open) .data-row:not(.editable-row):hover {
+	.grid-static-col,
+	.row-check,
+	.col:last-child {
+		background-color: var(--subtle-fg);
+	}
+}
+
+.grid-body {
+	background-color: var(--subtle-accent);
+	border-bottom-left-radius: var(--radius);
+	border-bottom-right-radius: var(--radius);
+	margin-bottom: -1px; // double bottom border
+
+	.col:last-child {
+		border: none;
+		background-color: var(--fg-color);
+	}
+
+	.btn-open-row {
+		line-height: unset;
+
+		div {
+			margin-left: var(--margin-xs);
+		}
+	}
+
+	.editable-row {
+		// TODO: Dark and Light Mode
+		--control-bg: var(--neutral);
+		--input-disabled-bg: var(--gray-50);
+
+		.grid-static-col {
+			padding: 0px !important;
+		}
+
+		.grid-static-col.row-index {
+			padding: var(--grid-padding) !important;
+		}
+
+		// Button: same cell padding as idle rows — .grid-static-col padding is 0 above for editable rows,
+		// which shifts Button controls up versus the Document Type column.
+		.grid-static-col[data-fieldtype="Button"] {
+			padding: var(--grid-padding) !important;
+			// editable-row sets --control-bg to neutral (white); keep btn-default gray like idle rows.
+			--control-bg: var(--btn-default-bg);
+		}
+
+		.frappe-control[data-fieldtype="Select"].form-group .select-icon {
+			top: 9px;
+		}
+
+		.checkbox {
+			margin: 0px;
+			text-align: center;
+			margin-top: var(--padding-sm);
+		}
+
+		textarea {
+			height: 43px !important;
+		}
+
+		.form-control,
+		.ql-editor {
+			border-radius: 0px;
+			border: 0px;
+			padding-top: 10px;
+			padding-bottom: calc(var(--padding-md) - 3px);
+			height: auto;
+		}
+
+		.link-btn {
+			background-color: var(--bg-color);
+			height: calc(100% - 4px);
+			margin-top: 2px;
+		}
+
+		.form-control:focus,
+		.es-combobox:focus-visible,
+		.es-combobox:focus-within,
+		.es-combobox[data-state="open"] {
+			border-color: $text-muted;
+			box-shadow: inset 0px 0px 0 2px rgba(124, 124, 124, 0.25);
+		}
+
+		// Drop the clippable error border; the box-shadow above is the indicator.
+		.has-error input.form-control {
+			border: 0 !important;
+		}
+
+		// Combobox Link cell: match the flat .form-control cell above
+		.es-combobox {
+			height: auto;
+			padding: 10px 8px 12px;
+			line-height: 21px;
+			border-radius: 0;
+
+			// the trigger takes its height from the input here, so give it the line
+			> .es-combobox__value {
+				height: 21px;
+			}
+		}
+
+		// the outline is drawn outside the cell, where neighbouring cells hide it
+		.es-combobox:focus-visible,
+		.es-combobox:focus-within,
+		.es-combobox[data-state="open"] {
+			outline: none;
+		}
+
+		.es-combobox:not(:hover):not(:focus-within):not([data-state="open"])
+			.es-combobox__chevron {
+			display: none;
+		}
+
+		input.form-control.invalid {
+			background-color: var(--error-bg);
+		}
+
+		.es-combobox:has(.es-combobox__value.invalid) {
+			background-color: var(--error-bg);
+		}
+
+		.col:last-child {
+			.field-area {
+				flex: 1;
+				min-width: 0;
+			}
+
+			.field-area .form-control:disabled {
+				background-color: transparent;
+				width: auto;
+			}
+		}
+
+		input[data-fieldtype="Int"],
+		input[data-fieldtype="Float"],
+		input[data-fieldtype="Currency"] {
+			text-align: right;
+		}
+	}
+
+	.grid-static-col[data-fieldtype="Button"] {
+		display: flex;
+		align-items: center;
+
+		.field-area {
+			margin-top: 0;
+			margin-left: var(--margin-xs);
+			display: flex;
+			align-items: center;
+		}
+	}
+
+	.grid-static-col[data-fieldtype="Check"] .static-area {
+		padding-top: 4px;
+		margin-bottom: -4px;
+	}
+
+	.grid-static-col[data-fieldtype="Rating"] .field-area {
+		margin-top: 0.6rem;
+		margin-left: 0.5rem;
+	}
+
+	.grid-static-col[data-fieldtype="Code"],
+	.grid-static-col[data-fieldtype="HTML Editor"] {
+		overflow: hidden;
+
+		.static-area {
+			margin-top: calc(-1 * var(--margin-xs));
+
+			pre {
+				background: none;
+				border: none;
+			}
+		}
+	}
+
+	.grid-static-col[data-fieldtype="Text Editor"] {
+		overflow: hidden;
+		margin: 0 !important;
+
+		.ql-editor {
+			overflow-y: auto !important;
+			min-height: 0 !important;
+			max-height: unset !important;
+			line-height: 1.3 !important;
+		}
+	}
+
+	.grid-static-col {
+		background-color: var(--fg-color);
+
+		&.sticky-grid-col {
+			position: sticky;
+			z-index: 1;
+		}
+	}
+
+	// check if the awesomplete dropdown is hidden
+	.grid-static-col:has(.awesomplete > ul:not([hidden])) {
+		z-index: 2;
+	}
+}
+
+@media (max-width: 767px) {
+	// lesser padding for controls
+	.editable-row .frappe-control {
+		padding-top: 0px !important;
+		padding-bottom: 0px !important;
+		margin-left: -1px !important;
+		margin-right: -1px !important;
+	}
+}
+
+.row-data > .row {
+	margin-left: var(--margin-md);
+}
+
+.grid-row {
+	border-bottom: 1px solid var(--table-border-color);
+	background-color: var(--fg-color);
+
+	@include transition(0.2s);
+
+	td {
+		vertical-align: top;
+	}
+
+	p {
+		margin-bottom: var(--margin-xs);
+	}
+
+	.frappe-control {
+		margin-bottom: 0px !important;
+		position: relative;
+	}
+
+	.col-sm-6 {
+		.editor-toolbar-text-group,
+		.editor-toolbar-align-group {
+			display: none;
+		}
+	}
+
+	.editable-row {
+		.markdown-container {
+			position: relative;
+			z-index: 1;
+		}
+	}
+
+	.grid-currency-input {
+		position: relative;
+		display: flex;
+		align-items: center;
+		width: 100%;
+	}
+
+	.grid-currency-prefix,
+	.grid-currency-suffix {
+		position: absolute;
+		color: var(--text-muted);
+		pointer-events: none;
+		z-index: 2;
+		display: none;
+	}
+
+	.grid-currency-prefix {
+		left: 8px;
+	}
+
+	.grid-currency-suffix {
+		right: 8px;
+	}
+
+	// for left aligned currency symbol
+	.grid-currency-input.grid-currency-has-value:not(.grid-currency-symbol-right) .form-control {
+		padding-left: calc(12px + var(--grid-currency-symbol-width, 1em));
+		position: relative;
+		z-index: 1;
+		text-align: left;
+	}
+
+	// for right aligned currency symbol
+	.grid-currency-input.grid-currency-has-value.grid-currency-symbol-right .form-control {
+		padding-right: calc(12px + var(--grid-currency-symbol-width, 1em));
+		position: relative;
+		z-index: 1;
+	}
+
+	.grid-currency-input.grid-currency-has-value .grid-currency-prefix,
+	.grid-currency-input.grid-currency-has-value .grid-currency-suffix {
+		display: block;
+	}
+}
+
+@mixin base-grid() {
+	background-color: var(--modal-bg);
+	position: relative;
+	transition: opacity 0.2s ease;
+}
+
+.form-in-grid {
+	overflow: hidden;
+	height: 0;
+	opacity: 0;
+	// Over the desk's fixed chrome (the dock, the sidebar's edge, scroll-to-top: 1020-1030) and
+	// under a dialog's backdrop (1040), so a dialog opened from the row still covers it.
+	z-index: 1039;
+	border-radius: var(--radius-md);
+	@include base-grid();
+
+	.panel-title {
+		line-height: 1.8em;
+	}
+
+	.btn {
+		box-shadow: none;
+	}
+
+	.form-section {
+		padding: var(--padding-md);
+
+		&:not(:first-child) {
+			border-top: 1px solid var(--border-color);
+		}
+
+		.section-head {
+			padding: 0;
+			@include get_textstyle("lg", "medium");
+		}
+
+		.form-column:first-child {
+			padding-left: 0;
+		}
+	}
+}
+
+#freeze.grid-form {
+	z-index: 1038;
+	background-color: var(--gray-800);
+
+	.freeze-message-container {
+		background-color: transparent;
+	}
+}
+
+.recorder-form-in-grid {
+	z-index: 0;
+	@include base-grid();
+}
+
+.grid-row-open .form-in-grid {
+	opacity: 1;
+	height: auto;
+	overflow: auto;
+	margin: auto;
+	padding: var(--padding-sm) var(--padding-md);
+	position: fixed;
+	top: 5%;
+	left: 50%;
+	transform: translate(-50%, 0%);
+	width: 80%;
+
+	body:not(.full-width) & {
+		max-width: var(--page-max-width);
+	}
+
+	.grid-form-body {
+		max-height: 80vh;
+		overflow: auto;
+	}
+
+	// Tabs styling for child table grid row forms
+	.form-tabs-list {
+		position: relative;
+		margin-bottom: var(--margin-sm);
+		background-color: var(--card-bg);
+		border-bottom: 1px solid var(--border-color);
+
+		.form-tabs {
+			display: flex;
+			flex-wrap: nowrap;
+			overflow-x: auto;
+			padding: 0 var(--padding-sm);
+			margin: 0;
+			list-style: none;
+
+			.nav-item {
+				flex-shrink: 0;
+
+				&.hide {
+					display: none !important;
+				}
+
+				.nav-link {
+					padding: var(--padding-sm) var(--padding-md);
+					color: var(--text-muted);
+					border: none;
+					background: none;
+					white-space: nowrap;
+					cursor: pointer;
+					border-bottom: 2px solid transparent;
+
+					&:hover {
+						color: var(--text-color);
+					}
+
+					&.active {
+						color: var(--primary);
+						font-weight: 600;
+						border-bottom-color: var(--primary);
+					}
+				}
+			}
+		}
+	}
+
+	.form-tab-content {
+		margin-top: 0;
+
+		> .tab-pane {
+			display: none;
+
+			&.show.active {
+				display: block;
+			}
+
+			// Tab Break creates a hidden empty section first; don't border the next section.
+			.empty-section + .form-section {
+				border-top: none;
+			}
+		}
+	}
+}
+
+.grid-form-heading {
+	padding: var(--padding-sm) var(--padding-md);
+	font-size: var(--text-xl);
+	font-weight: 600;
+	// border-bottom: 1px solid var(--border-color);
+}
+
+.grid-form-body {
+	.form-area.scrollable {
+		max-height: calc(100vh - 3.5rem);
+		overflow-y: auto;
+	}
+}
+
+.grid-header-toolbar {
+	display: flex;
+	justify-content: space-between;
+
+	.row-actions {
+		button:not(:last-child) {
+			margin-left: var(--margin-xs);
+			margin-bottom: var(--margin-xs);
+		}
+	}
+}
+
+.grid-buttons,
+.grid-bulk-actions {
+	display: inline-flex;
+}
+
+.grid-custom-buttons:empty {
+	padding: 0;
+}
+
+.grid-footer,
+.grid-custom-buttons {
+	padding: var(--padding-sm) 0px;
+	background-color: var(--fg-color);
+
+	.btn {
+		box-shadow: none;
+		margin-top: -3px;
+		margin-bottom: -3px;
+	}
+
+	.btn:not(:last-child),
+	.es-button:not(:last-child) {
+		margin-right: 4px;
+	}
+}
+
+.grid-pagination {
+	padding: 0;
+	display: flex;
+	align-items: center;
+
+	.last-page {
+		margin-left: 5px;
+	}
+}
+
+.page-text {
+	display: inline-block;
+	cursor: default;
+	margin-right: 6px;
+}
+
+.current-page-number {
+	width: 16px;
+	text-align: center;
+	border: none;
+	cursor: text;
+
+	&:focus {
+		outline: none;
+	}
+}
+
+.prev-page {
+	margin-left: var(--margin-xs);
+	text-decoration: none;
+}
+
+.next-page {
+	margin-right: var(--margin-xs);
+	text-decoration: none;
+}
+
+.page-number {
+	background-color: var(--fg-color);
+	padding: 0 3px;
+}
+
+.grid-footer-toolbar {
+	padding: var(--padding-md) var(--padding-sm) var(--padding-xs) var(--padding-sm);
+
+	button {
+		margin-left: var(--margin-xs);
+	}
+}
+
+.grid-overflow-no-ellipsis {
+	word-wrap: break-word;
+	overflow: hidden;
+	padding-right: 0px;
+}
+
+.grid-overflow-ellipsis {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	padding-right: 0px;
+}
+
+.grid-label {
+	margin-right: 8px;
+	margin-bottom: 4px;
+}
+
+.form-grid-container {
+	position: relative;
+	overflow-x: auto;
+	width: 100%;
+}
+
+.form-grid-container:has(.grid-row.grid-row-open) {
+	overflow-x: clip;
+	white-space: normal;
+	overflow-y: unset;
+
+	.form-grid {
+		left: 0px !important;
+	}
+}
+
+.sortable-handle span {
+	width: 31px;
+	display: block;
+}
+
+.data-row.row {
+	flex-wrap: nowrap;
+	// Grow to the columns' total width when they overflow, so sticky columns can
+	// pin across the full row (a sticky cell is clamped to its containing block).
+	// Stay full-width — last column grows — when the columns fit.
+	width: max-content;
+	min-width: 100%;
+}
+// Last data column grows to fill spare width (widths are inline px from make_column).
+.grid-static-col.grid-data-last {
+	flex-grow: 1 !important;
+}
+
+.form-grid {
+	// Pin action and index columns so wide grids stay usable.
+	// :not(.grid-data-last) excludes the case where the last column is data field (table in a dialog)
+	.grid-row > .row .col:last-child:not(.grid-data-last),
+	.grid-row > .dialog-assignment-row .col:first-child,
+	.grid-row > .dialog-assignment-row .col:last-child {
+		max-width: 30px;
+		min-width: 30px;
+		position: sticky;
+		right: 0;
+		z-index: 1;
+		line-height: 1;
+	}
+	.grid-row > .row .col:nth-child(2),
+	.grid-row > .dialog-assignment-row .col:nth-child(2) {
+		max-width: 40px;
+		min-width: 40px;
+	}
+}
+
+.sticky-col-container {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+
+// Positioning context for the resize handle; scoped to data columns only.
+.grid-heading-row .grid-static-col[data-fieldname]:not(.sticky-grid-col) {
+	position: relative;
+}
+
+.grid-col-resize-handle {
+	position: absolute;
+	inset-inline-end: -3px;
+	top: 0;
+	bottom: 0;
+	width: 7px;
+	z-index: 2;
+	cursor: col-resize;
+	user-select: none;
+
+	// Invisible at rest (the column border is the separator); a soft gray edge on hover.
+	&::before {
+		content: "";
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		inset-inline-end: 3px;
+		width: 2px;
+		background-color: var(--gray-400);
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+
+	&:hover::before {
+		opacity: 0.6;
+	}
+}
+
+body.grid-col-resizing {
+	cursor: col-resize;
+	user-select: none;
+}
+
+@media (max-width: map-get($grid-breakpoints, "md")) {
+	.form-column.col-sm-6 .form-grid {
+		.row-index {
+			display: block;
+		}
+	}
+}
+
+@media (max-width: map-get($grid-breakpoints, "sm")) {
+	.form-in-grid .form-section .form-column {
+		padding-left: 0 !important;
+		padding-right: 0 !important;
+	}
+}
+
+.grid-import-panel .file-preview-container + .justify-content-end {
+	display: none;
+}
+
+.grid-import-file-pane .file-size,
+.grid-import-file-pane .config-area {
+	display: none;
+}
+
+.grid-import-file-pane .file-preview-container .file-preview-outline {
+	border-color: var(--border-color);
+	border-radius: var(--radius);
+}
+
+.grid-import-upload-pane {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.grid-import-file-pane > .file-uploader {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.grid-import-file-pane > .file-uploader .file-upload-area {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.grid-import-file-pane > .file-uploader .file-browser {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.grid-import-file-pane > .file-uploader .file-browser-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	height: auto;
+	display: flex;
+	flex-direction: column;
+	overflow: visible;
+	margin-top: var(--padding-xs);
+}
+
+.grid-import-file-pane > .file-uploader .file-browser-list .tree {
+	flex: 1 1 auto;
+	min-height: 0;
+	height: auto;
+	padding-bottom: 0;
+}
+
+.grid-import-step-panel {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow-y: clip;
+}
+
+.grid-import-upload-tabs {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.grid-import-upload-tabs > .es-tabs__list {
+	flex-shrink: 0;
+}
+
+.grid-import-upload-tabs > .es-tabs__panel {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.grid-import-type .form-section > .section-body:first-child {
+	padding-top: 0;
+}
+
+.grid-import-type .form-group {
+	margin-bottom: 0;
+}
+
+.grid-import-step-panel .form-section > .section-body {
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+.grid-import-step-panel .form-group.frappe-control:last-child {
+	margin-bottom: 0;
+}
+
+.grid-import-dialog .grid-import-panel .grid-import-fill {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.modal-dialog.grid-import-dialog {
+	.modal-content {
+		height: min(85vh, calc(var(--spacing) * 144));
+		display: flex;
+		flex-direction: column;
+	}
+
+	.modal-body {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: clip;
+	}
+}
+
+.grid-import-body {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.grid-import-preview-head-actions {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--spacing) * 2);
+	flex: 0 0 auto;
+}
+
+.grid-import-preview-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: calc(var(--spacing) * 4);
+	margin-bottom: calc(var(--spacing) * 2);
+}
+
+.grid-import-footer-message {
+	align-self: center;
+	max-width: 60ch;
+}
+
+.grid-import-preview-hint {
+	margin-bottom: calc(var(--spacing) * 1);
+}
+
+.grid-import-preview-table {
+	--grid-import-row-height: calc(var(--spacing) * 11);
+	flex: 1 1 auto;
+	overflow: auto;
+	min-height: 0;
+
+	table {
+		margin: 0;
+		border-collapse: separate;
+		border-spacing: 0;
+	}
+
+	th,
+	td {
+		border-top-width: 0;
+		border-left-width: 0;
+	}
+}
+
+.grid-import-preview-row {
+	width: 1%;
+	white-space: nowrap;
+	color: var(--ink-gray-6);
+	text-align: center;
+}
+
+.grid-import-skip-cell {
+	width: 1%;
+	white-space: nowrap;
+	text-align: center;
+	vertical-align: middle;
+	position: sticky;
+	left: 0;
+	z-index: 1;
+	background-color: var(--fg-color);
+}
+
+.grid-import-skipped-row td:not(.grid-import-skip-cell) {
+	opacity: 0.5;
+}
+
+.grid-import-preview-table thead th {
+	vertical-align: top;
+	font-weight: var(--font-weight-semibold);
+	color: var(--ink-gray-8);
+}
+
+.grid-import-preview-table th[data-col] {
+	min-width: calc(var(--spacing) * 45);
+
+	&::before {
+		content: "";
+		display: inline-block;
+		vertical-align: middle;
+		width: calc(var(--spacing) * 1.5);
+		height: calc(var(--spacing) * 1.5);
+		margin-inline-end: calc(var(--spacing) * 2);
+		border-radius: 50%;
+		background: var(--surface-gray-3);
+	}
+
+	&[data-mapped="1"]::before {
+		background: var(--ink-green-6);
+	}
+
+	&.has-error::before {
+		background: var(--ink-red-6);
+	}
+}
+
+.grid-import-preview-table td[data-mapped="0"] {
+	color: var(--ink-gray-6);
+}
+
+.grid-import-preview-table td[data-col] .frappe-control {
+	margin-bottom: 0;
+}
+
+.grid-import-preview-table tbody td {
+	height: var(--grid-import-row-height);
+}
+
+.grid-import-preview-table tr[data-row] {
+	--control-bg: var(--neutral);
+
+	.form-control {
+		border: 1px solid var(--border-color);
+	}
+
+	.has-error .form-control {
+		border-color: var(--error-border);
+	}
+}
+
+.grid-import-preview-table tbody tr[data-row] td {
+	padding: 0 calc(var(--spacing) * 2);
+	vertical-align: middle;
+}

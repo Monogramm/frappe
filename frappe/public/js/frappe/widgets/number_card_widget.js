@@ -11,6 +11,7 @@ export default class NumberCardWidget extends Widget {
 	get_config() {
 		return {
 			name: this.name,
+			number_card_name: this.number_card_name,
 			label: this.label,
 			color: this.color,
 			hidden: this.hidden,
@@ -26,12 +27,8 @@ export default class NumberCardWidget extends Widget {
 		this.make_card();
 	}
 
-	set_title() {
-		$(this.title_field).html(`<div class="number-label">${this.card_doc.label}</div>`);
-	}
-
 	make_card() {
-		frappe.model.with_doc('Number Card', this.name).then(card => {
+		frappe.model.with_doc("Number Card", this.number_card_name || this.name).then((card) => {
 			if (!card) {
 				if (this.document_type) {
 					frappe.run_serially([
@@ -45,6 +42,7 @@ export default class NumberCardWidget extends Widget {
 				}
 			} else {
 				this.card_doc = card;
+				this.island = card.__onload?.island;
 				this.render_card();
 			}
 
@@ -54,124 +52,163 @@ export default class NumberCardWidget extends Widget {
 
 	create_number_card() {
 		this.set_doc_args();
-		return frappe.xcall(
-			'frappe.desk.doctype.number_card.number_card.create_number_card',
-			{
-				'args': this.card_doc
-			}
-		).then(doc => {
-			this.name = doc.name;
-			this.card_doc = doc;
-			this.widget.attr('data-widget-name', this.name);
-		});
+		return frappe
+			.xcall("frappe.desk.doctype.number_card.number_card.create_number_card", {
+				args: this.card_doc,
+			})
+			.then((doc) => {
+				this.name = doc.name;
+				this.card_doc = doc;
+				this.widget.attr("data-widget-name", this.name);
+			});
 	}
 
 	set_events() {
+		// An island handles its own clicks. The list route belongs to desk's number.
+		this.widget.toggleClass("number-widget-island", Boolean(this.island));
 		$(this.body).click(() => {
-			if (this.in_customize_mode || this.card_doc.type == 'Custom') return;
+			if (this.in_customize_mode || this.island) return;
 			this.set_route();
 		});
 	}
 
 	set_route() {
-		const is_document_type = this.card_doc.type !== 'Report';
+		if (this.card_doc.type === "Custom") {
+			this.set_route_for_custom_card();
+			return;
+		}
+
+		const is_document_type = this.card_doc.type !== "Report";
 		const name = is_document_type ? this.card_doc.document_type : this.card_doc.report_name;
 		const route = frappe.utils.generate_route({
 			name: name,
-			type: is_document_type ? 'doctype' : 'report',
+			type: is_document_type ? "doctype" : "report",
 			is_query_report: !is_document_type,
 		});
-
+		const filters = this.get_filters();
 		if (is_document_type) {
-			const filters = JSON.parse(this.card_doc.filters_json);
 			frappe.route_options = filters.reduce((acc, filter) => {
-				return Object.assign(acc, {
-					[`${filter[0]}.${filter[1]}`]: [filter[2], filter[3]]
-				});
+				const field = filter[1];
+				const value = [filter[2], filter[3]];
+
+				// if we have multiple filters for the same field,
+				// we convert it into an array
+				if (acc[field]) {
+					acc[field].push(value);
+				} else {
+					acc[field] = [value];
+				}
+
+				return acc;
 			}, {});
+		} else {
+			if (filters && Object.keys(filters).length) {
+				frappe.route_options = filters;
+			}
 		}
 
 		frappe.set_route(route);
 	}
 
+	set_route_for_custom_card() {
+		if (!this.data?.route) return;
+
+		if (this.data.route_options) {
+			frappe.route_options = this.data.route_options;
+		}
+
+		frappe.set_route(this.data.route);
+	}
+
 	set_doc_args() {
-		this.card_doc = Object.assign({}, {
-			document_type: this.document_type,
-			label: this.label,
-			function: this.function,
-			aggregate_function_based_on: this.aggregate_function_based_on,
-			color: this.color,
-			filters_json: this.stats_filter
-		});
+		this.card_doc = Object.assign(
+			{},
+			{
+				document_type: this.document_type,
+				label: this.label,
+				function: this.function,
+				aggregate_function_based_on: this.aggregate_function_based_on,
+				color: this.color,
+				filters_json: this.stats_filter,
+			}
+		);
 	}
 
 	get_settings(type) {
 		this.filters = this.get_filters();
 		const settings_map = {
-			'Custom': {
+			Custom: {
 				method: this.card_doc.method,
 				args: {
-					filters: this.filters
+					filters: this.filters,
 				},
-				get_number: res => this.get_number_for_custom_card(res),
+				get_number: (res) => this.get_number_for_custom_card(res),
 			},
-			'Report': {
-				method: 'frappe.desk.query_report.run',
+			Report: {
+				method: "frappe.desk.query_report.run",
 				args: {
 					report_name: this.card_doc.report_name,
 					filters: this.filters,
-					ignore_prepared_report: 1
+					ignore_prepared_report: 1,
 				},
-				get_number: res => this.get_number_for_report_card(res),
+				get_number: (res) => this.get_number_for_report_card(res),
 			},
-			'Document Type': {
-				method: 'frappe.desk.doctype.number_card.number_card.get_result',
+			"Document Type": {
+				method: "frappe.desk.doctype.number_card.number_card.get_result",
 				args: {
 					doc: this.card_doc,
 					filters: this.filters,
 				},
-				get_number: res => this.get_number_for_doctype_card(res),
-			}
+				get_number: (res) => this.get_number_for_doctype_card(res),
+			},
 		};
 		return settings_map[type];
 	}
 
 	get_filters() {
-		const filters = frappe.dashboard_utils.get_all_filters(this.card_doc);
-		return filters;
+		return frappe.dashboard_utils.get_all_filters(this.card_doc);
 	}
 
-	render_card() {
-		this.prepare_actions();
+	async render_card() {
+		// The card may have been claimed or released since it last drew.
+		this.unmount_island();
 		this.set_title();
+		this.card_doc?.background_color &&
+			this.widget.css("background-color", this.card_doc.background_color);
+		if (this.island) return this.make_island();
+
+		this.prepare_actions();
 		this.set_loading_state();
 
 		if (!this.card_doc.type) {
-			this.card_doc.type = 'Document Type';
+			this.card_doc.type = "Document Type";
 		}
 
 		this.settings = this.get_settings(this.card_doc.type);
+		await this.get_data();
 
-		frappe.run_serially([
-			() => this.render_number(),
-			() => this.render_stats(),
-		]);
+		this.render_number();
+		this.render_stats();
 	}
 
 	set_loading_state() {
+		if (!this.is_classic) {
+			this.draw_number({ value: null, loading: true });
+			return;
+		}
+
 		$(this.body).html(`<div class="number-card-loading text-muted">
-			${__('Loading...')}
+			${__("Loading...")}
 		</div>`);
 	}
 
-	get_number() {
-		return frappe.xcall(this.settings.method, this.settings.args).then(res => {
-			return this.settings.get_number(res);
-		});
+	async get_data() {
+		this.data = await frappe.xcall(this.settings.method, this.settings.args);
+		return this.settings.get_number(this.data);
 	}
 
 	get_number_for_custom_card(res) {
-		if (typeof res === 'object') {
+		if (typeof res === "object") {
 			this.number = res.value;
 			this.set_formatted_number(res);
 		} else {
@@ -181,10 +218,12 @@ export default class NumberCardWidget extends Widget {
 
 	get_number_for_doctype_card(res) {
 		this.number = res;
-		if (this.card_doc.function !== 'Count') {
+		if (this.card_doc.function !== "Count") {
 			return frappe.model.with_doctype(this.card_doc.document_type, () => {
-				const based_on_df =
-					frappe.meta.get_docfield(this.card_doc.document_type, this.card_doc.aggregate_function_based_on);
+				const based_on_df = frappe.meta.get_docfield(
+					this.card_doc.document_type,
+					this.card_doc.aggregate_function_based_on
+				);
 				this.set_formatted_number(based_on_df);
 			});
 		} else {
@@ -198,143 +237,296 @@ export default class NumberCardWidget extends Widget {
 			col[field] && acc.push(col[field]);
 			return acc;
 		}, []);
-		const col = res.columns.find(col => col.fieldname == field);
+		const col = res.columns.find((col) => col.fieldname == field);
 		this.number = frappe.report_utils.get_result_of_fn(this.card_doc.report_function, vals);
-		this.set_formatted_number(col);
+		this.set_formatted_number(col, this._generate_common_doc(res.result));
 	}
 
-	set_formatted_number(df) {
-		const default_country = frappe.sys_defaults.country;
-		const shortened_number = frappe.utils.shorten_number(this.number, default_country, 5);
-		let number_parts = shortened_number.split(' ');
-
-		const symbol = number_parts[1] || '';
-		const formatted_number = $(frappe.format(number_parts[0], df)).text();
-
-		this.formatted_number = formatted_number + ' ' + symbol;
-	}
-
-	render_number() {
-		return this.get_number().then(() => {
-			$(this.body).html(`<div class="widget-content">
-				<div class="number" style="color:${this.card_doc.color}">${this.formatted_number}</div>
-				</div>`);
-		});
-	}
-
-	render_stats() {
-		if (this.card_doc.type !== 'Document Type') {
+	set_formatted_number(df, doc) {
+		if (this.number === null || isNaN(this.number)) {
+			this.formatted_number = __("N/A", null, "Number not available");
 			return;
 		}
 
-		let caret_html = '';
-		let color_class = '';
+		const default_country = frappe.sys_defaults.country;
 
-		return this.get_percentage_stats().then(() => {
-			if (this.percentage_stat == 0 || this.percentage_stat == undefined) {
-				color_class = 'grey-stat';
-			} else if (this.percentage_stat > 0) {
-				caret_html =
-					`<span class="indicator-pill-round green">
-						${frappe.utils.icon('arrow-up-right', 'xs')}
-					</span>`;
-				color_class = 'green-stat';
-			} else {
-				caret_html =
-					`<span class="indicator-pill-round red">
-						${frappe.utils.icon('arrow-down-left', 'xs')}
-					</span>`;
-				color_class = 'red-stat';
+		let number_parts;
+
+		// Use full number if the checkbox is enabled
+		if (this.card_doc.show_full_number) {
+			number_parts = [this.number.toString(), ""];
+		} else {
+			const shortened_number = frappe.utils.shorten_number(this.number, default_country, 5);
+			number_parts = shortened_number.split(" ");
+		}
+		const symbol = number_parts[1] || "";
+		// done to add multicurrency support in number card
+		if (this.card_doc.currency) {
+			this.formatted_number =
+				format_currency(parseFloat(number_parts[0]), this.card_doc.currency) +
+				(symbol ? " " + symbol : "");
+			return;
+		}
+
+		number_parts[0] = window.convert_old_to_new_number_format(number_parts[0]);
+		const formatted_number = frappe.format(number_parts[0], df, null, doc);
+		this.formatted_number =
+			($(formatted_number).text() || formatted_number) + (symbol ? " " + symbol : "");
+	}
+
+	_generate_common_doc(rows) {
+		if (!rows || !rows.length) return {};
+		// init with first doc, for each other doc if values are common then keep else discard
+		// Whatever is left should be same in all objects
+		const common_doc = Object.assign({}, rows[0]);
+		rows.forEach((row) => {
+			if (Array.isArray(row)) return; // totals row
+
+			for (const [key, value] of Object.entries(common_doc)) {
+				if (value !== row[key]) {
+					delete common_doc[key];
+				}
+			}
+		});
+		return common_doc;
+	}
+
+	get is_classic() {
+		return frappe.ui.chart.is_classic({ type: "number" });
+	}
+
+	draw_number(config) {
+		// the card's data can arrive after the dashboard removed it
+		if (this.destroyed) return;
+		const card = { type: "number", title: "", card: false, ...config };
+		if (this.number_chart) {
+			this.number_chart.update(card);
+		} else {
+			this.number_chart = frappe.ui.chart(this.body, card);
+		}
+	}
+
+	// The number as the classic card prints it, with the whole field and the doc it reads.
+	get_number_config() {
+		return { value: String(this.formatted_number), color: this.card_doc.color || undefined };
+	}
+
+	destroy() {
+		this.destroyed = true;
+		this.release_number_chart();
+		this.unmount_island();
+	}
+
+	release_number_chart() {
+		this.number_chart?.destroy();
+		delete this.number_chart;
+	}
+
+	/**
+	 * Draws a card an app owns. Desk keeps the frame, which is the title and the
+	 * actions, as the chart widget does. The island owns the body alone.
+	 */
+	make_island() {
+		// The document loads after a round trip, by which time the page may have dropped the card.
+		if (this.destroyed) return;
+
+		this.prepare_island_actions([]);
+
+		// The number chart lives on the body, so it goes before the body does.
+		this.release_number_chart();
+		const body = $(`<div class="number-card-island"></div>`);
+		$(this.body).empty().append(body);
+
+		this.island_handle = frappe.ui.mount_island(this.island.name, body, {
+			...this.island.props,
+			onActions: (actions) => this.prepare_island_actions(actions),
+		});
+		this.island_handle.ready.catch((error) => this.show_island_error(error));
+	}
+
+	// the error names a build step: console always, screen only in developer mode
+	show_island_error(error) {
+		console.error(`could not mount the "${this.island.name}" island`, error);
+
+		$(this.body)
+			.empty()
+			.append(
+				frappe.ui.empty_state({
+					icon: "package",
+					title: __("This card has not been built"),
+					description: frappe.boot.developer_mode
+						? error.message
+						: __("Its assets are missing. Build the app that ships it."),
+				})
+			);
+	}
+
+	/**
+	 * The island's own actions, then Edit. Desk's Refresh fetches the number desk
+	 * draws, so the island reports Refresh itself if it means anything to it.
+	 *
+	 * @param {{ label: string, onClick?: Function, href?: string }[]} actions
+	 */
+	prepare_island_actions(actions) {
+		if (this.in_customize_mode) return;
+
+		this.set_card_actions([
+			...(actions || []).map((action, i) => ({
+				label: frappe.utils.escape_html(action.label),
+				action: `island-action-${i}`,
+				handler: action.href
+					? () => window.open(action.href, "_blank")
+					: () => action.onClick(),
+			})),
+			this.edit_action(),
+		]);
+	}
+
+	/** Releases the island the body holds, if any. Safe to call at any time. */
+	unmount_island() {
+		this.island_handle?.unmount();
+		this.island_handle = null;
+	}
+
+	edit_action() {
+		return {
+			label: __("Edit"),
+			action: "action-edit",
+			handler: () => {
+				let number_card = this.number_card_name || this.name;
+				frappe.set_route("Form", "Number Card", number_card);
+			},
+		};
+	}
+
+	render_number() {
+		if (!this.is_classic) {
+			this.draw_number(this.get_number_config());
+			return;
+		}
+
+		const style_attr = this.card_doc.color ? `style="color: ${this.card_doc.color};"` : "";
+
+		$(this.body).html(`<div class="widget-content">
+			<div class="number" ${style_attr}>${this.formatted_number}</div>
+			</div>`);
+	}
+
+	render_stats() {
+		if (this.card_doc.type !== "Document Type" || !this.card_doc.show_percentage_stats) {
+			return;
+		}
+
+		let caret_html = "";
+		let color_class = "";
+
+		return this.get_percentage_stats().then((difference) => {
+			if (!this.is_classic) {
+				if (typeof difference !== "number") return;
+				this.draw_number({
+					...this.get_number_config(),
+					delta: difference,
+					deltaSuffix: "%",
+					deltaCaption: this.get_stats_caption(),
+				});
+				return;
 			}
 
-			const stats_qualifier_map = {
-				'Daily': __('since yesterday'),
-				'Weekly': __('since last week'),
-				'Monthly': __('since last month'),
-				'Yearly': __('since last year')
-			};
-			const stats_qualifier = stats_qualifier_map[this.card_doc.stats_time_interval];
+			if (this.percentage_stat == 0 || this.percentage_stat == undefined) {
+				color_class = "grey-stat";
+			} else if (this.percentage_stat > 0) {
+				caret_html = `<span class="indicator-pill-round green">
+						${frappe.utils.icon("arrow-up-right", "xs")}
+					</span>`;
+				color_class = "green-stat";
+			} else {
+				caret_html = `<span class="indicator-pill-round red">
+						${frappe.utils.icon("arrow-down-right", "xs")}
+					</span>`;
+				color_class = "red-stat";
+			}
 
-			let get_stat = () => {
+			const stats_qualifier = this.get_stats_caption();
+
+			let stat = (() => {
 				if (this.percentage_stat == undefined) return NaN;
-				const parts = this.percentage_stat.split(' ');
-				const symbol = parts[1] || '';
-				return Math.abs(parts[0]) + ' ' + symbol;
-			};
+				const parts = this.percentage_stat.split(" ");
+				const symbol = parts[1] || "";
+				return Math.abs(parts[0]) + " " + symbol;
+			})();
 
-			$(this.body).find('.widget-content').append(`<div class="card-stats ${color_class}">
+			// don't show stats if not valid number - skip showing `NaN %` in card
+			if (isNaN(stat)) return;
+
+			$(this.body).find(".widget-content").append(`<div class="card-stats ${color_class}">
 				<span class="percentage-stat-area">
-					${caret_html}
-					<span class="percentage-stat">
-						${get_stat()} %
-					</span>
-				</span>
-				<span class="stat-period text-muted">
-					${stats_qualifier}
+					${caret_html} ${stat} % ${stats_qualifier}
 				</span>
 			</div>`);
 		});
 	}
 
+	get_stats_caption() {
+		return {
+			Daily: __("since yesterday"),
+			Weekly: __("since last week"),
+			Monthly: __("since last month"),
+			Yearly: __("since last year"),
+		}[this.card_doc.stats_time_interval];
+	}
+
 	get_percentage_stats() {
-		return frappe.xcall('frappe.desk.doctype.number_card.number_card.get_percentage_difference', {
-			doc: this.card_doc,
-			filters: this.filters,
-			result: this.number
-		}).then(res => {
-			if (res !== undefined) {
-				this.percentage_stat = frappe.utils.shorten_number(res);
-			}
-		});
+		return frappe
+			.xcall("frappe.desk.doctype.number_card.number_card.get_percentage_difference", {
+				doc: this.card_doc,
+				filters: this.filters,
+				result: this.number,
+			})
+			.then((res) => {
+				if (res !== undefined) {
+					this.percentage_stat = frappe.utils.shorten_number(res);
+				}
+				return res;
+			});
 	}
 
 	prepare_actions() {
+		if (this.in_customize_mode) return;
+
 		let actions = [
 			{
-				label: __('Refresh'),
-				action: 'action-refresh',
+				label: __("Refresh"),
+				action: "action-refresh",
 				handler: () => {
 					this.render_card();
-				}
+				},
 			},
-			{
-				label: __('Edit'),
-				action: 'action-edit',
-				handler: () => {
-					frappe.set_route(
-						'Form',
-						'Number Card',
-						this.name
-					);
-				}
-			},
+			this.edit_action(),
 		];
 
 		this.set_card_actions(actions);
 	}
 
 	set_card_actions(actions) {
-		/* eslint-disable indent */
-		this.card_actions =
-			$(`<div class="card-actions dropdown pull-right">
+		this.card_actions = $(`<div class="card-actions dropdown pull-right">
 				<a data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
 				...
 				</a>
 				<ul class="dropdown-menu" style="max-height: 300px; overflow-y: auto;">
 					${actions
 						.map(
-							action =>
+							(action) =>
 								`<li class="dropdown-item">
 									<a data-action="${action.action}">${action.label}</a>
 								</li>`
-						).join('')}
+						)
+						.join("")}
 				</ul>
 			</div>`);
-		/* eslint-disable indent */
 
 		this.card_actions.find("a[data-action]").each((i, o) => {
 			const action = o.dataset.action;
-			$(o).click(actions.find(a => a.action === action));
+			$(o).click(actions.find((a) => a.action === action));
 		});
 
 		this.action_area.html(this.card_actions);

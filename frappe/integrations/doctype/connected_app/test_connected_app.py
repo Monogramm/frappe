@@ -1,58 +1,66 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2019, Frappe Technologies and contributors
-# See license.txt
-from __future__ import unicode_literals
-
-import unittest
-import requests
+# License: MIT. See LICENSE
+from unittest.mock import patch
 from urllib.parse import urljoin
 
+import requests
+
 import frappe
-from frappe.integrations.doctype.social_login_key.test_social_login_key import create_or_update_social_login_key
+from frappe.integrations.doctype.social_login_key.test_social_login_key import (
+	create_or_update_social_login_key,
+)
+from frappe.integrations.doctype.token_cache.token_cache import TokenCache
+from frappe.tests import IntegrationTestCase
+from frappe.tests.utils.test_capabilities import TestService, requires_test_service
 
 
 def get_user(usr, pwd):
-	user = frappe.new_doc('User')
+	user = frappe.new_doc("User")
 	user.email = usr
 	user.enabled = 1
 	user.first_name = "_Test"
 	user.new_password = pwd
 	user.roles = []
-	user.append('roles', {
-		'doctype': 'Has Role',
-		'parentfield': 'roles',
-		'role': 'System Manager'
-	})
+	user.append("roles", {"doctype": "Has Role", "parentfield": "roles", "role": "System Manager"})
 	user.insert()
 
 	return user
 
 
 def get_connected_app():
-	doctype = 'Connected App'
+	doctype = "Connected App"
 	connected_app = frappe.new_doc(doctype)
-	connected_app.provider_name = 'frappe'
+	connected_app.provider_name = "frappe"
 	connected_app.scopes = []
-	connected_app.append('scopes', {'scope': 'all'})
+	connected_app.append("scopes", {"scope": "all"})
 	connected_app.insert()
 
 	return connected_app
 
 
 def get_oauth_client():
-	oauth_client = frappe.new_doc('OAuth Client')
-	oauth_client.app_name = '_Test Connected App'
-	oauth_client.redirect_uris = 'to be replaced'
-	oauth_client.default_redirect_uri = 'to be replaced'
-	oauth_client.grant_type = 'Authorization Code'
-	oauth_client.response_type = 'Code'
+	oauth_client = frappe.new_doc("OAuth Client")
+	oauth_client.app_name = "_Test Connected App"
+	oauth_client.redirect_uris = "to be replaced"
+	oauth_client.default_redirect_uri = "to be replaced"
+	oauth_client.grant_type = "Authorization Code"
+	oauth_client.response_type = "Code"
 	oauth_client.skip_authorization = 1
+	oauth_client.token_endpoint_auth_method = "Client Secret Post"
 	oauth_client.insert()
 
 	return oauth_client
 
 
-class TestConnectedApp(unittest.TestCase):
+@requires_test_service(TestService.WEB_SERVER)
+class TestConnectedApp(IntegrationTestCase):
+	@staticmethod
+	def _start_fresh_database_write():
+		frappe.db.rollback()
+		if frappe.db.db_type == "sqlite":
+			# Acquire SQLite's one writer slot before validation reads can create a
+			# snapshot that an overlapping web request would invalidate.
+			frappe.db.sql("DELETE FROM `tabToken Cache` WHERE 1 = 0")
 
 	def setUp(self):
 		"""Set up a Connected App that connects to our own oAuth provider.
@@ -66,97 +74,196 @@ class TestConnectedApp(unittest.TestCase):
 		just endpoints) are stored in "Social Login Key" so we get them from
 		there.
 		"""
-		self.user_name = 'test-connected-app@example.com'
-		self.user_password = 'Eastern_43A1W'
+		self.user_name = "test-connected-app@example.com"
+		self.user_password = "Eastern_43A1W"
 
 		self.user = get_user(self.user_name, self.user_password)
 		self.connected_app = get_connected_app()
 		self.oauth_client = get_oauth_client()
 		social_login_key = create_or_update_social_login_key()
-		self.base_url = social_login_key.get('base_url')
+		self.base_url = social_login_key.get("base_url")
 
 		frappe.db.commit()
 		self.connected_app.reload()
 		self.oauth_client.reload()
 
-		redirect_uri = self.connected_app.get('redirect_uri')
-		self.oauth_client.update({
-			'redirect_uris': redirect_uri,
-			'default_redirect_uri': redirect_uri
-		})
+		redirect_uri = self.connected_app.get("redirect_uri")
+		self.oauth_client.update({"redirect_uris": redirect_uri, "default_redirect_uri": redirect_uri})
 		self.oauth_client.save()
 
-		self.connected_app.update({
-			'authorization_uri': urljoin(self.base_url, social_login_key.get('authorize_url')),
-			'client_id': self.oauth_client.get('client_id'),
-			'client_secret': self.oauth_client.get('client_secret'),
-			'token_uri': urljoin(self.base_url, social_login_key.get('access_token_url'))
-		})
+		self.connected_app.update(
+			{
+				"authorization_uri": urljoin(self.base_url, social_login_key.get("authorize_url")),
+				"client_id": self.oauth_client.get("client_id"),
+				"client_secret": self.oauth_client.get("client_secret"),
+				"token_uri": urljoin(self.base_url, social_login_key.get("access_token_url")),
+			}
+		)
 		self.connected_app.save()
 
 		frappe.db.commit()
 		self.connected_app.reload()
 		self.oauth_client.reload()
 
+	def complete_web_application_flow(self):
+		"""Simulate a logged in user who opens the authorization URL and store the token."""
+		with requests.Session() as session:
+			with session.get(
+				urljoin(self.base_url, "/api/method/login"),
+				params={"usr": self.user_name, "pwd": self.user_password},
+				timeout=30,
+			) as first_login:
+				self.assertEqual(first_login.status_code, 200)
+
+			self._start_fresh_database_write()
+			authorization_url = self.connected_app.initiate_web_application_flow(user=self.user_name)
+			# Save the committed Token Cache reference early so tearDown can remove
+			# it even when a following HTTP request fails.
+			self.token_cache = self.connected_app.get_token_cache(self.user_name)
+			# The callback runs in the web process and needs to update this row.
+			frappe.db.rollback()
+
+			with session.get(authorization_url, timeout=30) as auth_response:
+				self.assertEqual(auth_response.status_code, 200, auth_response.text)
+				callback_url = auth_response.url
+
+			with session.get(callback_url, timeout=30) as callback_response:
+				self.assertEqual(callback_response.status_code, 200)
+
+		frappe.db.rollback()
+		self.token_cache.reload()
+
 	def test_web_application_flow(self):
 		"""Simulate a logged in user who opens the authorization URL."""
-		def login():
-			return session.get(urljoin(self.base_url, '/api/method/login'), params={
-				'usr': self.user_name,
-				'pwd': self.user_password
-			})
+		self.complete_web_application_flow()
 
-		session = requests.Session()
-
-		# first login of a new user on a new site fails with "401 UNAUTHORIZED"
-		# when anybody fixes that, the two lines below can be removed
-		first_login = login()
-		self.assertEqual(first_login.status_code, 401)
-
-		second_login = login()
-		self.assertEqual(second_login.status_code, 200)
-
-		authorization_url = self.connected_app.initiate_web_application_flow(user=self.user_name)
-
-		auth_response = session.get(authorization_url)
-		self.assertEqual(auth_response.status_code, 200)
-
-		callback_response = session.get(auth_response.url)
-		self.assertEqual(callback_response.status_code, 200)
-
-		self.token_cache = self.connected_app.get_token_cache(self.user_name)
-		token = self.token_cache.get_password('access_token')
+		token = self.token_cache.get_password("access_token")
 		self.assertNotEqual(token, None)
 
-		oauth2_session = self.connected_app.get_oauth2_session(self.user_name)
-		resp = oauth2_session.get(urljoin(self.base_url, '/api/method/frappe.auth.get_logged_user'))
-		self.assertEqual(resp.json().get('message'), self.user_name)
+		with self.connected_app.get_oauth2_session(self.user_name) as oauth2_session:
+			frappe.db.rollback()
+			with oauth2_session.get(
+				urljoin(self.base_url, "/api/method/frappe.auth.get_logged_user"), timeout=30
+			) as response:
+				self.assertEqual(response.json().get("message"), self.user_name)
+
+	def test_concurrent_refresh_skips_redundant_call(self):
+		"""A refresh must be skipped if another worker already refreshed the token."""
+		self.complete_web_application_flow()
+
+		self._start_fresh_database_write()
+		self.token_cache.db_set("expires_in", -1)
+
+		# Stand in for a concurrent worker that refreshed first: the reload under the lock
+		# returns a token that is no longer expired.
+		original_reload = TokenCache.reload
+
+		def reload_as_fresh(token_cache, *args, **kwargs):
+			original_reload(token_cache, *args, **kwargs)
+			token_cache.expires_in = 3600
+			return token_cache
+
+		with (
+			patch.object(
+				self.connected_app, "get_oauth2_session", wraps=self.connected_app.get_oauth2_session
+			) as session_spy,
+			patch.object(TokenCache, "reload", reload_as_fresh),
+		):
+			self.connected_app.get_active_token(self.user_name)
+
+		session_spy.assert_not_called()
+
+	def test_get_openid_configuration_requires_write(self):
+		"""A caller must not be able to invoke get_openid_configuration on a
+		Connected App -- real or client-forged via run_doc_method -- without
+		write access to it, since the method fetches a field-supplied URL."""
+		from frappe.handler import run_doc_method
+
+		reader = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": f"{frappe.generate_hash()}@example.com",
+				"first_name": "Reader",
+				"send_welcome_email": 0,
+				"roles": [{"role": "All"}],
+			}
+		).insert(ignore_permissions=True)
+		self.addCleanup(lambda: frappe.delete_doc("User", reader.name, force=True, ignore_permissions=True))
+
+		previous_request = getattr(frappe.local, "request", None)
+
+		def restore_request():
+			if previous_request is None:
+				delattr(frappe.local, "request")
+			else:
+				frappe.local.request = previous_request
+
+		self.addCleanup(restore_request)
+		frappe.local.request = frappe._dict(method="GET")
+		docs = {
+			"doctype": "Connected App",
+			"name": self.connected_app.name,
+			"modified": str(self.connected_app.modified),
+		}
+
+		try:
+			frappe.set_user(reader.name)
+			self.assertTrue(frappe.has_permission("Connected App", "read"))
+			self.assertFalse(frappe.has_permission("Connected App", "write"))
+			self.assertRaises(frappe.PermissionError, run_doc_method, "get_openid_configuration", docs=docs)
+
+			# The __islocal trick must not downgrade this to a weaker check either.
+			forged_new = dict(docs, __islocal=1, openid_configuration="http://example.com")
+			self.assertRaises(
+				frappe.PermissionError, run_doc_method, "get_openid_configuration", docs=forged_new
+			)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_has_token_for_another_user_needs_their_email_account(self):
+		from frappe.integrations.doctype.connected_app.connected_app import has_token
+
+		reader = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": f"{frappe.generate_hash()}@example.com",
+				"first_name": "Reader",
+				"send_welcome_email": 0,
+				"roles": [{"role": "Inbox User"}],
+			}
+		).insert(ignore_permissions=True)
+		self.addCleanup(lambda: frappe.delete_doc("User", reader.name, force=True, ignore_permissions=True))
+
+		with self.set_user(reader.name):
+			self.assertFalse(has_token(self.connected_app.name))
+			self.assertRaises(frappe.PermissionError, has_token, self.connected_app.name, self.user_name)
 
 	def tearDown(self):
 		def delete_if_exists(attribute):
 			doc = getattr(self, attribute, None)
 			if doc:
-				doc.delete()
+				doc.delete(force=True)
 
-		delete_if_exists('token_cache')
-		delete_if_exists('connected_app')
+		self._start_fresh_database_write()
 
-		if getattr(self, 'oauth_client', None):
-			tokens = frappe.get_all('OAuth Bearer Token', filters={
-				'client': self.oauth_client.name
-			})
+		delete_if_exists("token_cache")
+		delete_if_exists("connected_app")
+
+		if getattr(self, "oauth_client", None):
+			tokens = frappe.get_all("OAuth Bearer Token", filters={"client": self.oauth_client.name})
 			for token in tokens:
-				doc = frappe.get_doc('OAuth Bearer Token', token.name)
+				doc = frappe.get_doc("OAuth Bearer Token", token.name)
 				doc.delete()
 
-			codes = frappe.get_all('OAuth Authorization Code', filters={
-				'client': self.oauth_client.name
-			})
+			codes = frappe.get_all("OAuth Authorization Code", filters={"client": self.oauth_client.name})
 			for code in codes:
-				doc = frappe.get_doc('OAuth Authorization Code', code.name)
+				doc = frappe.get_doc("OAuth Authorization Code", code.name)
 				doc.delete()
 
-		delete_if_exists('user')
-		delete_if_exists('oauth_client')
+		frappe.db.commit()
+
+		self._start_fresh_database_write()
+		delete_if_exists("user")
+		delete_if_exists("oauth_client")
 
 		frappe.db.commit()

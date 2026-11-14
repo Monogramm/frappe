@@ -3,7 +3,7 @@
 		{{ render_table(df, doc) }}
 	{%- elif df.fieldtype=="HTML" and df.options -%}
 		<div>{{ frappe.render_template(df.options, {"doc": doc}) or "" }}</div>
-	{%- elif df.fieldtype in ("Text", "Text Editor", "Code", "Long Text") -%}
+	{%- elif df.fieldtype in ("Text", "Code", "Long Text") -%}
 		{{ render_text_field(df, doc) }}
 	{%- elif df.fieldtype in ("Image", "Attach Image")
 		and (
@@ -14,7 +14,7 @@
 	{%- elif df.fieldtype=="Geolocation" -%}
 		{{ render_geolocation(df, doc) }}
 	{%- elif df.fieldtype=="Signature" -%}
-		{{ render_signature(df, doc) }}
+    	{{ render_field_with_label(df, doc, no_of_cols) }}
 	{%- elif df.fieldtype=="Currency" -%}
 		{%- if doc.print_templates and
 				doc.print_templates.get(df.fieldname) -%}
@@ -56,9 +56,9 @@
 							<td class="{{ get_align_class(tdf) }}" {{ fieldmeta(df) }}>
 							{% if doc.child_print_templates %}
 								{%- set child_templates = doc.child_print_templates.get(df.fieldname) -%}
-								<div class="value">{{ print_value(tdf, d, doc, visible_columns, child_templates) }}</div></td>
+								<div class="value">{{ _(print_value(tdf, d, doc, visible_columns, child_templates)) }}</div></td>
 							{% else %}
-								<div class="value">{{ print_value(tdf, d, doc, visible_columns) }}</div></td>
+								<div class="value">{{ _(print_value(tdf, d, doc, visible_columns)) }}</div></td>
 							{% endif %}
 						{% endfor %}
 					</tr>
@@ -88,12 +88,18 @@ data-fieldname="{{ df.fieldname }}" data-fieldtype="{{ df.fieldtype }}"
 		}) -%}
 
 		{% set render_field = doc.get(df.fieldname) != 0 if df.fieldtype == "Check" else doc.get(df.fieldname) != None %}
-		{% if render_field %}
+		{% if render_field and df.nolabel %}
+			<div class="row {% if df.bold %}important{% endif %} data-field" {{ fieldmeta(df) }}>
+				<div class="col-xs-12 {{ get_align_class(df, no_of_cols) }} value">
+					{{ _(print_value(df, doc)) }}
+				</div>
+			</div>
+		{% elif render_field %}
 			<div class="row {% if df.bold %}important{% endif %} data-field" {{ fieldmeta(df) }}>
 				<div class="{{label_col_class}}
 					{%- if doc.align_labels_right %} text-right{%- endif -%}">
 					{% if df.fieldtype not in ("Image", "HTML") %}
-					<label>{{ _(df.label) }}: </label>
+					<label>{{ _(df.label, context=df.parent) }}: </label>
 					{% endif %}
 				</div>
 				<div class="{{value_col_class}}
@@ -107,21 +113,19 @@ data-fieldname="{{ df.fieldname }}" data-fieldtype="{{ df.fieldtype }}"
 {%- macro render_text_field(df, doc) -%}
 {%- if doc.get(df.fieldname) != None -%}
 <div style="padding: 10px 0px" {{ fieldmeta(df) }}>
-	{%- if df.fieldtype in ("Text", "Code", "Long Text") %}<label>{{ _(df.label) }}</label>{%- endif %}
+	{%- if df.fieldtype in ("Text", "Code", "Long Text") and not df.nolabel -%}
+		<label>{{ _(df.label, context=df.parent) }}</label>
+	{%- endif %}
 	{%- if df.fieldtype=="Code" %}
-		<pre class="value">{{ doc.get(df.fieldname) }}</pre>
-	{% else -%}
+		<pre class="value">{{ doc.get(df.fieldname)|e }}</pre>
+	{%- else -%}
 		{{ doc.get_formatted(df.fieldname, parent_doc or doc, translated=df.translatable) }}
-{% endif -%}
+	{%- endif -%}
 </div>
 {%- endif -%}
 {%- endmacro -%}
 
 {%- macro render_image(df, doc) -%}
-	{{ print_value(df, doc) }}
-{% endmacro %}
-
-{%- macro render_signature(df, doc) -%}
 	{{ print_value(df, doc) }}
 {% endmacro %}
 
@@ -133,31 +137,37 @@ data-fieldname="{{ df.fieldname }}" data-fieldtype="{{ df.fieldtype }}"
 	{% if child_templates and child_templates[df.fieldname] %}
 		{% include child_templates[df.fieldname] %}
 	{% elif df.fieldtype=="Check" and doc[df.fieldname] %}
-		<!-- <i class="{{ 'fa fa-check' }}"></i> -->
 		<svg viewBox="0 0 16 16"
-			fill="transparent" stroke="var(--icon-stroke)" stroke-width="2"
+			fill="transparent" stroke="#1F272E" stroke-width="2"
 			xmlns="http://www.w3.org/2000/svg" id="icon-tick"
 			style="width: 12px; height: 12px; margin-top: 5px;">
-			<path d="M2 9.66667L5.33333 13L14 3" stroke-miterlimit="10" stroke-linecap="round" stroke-linejoin="round"/>
+			<path d="M2 9.66667L5.33333 13L14 3" stroke-miterlimit="10" stroke-linecap="round" stroke-linejoin="round"></path>
 		</svg>
-	{% elif df.fieldtype=="Image" %}
-		<img src="{{ doc[doc.meta.get_field(df.fieldname).options] }}"
+	{% elif df.fieldtype=="Check" and not doc[df.fieldname] %}
+		<!-- empty -->
+	{% elif df.fieldtype in ("Image", "Attach Image") and frappe.utils.is_image(doc[doc.meta.get_field(df.fieldname).options]) %}
+		<img src="{{ doc[doc.meta.get_field(df.fieldname).options]|e }}"
 			class="img-responsive"
 			{%- if df.print_width %} style="width: {{ get_width(df) }};"{% endif %}>
 	{% elif df.fieldtype=="Attach Image" %}
-		<img src="{{ doc[df.fieldname] }}"
+		<img src="{{ doc[df.fieldname]|e }}"
 			class="img-responsive"
 			{%- if df.print_width %} style="width: {{ get_width(df) }};"{% endif %}>
 	{% elif df.fieldtype=="Signature" %}
-		<img src="{{ doc[df.fieldname] }}" class="signature-img img-responsive"
+		<img src="{{ doc[df.fieldname]|e }}" class="signature-img img-responsive"
 			{%- if df.print_width %} style="width: {{ get_width(df) }};"{% endif %}>
-	{% elif df.fieldtype == "Attach" and doc[df.fieldname] and frappe.utils.is_image(doc[df.fieldname]) %}
-		<img src="{{ doc[df.fieldname] }}" class="img-responsive"
+	{% elif df.fieldtype=="Barcode" and not doc[df.fieldname].startswith("<svg") %}
+		<svg data-barcode-value="{{ doc[df.fieldname]|e }}" data-options='{{ df.options|e }}'></svg>
+	{% elif df.fieldtype in ("Attach", "Attach Image") and frappe.utils.is_image(doc[df.fieldname]) %}
+		<img src="{{ doc[df.fieldname]|e }}" class="img-responsive"
 			{%- if df.print_width %} style="width: {{ get_width(df) }};"{% endif %}>
 	{% elif df.fieldtype=="HTML" %}
 		{{ frappe.render_template(df.options, {"doc":doc}) }}
 	{% elif df.fieldtype=="Currency" %}
 		{{ doc.get_formatted(df.fieldname, parent_doc or doc, translated=df.translatable) }}
+	{% elif df.fieldtype in ("Data", "Code", "JSON") %}
+		{%- set parent = parent_doc or doc -%}
+		{{ doc.get_formatted(df.fieldname, parent, translated=df.translatable, absolute_value=parent.absolute_value) |e }}
 	{% else %}
 		{%- set parent = parent_doc or doc -%}
 		{{ doc.get_formatted(df.fieldname, parent, translated=df.translatable, absolute_value=parent.absolute_value) }}
@@ -165,7 +175,12 @@ data-fieldname="{{ df.fieldname }}" data-fieldtype="{{ df.fieldtype }}"
 {%- endmacro %}
 
 {% macro get_width(df) -%}
-	{%- if df.print_width -%}{{ (df.print_width|str).replace("px", "") }}px
+	{%- if df.print_width -%}
+		{%- if df.print_width.endswith("%") -%}
+			{{ df.print_width }}
+		{%- else -%}
+			{{ df.print_width.replace("px", "") }}px
+		{%- endif -%}
 	{%- elif df.fieldtype in ("Int", "Check", "Float", "Currency") -%}{{ 80 }}px
 	{%- else -%}{{ 150 }}px{% endif -%}
 {%- endmacro %}
@@ -173,24 +188,25 @@ data-fieldname="{{ df.fieldname }}" data-fieldtype="{{ df.fieldtype }}"
 {% macro get_align_class(df, no_of_cols=2) %}
 	{% if no_of_cols >= 3 %}{{ "" }}
 	{%- elif df.align -%}{{ "text-" + df.align }}
-	{%- elif df.fieldtype in ("Int", "Float", "Currency", "Check", "Percent") -%}{{ "text-right" }}
+	{%- elif df.fieldtype in ("Int", "Float", "Currency", "Percent") -%}{{ "text-right" }}
+	{%- elif df.fieldtype in ("Check",) -%}{{ "text-center" }}
 	{%- else -%}{{ "" }}
 	{%- endif -%}
 {% endmacro %}
 
-{%- macro add_header(page_num, max_pages, doc, letter_head, no_letterhead, footer, print_settings=None) -%}
+{%- macro add_header(page_num, max_pages, doc, letter_head, no_letterhead, footer, print_settings=None, print_heading_template=None) -%}
 	{% if letter_head and not no_letterhead %}
 		<div class="letter-head">{{ letter_head }}</div>
 	{% endif %}
-	{% if doc.print_heading_template %}
-		{{ frappe.render_template(doc.print_heading_template, {"doc":doc}) }}
+	{% if print_heading_template %}
+		{{ frappe.render_template(print_heading_template, {"doc":doc}) }}
 	{% else %}
 	<div class="print-heading">
 		<h2>
-			<div>{{ doc.select_print_heading or (doc.print_heading if doc.print_heading != None
+			<div>{{ _(doc.select_print_heading) or (_(doc.print_heading) if doc.print_heading != None
 				else _(doc.doctype)) }}</div>
-			<small class="sub-heading">{{ doc.sub_heading if doc.sub_heading != None
-				else doc.name }}</small>
+			<small class="sub-heading">{{ _(doc.sub_heading) if doc.sub_heading != None
+				else _(doc.name) }}</small>
 		</h2>
 	</div>
 	{% endif %}

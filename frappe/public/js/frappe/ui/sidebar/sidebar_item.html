@@ -1,0 +1,44 @@
+<div
+    class="sidebar-item-container {%= item.is_editable ? 'is-draggable' : '' %} {% if (item.type == 'Section Break') { %}section-item{% } %}"
+    item-name="{{ item.label }}"
+    data-id="{{ item.label }}"
+>
+    <div
+        class="standard-sidebar-item {%= item.indent ? 'indent' : '' %}">
+
+        {% if (item.type == "Section Break" && item.indent != 1) { %}
+            <div class="divider hidden"></div>
+            <div class="item-anchor section-break">
+                <span class="sidebar-item-label">{{ item.label }}</span>
+                <div class="sidebar-item-control"></div>
+            </div>
+        {% } else if (item.type == "Spacer") { %}
+			<div class="item-anchor" style="pointer-events: none;">
+
+			</div>
+		{% } else  { %}
+            <a
+                {% if (path) { %}
+                    href="{{ path }}"
+                    target="{%= item.link_type === "URL" && item.open_in_new_tab ? "_blank" : "" %}"
+                {% } %}
+                class="item-anchor"
+                data-link-type="{{ item.link_type || "" }}"
+            >
+                {% if (item.icon && !item.show_arrow && !hide_icon) { %}
+                    <span class="sidebar-item-icon" item-icon="{{ item.icon }}">
+                        {%= frappe.utils.icon(item.icon, "sm", "", "", "current-color", true) %}
+                    </span>
+                {% } %}
+                <span class="sidebar-item-label">{{ item.label }}</span>
+                {% if (item.suffix) { %}
+                     <span class="sidebar-item-suffix">{{ item.suffix }}</span>
+                {% } %}
+                {% if (!item.show_arrow) { %}
+                <div class="sidebar-item-control"></div>
+                {% } %}
+            </a>
+        {% } %}
+    </div>
+    <div class="sidebar-child-item nested-container"></div>
+</div>

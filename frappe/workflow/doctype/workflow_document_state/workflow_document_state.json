@@ -1,4 +1,5 @@
 {
+ "actions": [],
  "creation": "2013-02-22 01:27:36",
  "description": "Represents the states allowed in one document and role assigned to change the state.",
  "doctype": "DocType",
@@ -10,12 +11,16 @@
   "doc_status",
   "update_field",
   "update_value",
+  "evaluate_as_expression",
   "column_break_4",
   "is_optional_state",
+  "avoid_status_override",
   "next_action_email_template",
   "allow_edit",
+  "send_email",
   "section_break_9",
-  "message"
+  "message",
+  "workflow_builder_id"
  ],
  "fields": [
   {
@@ -29,6 +34,7 @@
    "width": "160px"
   },
   {
+   "default": "0",
    "description": "0 - Draft; 1 - Submitted; 2 - Cancelled",
    "fieldname": "doc_status",
    "fieldtype": "Select",
@@ -45,6 +51,7 @@
    "label": "Update Field"
   },
   {
+   "description": "Value to set when this workflow state is applied. Use plain text (e.g. Approved) or an expression if \u201cEvaluate as Expression\u201d is enabled.",
    "fieldname": "update_value",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -88,15 +95,47 @@
   {
    "fieldname": "section_break_9",
    "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "workflow_builder_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Workflow Builder ID"
+  },
+  {
+   "default": "0",
+   "description": "If Checked workflow status will not override status in list view",
+   "fieldname": "avoid_status_override",
+   "fieldtype": "Check",
+   "label": "Don't Override Status"
+  },
+  {
+   "default": "1",
+   "description": "Send email when document transitions to the state.",
+   "fieldname": "send_email",
+   "fieldtype": "Check",
+   "label": "Send Email On State"
+  },
+  {
+   "default": "0",
+   "description": "Check this if the Update Value is a formula or expression (e.g. doc.amount * 2). Leave unchecked for plain text values.",
+   "fieldname": "evaluate_as_expression",
+   "fieldtype": "Check",
+   "label": "Evaluate as Expression"
   }
  ],
  "idx": 1,
  "istable": 1,
- "modified": "2019-06-14 11:43:20.271091",
+ "links": [],
+ "modified": "2025-11-08 10:16:23.592473",
  "modified_by": "Administrator",
  "module": "Workflow",
  "name": "Workflow Document State",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
  "track_changes": 1
 }

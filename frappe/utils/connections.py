@@ -1,39 +1,103 @@
+import os.path
 import socket
+from pathlib import Path
+from urllib.parse import urlparse
 
-from six.moves.urllib.parse import urlparse
+import frappe.utils
 from frappe import get_conf
+from frappe.exceptions import UrlSchemeNotSupported
 
-config = get_conf()
-REDIS_KEYS = ('redis_cache', 'redis_queue', 'redis_socketio')
+REDIS_KEYS = ("redis_cache", "redis_queue")
 
 
-def is_open(ip, port, timeout=10):
-	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	s.settimeout(timeout)
+def can_connect(sock: socket.socket, address: tuple[str, int] | str, timeout: int | float) -> bool:
+	"""
+	Check whether we can connect to a socket address.
+
+	Args:
+		sock: The socket object to use for the connection.
+		address: The address to connect to (tuple for network, string for unix).
+		timeout: Connection timeout in seconds.
+
+	Returns:
+		True if connection was successful, False otherwise.
+	"""
+	sock.settimeout(timeout)
 	try:
-		s.connect((ip, int(port)))
-		s.shutdown(socket.SHUT_RDWR)
+		sock.connect(address)
+		sock.shutdown(socket.SHUT_RDWR)
 		return True
-	except socket.error:
+	except OSError:
 		return False
 	finally:
-		s.close()
+		sock.close()
+
+
+def is_open(
+	scheme: str,
+	hostname: str | None,
+	port: int | str | None,
+	path: str | None,
+	timeout: int | float = 10,
+) -> bool:
+	"""
+	Check if a service is reachable via socket connection.
+
+	Args:
+		scheme: The URL scheme (redis, mariadb, etc.) or 'unix'.
+		hostname: The remote host to connect to.
+		port: The port number to connect to.
+		path: The path to the unix socket (if scheme is 'unix').
+		timeout: Connection timeout in seconds.
+
+	Returns:
+		True if the service is reachable, False otherwise.
+	"""
+	if scheme in ("redis", "rediss", "postgres", "mariadb"):
+		if not hostname or not port:
+			return False
+
+		try:
+			addresses = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+		except (socket.gaierror, TypeError):
+			return False
+
+		# Try all addresses returned by getaddrinfo
+		for family, socket_type, proto, _, address in addresses:
+			s = socket.socket(family, socket_type, proto)
+			if can_connect(s, address, timeout):
+				return True
+		return False
+
+	if scheme == "unix":
+		if not path:
+			return False
+		s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+		return can_connect(s, path, timeout)
+
+	raise UrlSchemeNotSupported(scheme)
 
 
 def check_database():
+	config = get_conf()
 	db_type = config.get("db_type", "mariadb")
-	db_host = config.get("db_host", "localhost")
-	db_port = config.get("db_port", 3306 if db_type == "mariadb" else 5342)
-	return {db_type: is_open(db_host, db_port)}
+	if db_type == "sqlite":
+		db_path = Path(frappe.utils.get_site_path()) / "db" / f"{config.db_name}.db"
+		return {db_type: db_path.is_file() and os.access(db_path, os.R_OK | os.W_OK)}
+	if db_socket := config.get("db_socket"):
+		return {db_type: is_open("unix", None, None, db_socket)}
+	db_host = config.get("db_host", "127.0.0.1")
+	db_port = config.get("db_port", 3306 if db_type == "mariadb" else 5432)
+	return {db_type: is_open(db_type, db_host, db_port, None)}
 
 
 def check_redis(redis_services=None):
+	config = get_conf()
 	services = redis_services or REDIS_KEYS
 	status = {}
-	for conn in services:
-		redis_url = urlparse(config.get(conn)).netloc
-		redis_host, redis_port = redis_url.split(":")
-		status[conn] = is_open(redis_host, redis_port)
+	for srv in services:
+		url = urlparse(config[srv])
+		status[srv] = is_open(url.scheme, url.hostname, url.port, url.path)
 	return status
 
 

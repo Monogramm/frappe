@@ -1,10 +1,87 @@
-// .layout-main-section {
-// 	overflow: hidden;
+.layout-main-section-wrapper:not(.disable-scrolling) {
+	.frappe-list {
+		.result-container {
+			.result {
+				min-width: 100%;
+				width: auto;
 
-// }
+				// wide rows scroll sideways; a phone has no sideways scroll, so its rows fit the screen
+				@media (min-width: map-get($grid-breakpoints, "sm") + 1) {
+					display: table;
+
+					.list-row-container {
+						width: fit-content;
+					}
+				}
+
+				// Spacer rows reserve off-screen height in virtualized lists but should never intercept clicks.
+				.list-virtual-spacer {
+					width: 100%;
+					pointer-events: none;
+					position: relative;
+
+					// Fast flings outrun the rendered row window — paint the gap
+					// as breathing skeleton rows. The paint sits on a bounded
+					// pseudo-element because iOS won't rasterize an animated
+					// layer the size of the full spacer (~100k+px). The SVG is
+					// a mask so the color stays a theme token; surface-gray-3
+					// because the breathe animation would dim --skeleton-bg to
+					// invisibility in light mode. Cadence matches the row
+					// height estimates in list_view.js (44px rows, 72px cards).
+					&::before {
+						content: "";
+						position: absolute;
+						left: 0;
+						right: 0;
+						height: min(100%, 4096px);
+						background-color: var(--surface-gray-3);
+						-webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='1%25' y='16' width='24%25' height='12' rx='6' fill='black'/%3E%3Crect x='46%25' y='16' width='12%25' height='12' rx='6' fill='black'/%3E%3Crect x='63%25' y='16' width='9%25' height='12' rx='6' fill='black'/%3E%3Crect x='79%25' y='16' width='7%25' height='12' rx='6' fill='black'/%3E%3Crect x='95%25' y='16' width='4%25' height='12' rx='6' fill='black'/%3E%3C/svg%3E");
+						mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='1%25' y='16' width='24%25' height='12' rx='6' fill='black'/%3E%3Crect x='46%25' y='16' width='12%25' height='12' rx='6' fill='black'/%3E%3Crect x='63%25' y='16' width='9%25' height='12' rx='6' fill='black'/%3E%3Crect x='79%25' y='16' width='7%25' height='12' rx='6' fill='black'/%3E%3Crect x='95%25' y='16' width='4%25' height='12' rx='6' fill='black'/%3E%3C/svg%3E");
+						-webkit-mask-size: 100% 44px;
+						mask-size: 100% 44px;
+						-webkit-mask-repeat: repeat-y;
+						mask-repeat: repeat-y;
+						animation: 2s breathe infinite;
+
+						// mobile cards: a title line over a shorter meta line
+						@media (max-width: 767.98px) {
+							-webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='3%25' y='16' width='58%25' height='13' rx='6' fill='black'/%3E%3Crect x='3%25' y='42' width='34%25' height='11' rx='5' fill='black'/%3E%3C/svg%3E");
+							mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='3%25' y='16' width='58%25' height='13' rx='6' fill='black'/%3E%3Crect x='3%25' y='42' width='34%25' height='11' rx='5' fill='black'/%3E%3C/svg%3E");
+							-webkit-mask-size: 100% 72px;
+							mask-size: 100% 72px;
+						}
+					}
+
+					// the bottom spacer's gap appears at its top edge (just
+					// past the rendered rows); the top spacer's at its bottom
+					&:last-child::before {
+						top: 0;
+					}
+
+					&:not(:last-child)::before {
+						bottom: 0;
+					}
+				}
+
+				.list-row-container {
+					min-width: 100%;
+
+					.level-left {
+						.list-row-col {
+							min-width: 50px;
+							max-width: 400px;
+						}
+					}
+				}
+			}
+		}
+	}
+}
 
 .freeze-row {
-	.level-left, .level-right, .list-row-col {
+	.level-left,
+	.level-right,
+	.list-row-col {
 		height: 100%;
 		width: 100%;
 	}
@@ -30,9 +107,19 @@
 	}
 }
 
+.list-skeleton {
+	min-height: calc(100vh - 200px);
+
+	.list-skeleton-box {
+		background-color: var(--skeleton-bg);
+		height: 100%;
+		border-radius: var(--radius);
+	}
+}
 
 .no-list-sidebar {
-	&[data-page-route^="List/"], [data-page-route^="List/"]{
+	&[data-page-route^="List/"],
+	[data-page-route^="List/"] {
 		@include media-breakpoint-up(md) {
 			.layout-side-section {
 				display: none;
@@ -40,46 +127,149 @@
 
 			.layout-main-section-wrapper {
 				flex: 1;
-				max-width: 100%;
 			}
 		}
 	}
 }
 
 .list-row-container {
-	border-bottom: 1px solid $border-color;
 	display: flex;
 	flex-direction: column;
-	outline: none;
+	padding-inline: var(--padding-sm);
+	border-radius: var(--radius);
+	// the :active highlight below replaces the tap flash
+	-webkit-tap-highlight-color: transparent;
 
 	&:focus {
-		background-color: var(--yellow-highlight-color);
+		.list-row {
+			background-color: var(--highlight-color);
+		}
+	}
+
+	&:first-child {
+		padding: 0;
+		position: sticky;
+		top: 0;
+		z-index: 2;
+	}
+
+	// a held touch opens the row's actions (list_view.js setup_long_press), not text selection
+	@include media-breakpoint-down(sm) {
+		@media (hover: none) {
+			-webkit-user-select: none;
+			user-select: none;
+			-webkit-touch-callout: none;
+		}
+	}
+
+	&:active,
+	&:active .level-right {
+		background-color: var(--highlight-color);
+	}
+
+	// a touch screen keeps :hover on the row a scroll started from
+	@include hover-only-with-pointer {
+		background-color: var(--highlight-color);
+
+		.level-right {
+			background-color: var(--highlight-color);
+		}
+	}
+}
+
+.frappe-list {
+	margin: 0 var(--margin-md);
+
+	// --list-right-width (set by list_view.js) keeps the header's and the rows' right side equal
+	.result.has-assign-to {
+		.list-row .level-right {
+			flex: 0 0 auto;
+			min-width: var(--list-right-width, 180px);
+		}
+
+		&.assign-to-length-1 {
+			.list-row .level-right {
+				min-width: var(--list-right-width, 165px);
+			}
+		}
+
+		&.assign-to-length-3 {
+			.list-row .level-right {
+				min-width: var(--list-right-width, 200px);
+			}
+		}
+	}
+
+	.result.no-assign-to {
+		.list-row .level-right {
+			flex: 0 0 auto;
+			min-width: var(--list-right-width, 130px);
+		}
+	}
+
+	// Fixed-width slots for avatars and comment counts so rows don't shift sideways.
+	.result.has-assign-to .list-assignments-container {
+		flex: none;
+		width: 56px;
+	}
+
+	.result.assign-to-length-1 .list-assignments-container {
+		width: 38px;
+	}
+
+	.result.assign-to-length-3 .list-assignments-container {
+		width: 74px;
+	}
+
+	.result[data-comment-count-length="2"] .comment-count .count {
+		min-width: 1.4em;
+	}
+
+	.result[data-comment-count-length="3"] .comment-count .count {
+		min-width: 2.1em;
 	}
 }
 
 .list-row {
-	padding: 15px;
-	height: 45px;
+	border-bottom: 1px solid var(--border-color);
 	cursor: pointer;
 	transition: color 0.2s;
 	-webkit-transition: color 0.2s;
-	font-size: var(--text-md);
+	@include get_textstyle("base", "regular");
 
-	&:hover:not(.list-row-head) {
-		background-color: var(--highlight-color);
+	&:not(.list-row-head) {
+		@include hover-only-with-pointer {
+			.level-right {
+				box-shadow: -5px 0px 5px var(--highlight-color);
+			}
+		}
 	}
 
-	&:last-child {
-		border-bottom: 0px;
+	@media (hover: none) {
+		a:hover {
+			text-decoration: none;
+		}
 	}
 
 	.level-left {
 		flex: 4;
 		min-width: 80%;
+		padding: var(--padding-xs) 0;
 	}
+
+	.list-subject > span:last-child {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
 	.level-right {
-		flex: 1.5;
-		overflow: visible;
+		position: sticky;
+		right: 0;
+		background-color: var(--bg-color);
+		border-left: 2px solid var(--highlight-color);
+		padding: 9px 10px;
 	}
 
 	.tag-col {
@@ -101,26 +291,37 @@
 	.list-row-activity {
 		justify-content: flex-end;
 		// min-width: 120px;
+		font-variant-numeric: tabular-nums;
 
-		&> span {
+		& > span {
 			display: inline-block;
+		}
 
-			&:not(:last-child) {
-				margin-right: 15px;
-			}
+		.modified {
+			margin-right: var(--margin-sm);
+			min-width: 2.7em; // fits the widest short timestamp, "11 M"
+			text-align: right;
 		}
 
 		.comment-count {
 			min-width: 35px;
+			gap: var(--margin-xs);
+
+			.count {
+				min-width: 0.7em;
+			}
 		}
 
 		.frappe-timestamp {
 			font-size: var(--text-xs);
 			white-space: nowrap;
-			min-width: 30px;
 		}
 
-		.list-assignments, .list-actions {
+		.list-assignments {
+			margin-right: var(--margin-sm);
+		}
+
+		.list-actions {
 			margin-right: var(--margin-md);
 		}
 	}
@@ -130,11 +331,66 @@
 			margin-left: 5px;
 		}
 	}
+
+	.file-select {
+		padding: 0 10px;
+	}
+}
+
+.select-like {
+	padding: var(--list-checkbox-padding);
+	cursor: default;
+}
+
+.list-col-resize-handle {
+	position: absolute;
+	inset-inline-end: -8px;
+	top: 0;
+	bottom: 0;
+	width: 16px;
+	cursor: col-resize;
+	user-select: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+
+	&::before {
+		content: "";
+		width: 2px;
+		height: 14px; // fixed px — same on every column regardless of column height
+		border-radius: 2px;
+		background-color: var(--gray-500);
+		// Always show a faint resting separator so users can discover resize
+		opacity: 0.25;
+	}
+}
+
+body.list-col-resizing {
+	cursor: col-resize !important;
+	user-select: none;
+
+	* {
+		cursor: col-resize !important;
+	}
 }
 
 .list-row-head {
 	@extend .list-row;
 	cursor: default;
+	background-color: var(--subtle-fg);
+	border-radius: var(--radius);
+	height: var(--list-row-height);
+	padding-inline: var(--padding-sm);
+
+	.list-row-col {
+		position: relative;
+	}
+
+	// Right-aligned columns have text flush against the right edge where the
+	// resize handle sits — add breathing room so they don't look glued together
+	.list-row-col.text-right > span {
+		padding-right: 14px;
+	}
 
 	.list-subject {
 		font-weight: normal;
@@ -143,6 +399,20 @@
 	.checkbox-actions {
 		display: none;
 	}
+
+	.level-right {
+		background-color: var(--subtle-fg);
+		height: var(--list-row-height);
+		border-left: none;
+
+		&:hover {
+			background-color: var(--subtle-fg);
+		}
+	}
+
+	&:hover .level-right {
+		background-color: var(--subtle-fg);
+	}
 }
 
 .list-row-col {
@@ -150,22 +420,31 @@
 	margin-right: 15px;
 
 	a {
-		color: var(--text-light);
+		color: var(--text-muted);
+	}
+
+	& > [data-sort-by]:hover {
+		cursor: pointer;
+		text-decoration: underline;
+	}
+
+	.selected-color {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		border-radius: 4px;
+		margin-right: 6px;
+		vertical-align: middle;
 	}
 }
 
 $level-margin-right: 8px;
 
 .list-subject {
-	flex: 2;
 	justify-content: start;
 
 	a {
 		color: var(--text-color);
-	}
-
-	.level-item {
-		margin-right: $level-margin-right;
 	}
 
 	&.seen {
@@ -173,13 +452,32 @@ $level-margin-right: 8px;
 	}
 }
 
-.list-paging-area, .footnote-area {
-	border-top: 1px sol var(--border-color);
+// On mobile the rows flow in the page scroll (see set_result_height), so
+// pin the paging controls to the bottom edge; opaque background because
+// rows pass underneath
+@media (max-width: 767.98px) {
+	.frappe-list .list-paging-area {
+		position: sticky;
+		bottom: 0;
+		background-color: var(--fg-color);
+		z-index: 3;
+	}
 }
 
-.frappe-card {
-	.list-paging-area, .footnote-area {
-		padding: var(--padding-md);
+.list-paging-area,
+.footnote-area {
+	border-top: 1px solid var(--border-color);
+}
+
+.layout-main-list {
+	.list-paging-area,
+	.footnote-area {
+		padding: var(--padding-sm) 0;
+	}
+
+	// clear the home indicator where the page runs under it; 0 everywhere else
+	.list-paging-area {
+		padding-bottom: calc(var(--padding-sm) + env(safe-area-inset-bottom, 0px));
 	}
 }
 
@@ -187,18 +485,30 @@ $level-margin-right: 8px;
 	height: 10px;
 }
 
-.likes-count {
-	display: none;
-}
-
 .list-liked-by-me {
 	margin-bottom: 1px;
 }
 
-input.list-check-all, input.list-row-checkbox {
-	margin-top: 0px;
-	margin-left: calc(var(--custom-checkbox-size) / 2);
-	--checkbox-right-margin: #{$level-margin-right};
+input.list-row-checkbox,
+input.list-header-checkbox {
+	margin-top: 0;
+	margin-bottom: 0;
+	--checkbox-right-margin: 0;
+	background-color: var(--card-bg);
+	z-index: 1;
+
+	&::after {
+		// Extend the checkbox's clickable area
+		display: block;
+		content: "";
+		inset: calc(-1 * var(--list-checkbox-padding));
+		position: absolute;
+		opacity: 0;
+	}
+}
+
+.render-list-checkbox {
+	margin-left: 15px;
 }
 
 .filterable {
@@ -208,8 +518,12 @@ input.list-check-all, input.list-row-checkbox {
 .modal-body {
 	.list-item--head {
 		position: sticky !important;
-		z-index: 500;
 		top: 0;
+	}
+
+	.sortable-handle {
+		cursor: all-scroll;
+		cursor: grabbing;
 	}
 }
 
@@ -228,6 +542,27 @@ input.list-check-all, input.list-row-checkbox {
 .list-item-table {
 	border: 1px solid $border-color;
 	border-radius: 3px;
+
+	.list-row-head {
+		border-radius: unset;
+	}
+
+	.list-row-container {
+		border-bottom: 1px solid $border-color;
+		border-radius: unset;
+
+		&:last-child {
+			border-bottom: none;
+		}
+	}
+
+	.list-row-container:hover {
+		border-radius: unset;
+	}
+
+	.list-row-container .list-row {
+		border-bottom: none;
+	}
 }
 
 .list-item {
@@ -235,10 +570,9 @@ input.list-check-all, input.list-row-checkbox {
 	align-items: center;
 	cursor: pointer;
 
-	height: 40px;
 	padding-left: 15px;
 
-	font-size: var(--text-md);
+	@include get_textstyle("base", "regular");
 
 	&:hover {
 		background-color: var(--highlight-color);
@@ -254,17 +588,17 @@ input.list-check-all, input.list-row-checkbox {
 
 	&--head {
 		background-color: var(--highlight-color);
-		border-bottom: 1px solid $border-color;
+		// border-bottom: 1px solid $border-color;
 		cursor: auto;
 	}
 
-	input[type=checkbox] {
+	input[type="checkbox"] {
 		margin: 0;
 		margin-right: 5px;
-		flex: 0 0 12px;
 	}
 
-	.liked-by, .liked-by-filter-button {
+	.liked-by,
+	.liked-by-filter-button {
 		display: inline-block;
 		width: 20px;
 		margin-right: 10px;
@@ -287,7 +621,8 @@ input.list-check-all, input.list-row-checkbox {
 		margin-right: 5px;
 		min-width: 110px;
 
-		.list-row-modified, .avatar-small {
+		.list-row-modified,
+		.avatar-small {
 			margin-right: 10px;
 		}
 	}
@@ -301,9 +636,6 @@ input.list-check-all, input.list-row-checkbox {
 		justify-content: flex-end;
 	}
 }
-// .like-action.octicon-heart {
-// 	color: $heart-color;
-// }
 
 .list-comment-count {
 	display: inline-block;
@@ -332,10 +664,6 @@ input.list-check-all, input.list-row-checkbox {
 }
 
 .page-form {
-	// .awesomplete > ul {
-	// 	min-width: 300px;
-	// }
-
 	.standard-filter-section {
 		flex-wrap: wrap;
 		// width: 65%;
@@ -344,55 +672,80 @@ input.list-check-all, input.list-row-checkbox {
 		.form-group {
 			min-width: 150px;
 		}
+
+		.group-by-field {
+			.group-by-dropdown {
+				max-width: 220px;
+			}
+		}
 	}
 
 	.filter-section {
 		display: flex;
-		padding: 0 var(--padding-xs);
+		padding: 0;
+		align-items: flex-start;
+		margin-top: 3px;
 	}
 
-	.filter-button {
-		margin: 5px;
-		// padding: 4px 8px;
-	}
+	.filter-selector {
+		margin: var(--margin-xs);
 
-	.filter-button.btn-primary-light {
-		color: var(--blue-500);
-	}
-
-	.sort-selector {
-		.btn-group {
-			margin: var(--margin-xs) 0 var(--margin-xs) var(--margin-xs);
+		// room for the count and ×, so a filter does not resize the quick filters
+		@include media-breakpoint-up(md) {
+			&:has(.filter-x-button.hidden) {
+				padding-inline-start: calc(var(--spacing) * 14);
+			}
 		}
 	}
 
+	.sort-selector-group {
+		margin: var(--margin-xs) 0 var(--margin-xs) var(--margin-xs);
+	}
+
+	&.list-page-form {
+		@include media-breakpoint-between(xs, sm) {
+			flex-direction: column-reverse;
+			justify-content: flex-end;
+
+			// phones filter through the Filter sheet, which lists these fields' filters as rows
+			.standard-filter-section {
+				display: none;
+			}
+
+			// the ID box and the buttons carry different margins; centre them on one line
+			.filter-section {
+				align-items: center;
+			}
+		}
+	}
+}
+
+.filter-section {
+	@include media-breakpoint-between(xs, sm) {
+		justify-content: space-between;
+
+		.filter-selector {
+			margin: var(--margin-xs) 0 var(--margin-xs) auto;
+		}
+	}
 }
 
 .restricted-button {
-	margin-top: var(--margin-xs);
-	height: var(--margin-xl);
+	margin: var(--margin-xs) 0 0 var(--margin-sm);
+	height: 29px;
 
 	.icon {
 		width: 14px;
 		height: 14px;
+
 		use {
 			stroke: var(--yellow-800);
 		}
 	}
 
 	&.btn {
-		@include button-variant(
-			$background: $light-yellow,
-			$border: darken($light-yellow, 5%),
-		);
+		@include button-variant($background: $light-yellow, $border: darken($light-yellow, 5%));
 		box-shadow: none;
-	}
-}
-
-.frappe-rtl {
-	.restricted-button {
-		margin: auto auto auto 5px;
-		direction: ltr;
 	}
 }
 
@@ -420,4 +773,169 @@ input.list-check-all, input.list-row-checkbox {
 	width: 100%;
 	height: calc(100vh - 284px);
 	z-index: 0;
+}
+
+.list-view {
+	.frappe-list {
+		.result-container {
+			overflow-x: auto;
+
+			.result {
+				overflow-y: hidden;
+				display: table;
+				width: 100%;
+			}
+		}
+	}
+}
+
+.disable-scrolling {
+	.frappe-list {
+		.list-row-container {
+			width: auto;
+
+			.level-left {
+				flex: 0;
+
+				.list-row-col {
+					min-width: auto;
+				}
+			}
+
+			.level-right {
+				border-left: none;
+			}
+		}
+	}
+}
+
+.avatar-group {
+	&:hover.overlap {
+		.avatar:not(:first-child) {
+			margin-left: calc(-1 * var(--margin-sm));
+		}
+	}
+}
+
+@media (max-width: map-get($grid-breakpoints, "lg")) {
+	.layout-main-section-wrapper {
+		width: 100%;
+	}
+
+	.frappe-list {
+		.list-row {
+			.level-right {
+				flex: 0 0 auto;
+				width: auto;
+			}
+		}
+	}
+}
+
+@media (max-width: map-get($grid-breakpoints, "sm")) {
+	.layout-main-section .frappe-list .result-container {
+		// rows are stacked cards at this width — nothing needs horizontal
+		// scroll, and iOS turns any transient overflow into a sideways wiggle
+		overflow-x: hidden;
+
+		.result {
+			overflow: hidden;
+			display: block;
+
+			input.list-row-checkbox,
+			input.list-header-checkbox {
+				width: 15px !important;
+				height: 15px;
+			}
+		}
+
+		// the desktop column split (level-left 80% + level-right 130px) sums
+		// past the card-width viewport and pushed the list count and the
+		// header's rounded corner over the clipped right edge
+		.list-row .level-right {
+			flex: 0 0 auto;
+			width: auto;
+		}
+
+		.list-row-head .level-left {
+			min-width: 0;
+		}
+
+		.list-row-container:not(:has(.list-row-head)) {
+			.list-row {
+				&.level {
+					align-items: flex-start;
+				}
+
+				.level-left {
+					min-width: auto;
+					display: block;
+
+					.mobile-layout {
+						display: inline-block;
+						z-index: 1;
+						position: relative;
+						padding-left: 10px;
+
+						.list-row-col {
+							margin-right: 0px;
+							min-width: auto;
+						}
+
+						&:has(.filterable:empty) {
+							display: none;
+							padding-left: 37px;
+						}
+					}
+
+					.mobile-layout-line {
+						.mobile-layout,
+						.mobile-layout .list-row-col {
+							min-width: 0;
+						}
+					}
+
+					.mobile-layout-seperator:not(.mobile-layout-seperator
+							~ .mobile-layout-seperator) {
+						padding-left: 27px;
+						margin-right: 6px;
+
+						&:not(.no-seperator)::after {
+							content: "\2022";
+							position: absolute;
+							right: 0;
+							top: 50%;
+							transform: translate(50%, -50%);
+							padding-left: 15px;
+						}
+					}
+				}
+
+				.level-right {
+					flex: 0 0 auto;
+					width: auto;
+					min-width: auto;
+					border-left: none;
+
+					.level-item.visible-xs {
+						margin-top: 1px;
+					}
+
+					.list-row-amount {
+						font-variant-numeric: tabular-nums;
+					}
+				}
+			}
+		}
+	}
+
+	.page-indicator-pill {
+		display: none;
+	}
+}
+
+@media screen and (max-width: 375px) {
+	.navbar-breadcrumbs li:last-child .es-breadcrumbs__label {
+		max-width: 105px;
+	}
 }

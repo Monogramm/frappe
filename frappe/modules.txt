@@ -8,8 +8,10 @@ Desk
 Integrations
 Printing
 Contacts
-Data Migration
-Chat
-Social
 Automation
-Event Streaming
+System
+Build
+Data
+Users
+Studio
+Flow

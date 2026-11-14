@@ -1,16 +1,23 @@
 {
  "actions": [],
- "allow_rename": 1,
+ "allow_bulk_edit": 1,
  "autoname": "field:language_code",
  "creation": "2014-08-22 16:12:17.249590",
  "doctype": "DocType",
  "document_type": "Setup",
+ "documentation": "https://docs.frappe.io/framework/user/en/python-api/language",
  "engine": "InnoDB",
  "field_order": [
+  "enabled",
   "language_code",
   "language_name",
   "flag",
-  "based_on"
+  "based_on",
+  "section_break_rtth",
+  "date_format",
+  "time_format",
+  "number_format",
+  "first_day_of_the_week"
  ],
  "fields": [
   {
@@ -26,7 +33,8 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Language Name",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "fieldname": "flag",
@@ -39,15 +47,50 @@
    "fieldtype": "Link",
    "label": "Based On",
    "options": "Language"
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "section_break_rtth",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "date_format",
+   "fieldtype": "Select",
+   "label": "Date Format",
+   "options": "\nyyyy-mm-dd\ndd-mm-yyyy\ndd/mm/yyyy\ndd.mm.yyyy\nmm/dd/yyyy\nmm-dd-yyyy"
+  },
+  {
+   "fieldname": "time_format",
+   "fieldtype": "Select",
+   "label": "Time Format",
+   "options": "\nHH:mm:ss\nHH:mm"
+  },
+  {
+   "fieldname": "number_format",
+   "fieldtype": "Select",
+   "label": "Number Format",
+   "options": "\n#,###.##\n#.###,##\n# ###.##\n# ###,##\n#'###.##\n#, ###.##\n#,##,###.##\n#,###.###\n#.###\n#,###"
+  },
+  {
+   "fieldname": "first_day_of_the_week",
+   "fieldtype": "Select",
+   "label": "First Day of the Week",
+   "options": "\nSunday\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday"
   }
  ],
- "icon": "fa fa-globe",
+ "icon": "languages",
  "in_create": 1,
  "links": [],
- "modified": "2020-04-16 22:11:33.066852",
+ "modified": "2024-07-21 08:25:25.130166",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Language",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {
@@ -58,18 +101,16 @@
    "write": 1
   },
   {
-   "email": 1,
-   "export": 1,
-   "print": 1,
    "read": 1,
-   "report": 1,
-   "role": "Guest",
-   "share": 1
+   "role": "All"
   }
  ],
+ "row_format": "Dynamic",
  "search_fields": "language_name",
- "sort_field": "modified",
+ "show_title_field_in_link": 1,
+ "sort_field": "creation",
  "sort_order": "DESC",
+ "states": [],
  "title_field": "language_name",
  "track_changes": 1
 }

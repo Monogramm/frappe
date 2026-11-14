@@ -1,18 +1,26 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
-# See license.txt
+# License: MIT. See LICENSE
 
-from __future__ import unicode_literals
 import frappe
 import frappe.share
-import unittest
+from frappe.automation.doctype.auto_repeat.test_auto_repeat import create_submittable_doctype
+from frappe.core.doctype.user.test_user import test_user
+from frappe.tests import IntegrationTestCase
 
-class TestDocShare(unittest.TestCase):
+EXTRA_TEST_RECORD_DEPENDENCIES = ["User"]
+
+
+class TestDocShare(IntegrationTestCase):
 	def setUp(self):
 		self.user = "test@example.com"
-		self.event = frappe.get_doc({"doctype": "Event",
-			"subject": "test share event",
-			"starts_on": "2015-01-01 10:00:00",
-			"event_type": "Private"}).insert()
+		self.event = frappe.get_doc(
+			{
+				"doctype": "Event",
+				"subject": "test share event",
+				"starts_on": "2015-01-01 10:00:00",
+				"event_type": "Private",
+			}
+		).insert()
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
@@ -24,15 +32,73 @@ class TestDocShare(unittest.TestCase):
 		frappe.share.add("Event", self.event.name, self.user)
 		self.assertTrue(self.event.name in frappe.share.get_shared("Event", self.user))
 
+	def test_share_respects_user_permissions_on_target(self):
+		with test_user(roles=["Desk User"]) as actor:
+			frappe.get_doc(
+				doctype="User Permission", user=actor.name, allow="User", for_value=actor.name
+			).insert()
+			with self.set_user(actor.name):
+				todo = frappe.get_doc(doctype="ToDo", description="share scope").insert()
+
+				with self.assertRaises(frappe.LinkValidationError):
+					frappe.share.add("ToDo", todo.name, self.user)
+
+				frappe.share.add("ToDo", todo.name, actor.name)
+
+	def test_share_can_be_revoked_for_user_hidden_by_user_permissions(self):
+		with test_user(roles=["Desk User"]) as actor:
+			frappe.get_doc(
+				doctype="User Permission", user=actor.name, allow="User", for_value=actor.name
+			).insert()
+			with self.set_user(actor.name):
+				todo = frappe.get_doc(doctype="ToDo", description="share scope").insert()
+				frappe.share.add_docshare("ToDo", todo.name, self.user)
+
+				frappe.share.set_permission("ToDo", todo.name, self.user, "read", 0)
+				self.assertNotIn(todo.name, frappe.share.get_shared("ToDo", self.user))
+
 	def test_doc_permission(self):
 		frappe.set_user(self.user)
+
 		self.assertFalse(self.event.has_permission())
 
 		frappe.set_user("Administrator")
 		frappe.share.add("Event", self.event.name, self.user)
 
 		frappe.set_user(self.user)
-		self.assertTrue(self.event.has_permission())
+		# PERF: All share permission check should happen with maximum 1 query.
+		with self.assertRowsRead(1):
+			self.assertTrue(self.event.has_permission())
+
+		second_event = frappe.get_doc(
+			{
+				"doctype": "Event",
+				"subject": "test share event 2",
+				"starts_on": "2015-01-01 10:00:00",
+				"event_type": "Private",
+			}
+		).insert()
+		frappe.share.add("Event", second_event.name, self.user)
+		with self.assertRowsRead(1):
+			self.assertTrue(self.event.has_permission())
+
+	def test_list_permission(self):
+		frappe.set_user(self.user)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_list("Web Page")
+
+		frappe.set_user("Administrator")
+		doc = frappe.new_doc("Web Page")
+		doc.update({"title": "test document for docshare permissions"})
+		doc.insert()
+		frappe.share.add("Web Page", doc.name, self.user)
+
+		frappe.set_user(self.user)
+		self.assertEqual(len(frappe.get_list("Web Page")), 1)
+
+		doc.delete(ignore_permissions=True)
+		with self.assertRaises(frappe.PermissionError):
+			frappe.get_list("Web Page")
 
 	def test_share_permission(self):
 		frappe.share.add("Event", self.event.name, self.user, write=1, share=1)
@@ -91,3 +157,119 @@ class TestDocShare(unittest.TestCase):
 		self.assertTrue(self.event.name not in frappe.share.get_shared("Event", self.user))
 		self.assertTrue(self.event.name not in frappe.share.get_shared("Event", "test1@example.com"))
 		self.assertTrue(self.event.name not in frappe.share.get_shared("Event", "Guest"))
+
+	def test_share_with_submit_perm(self):
+		doctype = "Test DocShare with Submit"
+		create_submittable_doctype(doctype, submit_perms=0)
+
+		submittable_doc = frappe.get_doc(doctype=doctype, test="test docshare with submit").insert()
+
+		frappe.set_user(self.user)
+		self.assertFalse(frappe.has_permission(doctype, "submit", user=self.user))
+
+		frappe.set_user("Administrator")
+		frappe.share.add(doctype, submittable_doc.name, self.user, submit=1)
+
+		frappe.set_user(self.user)
+		self.assertTrue(frappe.has_permission(doctype, "submit", doc=submittable_doc.name, user=self.user))
+
+		# test cascade
+		self.assertTrue(frappe.has_permission(doctype, "read", doc=submittable_doc.name, user=self.user))
+		self.assertTrue(frappe.has_permission(doctype, "write", doc=submittable_doc.name, user=self.user))
+
+		frappe.share.remove(doctype, submittable_doc.name, self.user)
+
+	def test_share_int_pk(self):
+		test_doc = frappe.new_doc("Console Log")
+
+		test_doc.insert()
+		frappe.share.add("Console Log", test_doc.name, self.user)
+
+		frappe.set_user(self.user)
+		self.assertIn(
+			str(test_doc.name), [str(name) for name in frappe.get_list("Console Log", pluck="name")]
+		)
+
+		test_doc.reload()
+		self.assertTrue(test_doc.has_permission("read"))
+
+	@IntegrationTestCase.change_settings("System Settings", {"disable_document_sharing": 1})
+	def test_share_disabled_add(self):
+		"Test if user loses share access on disabling share globally."
+		frappe.share.add("Event", self.event.name, self.user, share=1)  # Share as admin
+		frappe.set_user(self.user)
+
+		# User does not have share access although given to them
+		self.assertFalse(self.event.has_permission("share"))
+		self.assertRaises(
+			frappe.PermissionError, frappe.share.add, "Event", self.event.name, "test1@example.com"
+		)
+
+	@IntegrationTestCase.change_settings("System Settings", {"disable_document_sharing": 1})
+	def test_share_disabled_add_with_ignore_permissions(self):
+		frappe.share.add("Event", self.event.name, self.user, share=1)
+		frappe.set_user(self.user)
+
+		# User does not have share access although given to them
+		self.assertFalse(self.event.has_permission("share"))
+
+		# Test if behaviour is consistent for developer overrides
+		frappe.share.add_docshare(
+			"Event", self.event.name, "test1@example.com", flags={"ignore_share_permission": True}
+		)
+
+	@IntegrationTestCase.change_settings("System Settings", {"disable_document_sharing": 1})
+	def test_share_disabled_set_permission(self):
+		frappe.share.add("Event", self.event.name, self.user, share=1)
+		frappe.set_user(self.user)
+
+		# User does not have share access although given to them
+		self.assertFalse(self.event.has_permission("share"))
+		self.assertRaises(
+			frappe.PermissionError,
+			frappe.share.set_permission,
+			"Event",
+			self.event.name,
+			"test1@example.com",
+			"read",
+		)
+
+	@IntegrationTestCase.change_settings("System Settings", {"disable_document_sharing": 1})
+	def test_share_disabled_assign_to(self):
+		"""
+		Assigning a document to a user without access must not share the document,
+		if sharing disabled.
+		"""
+		from frappe.desk.form.assign_to import add
+
+		frappe.share.add("Event", self.event.name, self.user, share=1)
+		frappe.set_user(self.user)
+
+		self.assertRaises(
+			frappe.ValidationError,
+			add,
+			{"doctype": "Event", "name": self.event.name, "assign_to": ["test1@example.com"]},
+		)
+
+	def test_cannot_share_without_permission(self):
+		"""Test that users cannot share permissions they don't have."""
+		# Users don't have write permission on Communication
+		doc = frappe.new_doc("Communication", subject="Hello World").save()
+
+		try:
+			frappe.set_user(self.user)
+
+			# Attempting to share with write permission should fail
+			self.assertRaises(
+				frappe.PermissionError,
+				frappe.share.add,
+				"Communication",
+				doc.name,
+				"test1@example.com",
+				write=1,
+			)
+
+			# Can share read
+			frappe.share.add("Communication", doc.name, "test1@example.com")
+		finally:
+			doc.delete()

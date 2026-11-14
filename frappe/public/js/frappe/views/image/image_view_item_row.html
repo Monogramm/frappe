@@ -8,7 +8,7 @@
 	<div class="image-view-body">
 		<a  data-name="{{ data.name }}"
 			title="{{ data.name }}"
-			href="/app/Form/{{ data.doctype }}/{{ data.name }}"
+			href="/desk/Form/{{ data.doctype }}/{{ data.name }}"
 		>
 			<div class="image-field"
 				data-name="{{ data.name }}"
@@ -27,7 +27,7 @@
 				<img data-name="{{ data.name }}" src="{{ data._image_url }}" alt="{{data.title}}">
 				{% } %}
 				<button class="btn btn-default zoom-view" data-name="{{data.name}}">
-					<i class="fa fa-search-plus"></i>
+					{%= frappe.utils.icon("zoom-in", "sm") %}
 				</button>
 			</div>
 		</a>

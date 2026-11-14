@@ -12,11 +12,11 @@
 	--blue-avatar-bg: var(--blue-50);
 	--blue-avatar-color: var(--blue-500);
 
-	--green-avatar-bg: var(--green-50);
-	--green-avatar-color: var(--green-500);
+	--green-avatar-bg: var(--green-200);
+	--green-avatar-color: var(--green-800);
 
-	--dark-green-avatar-bg: var(--dark-green-50);
-	--dark-green-avatar-color: var(--dark-green-500);
+	--dark-green-avatar-bg: var(--green-200);
+	--dark-green-avatar-color: var(--green-800);
 
 	--red-avatar-bg: var(--red-50);
 	--red-avatar-color: var(--red-500);
@@ -28,13 +28,13 @@
 	--purple-avatar-color: var(--purple-500);
 
 	--gray-avatar-bg: var(--gray-50);
-	--gray-avatar-color: var(--gray-50);
+	--gray-avatar-color: var(--gray-700);
 }
 
 [data-theme="dark"] {
-	--avatar-frame-color: var(--gray-50);
-	--avatar-frame-bg: var(--gray-400);
-	--avatar-frame-border: var(--gray-400);
+	--avatar-frame-color: var(--gray-600);
+	--avatar-frame-bg: var(--gray-800);
+	--avatar-frame-border: var(--gray-700);
 
 	--orange-avatar-bg: var(--orange-600);
 	--orange-avatar-color: var(--orange-100);
@@ -46,10 +46,10 @@
 	--blue-avatar-color: var(--blue-50);
 
 	--green-avatar-bg: var(--green-500);
-	--green-avatar-color: var(--green-50);
+	--green-avatar-color: var(--green-100);
 
-	--dark-green-avatar-bg: var(--dark-green-500);
-	--dark-green-avatar-color: var(--dark-green-50);
+	--dark-green-avatar-bg: var(--green-500);
+	--dark-green-avatar-color: var(--green-100);
 
 	--red-avatar-bg: var(--red-500);
 	--red-avatar-color: var(--red-50);
@@ -60,19 +60,21 @@
 	--purple-avatar-bg: var(--purple-500);
 	--purple-avatar-color: var(--purple-50);
 
-	--gray-avatar-bg: var(--gray-50);
+	--gray-avatar-bg: var(--gray-700);
 	--gray-avatar-color: var(--gray-50);
 }
 
 .avatar {
 	display: inline-block;
 	vertical-align: middle;
+	line-height: 1;
 }
 
 .avatar-frame {
 	display: inline-block;
 	width: 100%;
 	height: 100%;
+	object-fit: cover;
 	background-color: var(--avatar-frame-bg);
 	background-size: cover;
 	background-repeat: no-repeat;
@@ -92,30 +94,42 @@
 	text-align: center;
 
 	.standard-image {
-		font-size: var(--text-xs);
+		@include get_textstyle("xs", "regular");
 	}
+}
 
-	.avatar-empty::after {
-		content: "\002D";
-		line-height: 28px;
+.avatar-smaller {
+	width: 22px;
+	height: 22px;
+	text-align: center;
+
+	.standard-image {
+		@include get_textstyle("xs", "regular");
 	}
 }
 
 .avatar-medium {
-	width: 36px;
-	height: 36px;
-
+	width: 28px;
+	height: 28px;
 	.standard-image {
-		font-size: var(--text-base);
+		@include get_textstyle("base", "regular");
+	}
+}
+
+.avatar-medium-2 {
+	width: 32px;
+	height: 32px;
+	.standard-image {
+		@include get_textstyle("base", "regular");
 	}
 }
 
 .avatar-large {
-	width: 72px;
-	height: 72px;
+	width: 64px;
+	height: 64px;
 
 	.standard-image {
-		font-size: var(--text-2xl);
+		@include get_textstyle("2xl", "regular");
 	}
 }
 
@@ -124,7 +138,7 @@
 	height: 108px;
 
 	.standard-image {
-		font-size: var(--text-2xl);
+		@include get_textstyle("2xl", "regular");
 	}
 }
 
@@ -145,6 +159,7 @@
 .standard-image {
 	width: 100%;
 	height: 100%;
+	object-fit: cover;
 	display: flex;
 	justify-content: center;
 	align-items: center;
@@ -167,7 +182,6 @@
 		justify-content: flex-end;
 		margin-right: var(--margin-xs);
 	}
-
 
 	.avatar-action {
 		@extend .avatar-small;
@@ -192,8 +206,7 @@
 	}
 
 	.avatar-extra-count {
-		font-size: var(--text-sm);
-		font-weight: 500;
+		@include get_textstyle("sm", "medium");
 		color: $white;
 		background-color: var(--blue-500);
 	}
@@ -201,6 +214,12 @@
 	&.overlap {
 		.avatar + .avatar {
 			margin-left: calc(-1 * var(--margin-sm));
+		}
+	}
+
+	&:hover.overlap {
+		.avatar:not(:first-child) {
+			margin-left: var(--margin-xs);
 		}
 	}
 }

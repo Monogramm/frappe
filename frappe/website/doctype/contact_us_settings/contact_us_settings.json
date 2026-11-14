@@ -1,11 +1,14 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "creation": "2013-02-21 20:12:42",
  "description": "Settings for Contact Us Page",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "introduction_section",
+  "is_disabled",
+  "send_acknowledgement_email",
   "forward_to_email",
   "heading",
   "introduction",
@@ -83,7 +86,7 @@
   {
    "fieldname": "state",
    "fieldtype": "Data",
-   "label": "State"
+   "label": "State/Province"
   },
   {
    "fieldname": "pincode",
@@ -115,13 +118,26 @@
    "fieldname": "skype",
    "fieldtype": "Data",
    "label": "Skype"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_disabled",
+   "fieldtype": "Check",
+   "label": "Disabled"
+  },
+  {
+   "default": "1",
+   "description": "Send an acknowledgement email to the email address entered in the contact form.",
+   "fieldname": "send_acknowledgement_email",
+   "fieldtype": "Check",
+   "label": "Send Acknowledgement Email"
   }
  ],
  "icon": "fa fa-cog",
  "idx": 1,
  "issingle": 1,
  "links": [],
- "modified": "2020-04-06 19:17:46.083764",
+ "modified": "2026-08-03 15:41:06.808383",
  "modified_by": "Administrator",
  "module": "Website",
  "name": "Contact Us Settings",
@@ -137,6 +153,10 @@
    "write": 1
   }
  ],
- "sort_field": "modified",
- "sort_order": "DESC"
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1
 }
